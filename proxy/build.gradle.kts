@@ -11,3 +11,11 @@ dependencies {
 }
 
 application { mainClass.set("dev.peashoot.proxy.MainKt") }
+
+// Tests read the real log output back from this file to prove what is, and is not, logged.
+tasks.test {
+    val appLog = layout.buildDirectory.file("test-app.log").get().asFile
+    systemProperty("org.slf4j.simpleLogger.logFile", appLog.path)
+    systemProperty("peashoot.test.appLog", appLog.path)
+    doFirst { appLog.delete() }
+}

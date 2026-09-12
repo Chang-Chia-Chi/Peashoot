@@ -24,6 +24,8 @@ data class ProxyConfig(
     val port: Int = 8787,
     val bindHost: String = "127.0.0.1",
     val anthropicUpstream: String = "https://api.anthropic.com",
+    /** Debug: append every raw upstream response to this file, for building fixtures. */
+    val dumpFrames: java.nio.file.Path? = null,
 )
 
 /** The headless proxy: one Ktor server relaying every request to the configured upstream. */
@@ -55,7 +57,9 @@ fun Application.relayModule(
     config: ProxyConfig,
     upstream: HttpClient,
 ) {
-    install(CallLogging) // method, path, status, duration; never headers or bodies
+    install(CallLogging) {
+        disableDefaultColors()
+    } // method, path, status, duration; never headers or bodies
     routing {
         route("{...}") {
             handle {
@@ -70,7 +74,7 @@ fun Application.relayModule(
                             "Peashoot speaks plain HTTP; upgrade refused",
                             status = HttpStatusCode.UpgradeRequired,
                         )
-                    else -> relay(call, config.anthropicUpstream, upstream)
+                    else -> relay(call, config.anthropicUpstream, upstream, config.dumpFrames)
                 }
             }
         }

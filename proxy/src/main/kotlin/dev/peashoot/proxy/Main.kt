@@ -1,5 +1,7 @@
 package dev.peashoot.proxy
 
+import java.nio.file.Path
+
 /**
  * `peashoot` entry point. Configuration is environment-only until #6 adds the data directory and
  * file.
@@ -10,6 +12,7 @@ fun main() {
             port = System.getenv("PEASHOOT_PORT")?.toInt() ?: 8787,
             anthropicUpstream =
                 System.getenv("PEASHOOT_ANTHROPIC_UPSTREAM") ?: "https://api.anthropic.com",
+            dumpFrames = System.getenv("PEASHOOT_DUMP_FRAMES")?.let(Path::of),
         )
     val server = ProxyServer(config)
     Runtime.getRuntime().addShutdownHook(Thread { server.close() })

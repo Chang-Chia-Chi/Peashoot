@@ -19,6 +19,7 @@ import io.ktor.server.response.respond
 import io.ktor.utils.io.ByteWriteChannel
 import io.ktor.utils.io.readAvailable
 import io.ktor.utils.io.writeFully
+import java.nio.file.Path
 
 private val hopByHop =
     setOf(
@@ -43,7 +44,12 @@ private val notForwardedToUpstream =
 private val notForwardedToClient = hopByHop + setOf("content-length", "content-type")
 
 /** Forward one request to the upstream and stream its response back as it arrives. */
-suspend fun relay(call: ApplicationCall, upstreamBase: String, upstream: HttpClient) {
+suspend fun relay(
+    call: ApplicationCall,
+    upstreamBase: String,
+    upstream: HttpClient,
+    dumpFrames: Path? = null,
+) {
     val body = call.receive<ByteArray>()
     val requestContentType = call.request.header(HttpHeaders.ContentType)?.let(ContentType::parse)
 
@@ -72,14 +78,27 @@ suspend fun relay(call: ApplicationCall, upstreamBase: String, upstream: HttpCli
                     override suspend fun writeTo(channel: ByteWriteChannel) {
                         val source = response.bodyAsChannel()
                         val buffer = ByteArray(8 * 1024)
-                        while (true) {
-                            val read = source.readAvailable(buffer, 0, buffer.size)
-                            if (read == -1) break
-                            if (read > 0) {
-                                channel.writeFully(buffer, 0, read)
-                                channel
-                                    .flush() // each chunk reaches the client as soon as it exists
+                        val dump = dumpFrames?.let {
+                            FrameDump.open(
+                                it,
+                                call.request.httpMethod.value,
+                                call.request.uri,
+                                response.status.value,
+                            )
+                        }
+                        try {
+                            while (true) {
+                                val read = source.readAvailable(buffer, 0, buffer.size)
+                                if (read == -1) break
+                                if (read > 0) {
+                                    channel.writeFully(buffer, 0, read)
+                                    channel.flush() // each chunk reaches the client as soon as it
+                                    // exists
+                                    dump?.write(buffer, 0, read)
+                                }
                             }
+                        } finally {
+                            dump?.close()
                         }
                     }
                 }

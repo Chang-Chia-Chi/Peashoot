@@ -14,12 +14,19 @@ import io.ktor.http.ContentType
 import io.ktor.http.contentType
 import io.ktor.utils.io.readLine
 import io.ktor.utils.io.readRemaining
+import java.nio.file.Files
 import kotlin.test.Test
+import kotlin.test.assertContains
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import kotlinx.io.readString
+
+private val NL = "\n"
 
 class RelayTest {
     @Test
@@ -180,4 +187,61 @@ class RelayTest {
                 }
             }
         }
+
+    @Test
+    fun `logs the request line but never a secret header value`() = runBlocking {
+        val appLog = java.nio.file.Path.of(System.getProperty("peashoot.test.appLog"))
+        val marker = "probe-" + java.util.UUID.randomUUID()
+        FakeUpstream().use { upstream ->
+            ProxyServer(ProxyConfig(port = 0, anthropicUpstream = upstream.url)).use { proxy ->
+                HttpClient(CIO).post("${proxy.url}/v1/$marker") {
+                    header("x-api-key", "sk-ant-SECRET-KEY")
+                    header("authorization", "Bearer SECRET-TOKEN")
+                    setBody("{}")
+                }
+            }
+        }
+
+        // The call log is written on a worker after the client already has its reply.
+        val line =
+            withTimeout(5_000) {
+                while (true) {
+                    val hit = Files.readAllLines(appLog).firstOrNull { marker in it }
+                    if (hit != null) return@withTimeout hit
+                    delay(20)
+                }
+                @Suppress("UNREACHABLE_CODE") ""
+            }
+        assertContains(line, "POST - /v1/$marker", message = "requests are logged")
+        assertFalse(
+            Files.readString(appLog).contains("SECRET"),
+            "a secret header value reached the log",
+        )
+    }
+
+    @Test
+    fun `dumps raw upstream frames to the fixture file when asked`() = runBlocking {
+        val frames =
+            listOf(
+                "event: message_start" + NL + "data: {}" + NL + NL,
+                "event: message_stop" + NL + "data: {}" + NL + NL,
+            )
+        val dump = Files.createTempFile("peashoot-frames", ".txt")
+        FakeUpstream().use { upstream ->
+            upstream.reply = {
+                FakeUpstream.Reply(
+                    contentType = ContentType.Text.EventStream,
+                    frames = frames.map { 0L to it },
+                )
+            }
+            ProxyServer(ProxyConfig(port = 0, anthropicUpstream = upstream.url, dumpFrames = dump))
+                .use { proxy ->
+                    HttpClient(CIO).post("${proxy.url}/v1/messages") { setBody("{}") }.bodyAsText()
+                }
+        }
+
+        val dumped = Files.readString(dump)
+        assertContains(dumped, "POST /v1/messages 200")
+        assertContains(dumped, frames.joinToString(""))
+    }
 }
