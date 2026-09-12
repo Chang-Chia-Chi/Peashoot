@@ -1,0 +1,16 @@
+#!/bin/sh
+# Kotlin-native pre-commit: format staged Kotlin files, re-stage them, then run the build's checks.
+# Activate once per clone:  git config core.hooksPath .githooks
+set -e
+files=$(git diff --cached --name-only --diff-filter=ACMR -- '*.kt')
+for f in $files; do
+  module=${f%%/*}
+  case "$module" in
+    core|proxy|app)
+      inside=${f#*/}
+      case "$inside" in src/test/*) task=ktfmtFormatTest ;; *) task=ktfmtFormatMain ;; esac
+      ./gradlew -q ":$module:$task" "--include-only=$inside" ;;
+  esac
+done
+[ -n "$files" ] && git add $files
+./gradlew -q check
