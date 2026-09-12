@@ -95,5 +95,5 @@ Posture
 
 ## Next steps
 1. Fold in `client-compat-matrix.md` when it lands (wire APIs, base-URL overrides, timeouts per client).
-2. Design pass: capture pipeline, cassette format and matching rules, event-line schema, control API, garden renderer boundaries. Written spec in `docs/superpowers/specs/`.
+2. Design pass: capture pipeline, cassette format and matching rules, event-line schema, control API, garden renderer boundaries. Technical design in `docs/design.md`, spec in `docs/spec.md`.
 3. Implementation plan from the spec.
