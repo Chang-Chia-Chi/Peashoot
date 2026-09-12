@@ -3,16 +3,18 @@ package dev.peashoot.core
 /**
  * One unit of a response as the client receives it: an SSE event block, or a whole non-streaming
  * body. [raw] is the text exactly as it arrived, so writing frames back out reproduces the stream
- * byte for byte. [offsetMillis] is the arrival time relative to the start of the response.
+ * byte for byte (given valid UTF-8, which every provider sends). [offsetMillis] is the arrival time
+ * relative to the start of the response.
  */
 public data class Frame(val raw: String, val offsetMillis: Long) {
     /** The SSE `event:` field, or null when there is none (a comment, a non-streaming body). */
     public val event: String?
         get() =
-            raw.lineSequence()
+            raw.splitToSequence('\n')
                 .firstOrNull { it.startsWith(EVENT_FIELD) }
                 ?.removePrefix(EVENT_FIELD)
                 ?.removePrefix(" ")
+                ?.trimEnd('\r')
 
     private companion object {
         const val EVENT_FIELD = "event:"
@@ -22,8 +24,9 @@ public data class Frame(val raw: String, val offsetMillis: Long) {
 /**
  * Splits a response body into [Frame]s as its bytes arrive. A streaming (SSE) body splits at each
  * blank line, so one frame is one event block; whatever is left when the stream ends is the last
- * frame, which keeps a cut stream byte-faithful too. A non-streaming body is one frame, delivered
- * by [end]. Lines end in `\n` or `\r\n`; a bare `\r`, which no provider sends, is line content.
+ * frame, so a cut stream loses nothing down to its last complete character. A non-streaming body is
+ * one frame, delivered by [end]. Lines end in `\n` or `\r\n`; a bare `\r`, which no provider sends,
+ * is line content.
  */
 public class FrameParser(private val streaming: Boolean) {
     // ponytail: pending is copied on every chunk; a growable buffer if non-streaming bodies get
@@ -66,8 +69,8 @@ public class FrameParser(private val streaming: Boolean) {
         private const val NEWLINE = '\n'.code.toByte()
         private const val RETURN = '\r'.code.toByte()
 
-        /** Parses a complete body, every frame at offset 0. */
-        public fun parse(bytes: ByteArray, streaming: Boolean = true): List<Frame> =
-            FrameParser(streaming).run { feed(bytes, 0) + listOfNotNull(end(0)) }
+        /** Parses a complete stream, every frame at offset 0. */
+        public fun parse(bytes: ByteArray): List<Frame> =
+            FrameParser(streaming = true).run { feed(bytes, 0) + listOfNotNull(end(0)) }
     }
 }

@@ -31,7 +31,7 @@ class FakeUpstream : AutoCloseable {
 
     /**
      * [frames] streams each chunk, calling [beforeFrame] with its index first so a test can hold
-     * one back or delay it; when empty, [body] is sent whole. [cutAfterFrame] closes the socket
+     * one back or delay it; when empty, [body] is sent whole. [cutAfterFrames] closes the socket
      * once that many frames are on the wire.
      */
     class Reply(
@@ -41,8 +41,14 @@ class FakeUpstream : AutoCloseable {
         val headers: Map<String, String> = emptyMap(),
         val frames: List<String> = emptyList(),
         val beforeFrame: suspend (index: Int) -> Unit = {},
-        val cutAfterFrame: Int? = null,
-    )
+        val cutAfterFrames: Int? = null,
+    ) {
+        init {
+            require(cutAfterFrames == null || cutAfterFrames in 1 until frames.size) {
+                "cutAfterFrames must leave at least one frame on each side of the cut"
+            }
+        }
+    }
 
     /** Handlers append from Netty threads while the test thread reads. */
     val received = CopyOnWriteArrayList<Received>()
@@ -65,17 +71,21 @@ class FakeUpstream : AutoCloseable {
                     if (r.frames.isEmpty()) {
                         call.respondText(r.body, r.contentType, HttpStatusCode.fromValue(r.status))
                     } else {
-                        val socket = (call as NettyApplicationCall).context.channel()
+                        // Only a cut needs the socket, and the cast is Netty-specific.
+                        val socket =
+                            r.cutAfterFrames?.let {
+                                (call as NettyApplicationCall).context.channel()
+                            }
                         call.respondBytesWriter(r.contentType, HttpStatusCode.fromValue(r.status)) {
                             r.frames.forEachIndexed { index, frame ->
-                                if (index == r.cutAfterFrame) {
+                                r.beforeFrame(index)
+                                if (index == r.cutAfterFrames) {
                                     // Netty would finish the chunked body on an exception, so
                                     // close the socket itself: the client sees EOF before the
                                     // final chunk.
-                                    socket.close()
+                                    socket?.close()
                                     return@respondBytesWriter
                                 }
-                                r.beforeFrame(index)
                                 writeStringUtf8(frame)
                                 flush()
                             }

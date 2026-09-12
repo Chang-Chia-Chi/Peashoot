@@ -32,14 +32,14 @@ class FakeUpstreamTest {
 
     private fun streamOf(
         frames: List<String>,
-        cutAfterFrame: Int? = null,
+        cutAfterFrames: Int? = null,
         beforeFrame: suspend (Int) -> Unit = {},
     ) =
         FakeUpstream.Reply(
             contentType = ContentType.Text.EventStream,
             frames = frames,
             beforeFrame = beforeFrame,
-            cutAfterFrame = cutAfterFrame,
+            cutAfterFrames = cutAfterFrames,
         )
 
     @Test
@@ -99,13 +99,34 @@ class FakeUpstreamTest {
     }
 
     @Test
-    fun `cuts the connection mid-stream, closing the socket after the given frame with no final chunk`() {
-        // Ktor's client reads a cut as a clean end, so only a raw socket can see the missing
-        // chunked-encoding terminator.
+    fun `an upstream cut mid-stream ends the client's response after the frames already relayed`() =
+        runBlocking {
+            val frames =
+                listOf("event: message_start\ndata: {}\n\n", "event: message_stop\ndata: {}\n\n")
+            FakeUpstream().use { upstream ->
+                upstream.reply = { streamOf(frames, cutAfterFrames = 1) }
+                ProxyServer(ProxyConfig(port = 0, anthropicUpstream = upstream.url)).use { proxy ->
+                    val body =
+                        HttpClient(CIO)
+                            .post("${proxy.url}/v1/messages") { setBody("{}") }
+                            .bodyAsText()
+
+                    // The relay ends its own response cleanly; whether to propagate the cut is
+                    // the client-gone and resume tickets' decision.
+                    assertEquals(frames[0], body)
+                    assertEquals(1, upstream.received.size)
+                }
+            }
+        }
+
+    @Test
+    fun `harness self-check, the cut closes the socket with no final chunk`() {
+        // Not a Peashoot seam: it guards the resume tests against a fake whose cut quietly became
+        // a clean end. Only a raw socket can see the missing chunked-encoding terminator.
         val frames =
             listOf("event: message_start\ndata: {}\n\n", "event: message_stop\ndata: {}\n\n")
         FakeUpstream().use { upstream ->
-            upstream.reply = { streamOf(frames, cutAfterFrame = 1) }
+            upstream.reply = { streamOf(frames, cutAfterFrames = 1) }
             val (host, port) = upstream.url.removePrefix("http://").split(":")
             val wire =
                 Socket(host, port.toInt()).use { socket ->

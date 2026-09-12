@@ -72,6 +72,7 @@ class FrameParserTest {
 
         assertEquals(emptyList(), early)
         assertEquals(Frame(bytes.decodeToString(), 7), frame)
+        assertContentEquals(bytes, frame?.raw?.toByteArray())
         assertEquals(null, frame?.event)
     }
 
