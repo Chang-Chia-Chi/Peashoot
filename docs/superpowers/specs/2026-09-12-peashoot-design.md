@@ -146,7 +146,7 @@ Surfaces (each a `Surface` adapter: request shape, frame grammar, extraction int
 
 Headers. Request: forward verbatim minus hop-by-hop, `host`, `accept-encoding`, plus secret headers used but never stored. Response: forward verbatim minus hop-by-hop, which is what makes Codex's sticky `x-codex-turn-state` round-trip.
 
-Client detection, in order: `x-claude-code-session-id` present means Claude Code (agent and parent from the sibling headers); `originator: codex_cli_rs` means Codex (session from `session-id`, thread from `thread-id`); `x-stainless-*` headers mean an official SDK (language from `x-stainless-lang`); otherwise the user-agent prefix, else `unknown`. Session identity is the client's header when present; otherwise `client type + SHA-256 of the first user message` groups a conversation's turns. The docs ship a three-line OpenCode plugin using its `chat.headers` hook to inject `x-peashoot-session`, which the proxy honors for any client.
+Client detection, in order: an `x-peashoot-session` header wins outright and is honored for any client; then `x-claude-code-session-id` present means Claude Code (agent and parent from the sibling headers); `originator: codex_cli_rs` means Codex (session from `session-id`, thread from `thread-id`); `x-stainless-*` headers mean an official SDK (language from `x-stainless-lang`); otherwise the user-agent prefix, else `unknown`. Session identity is the client's header when present; otherwise `client type + SHA-256 of the first user message` groups a conversation's turns. The docs ship a three-line OpenCode plugin using its `chat.headers` hook to inject `x-peashoot-session`, which the proxy honors for any client.
 
 ## 10. The desktop app and the farm
 
@@ -192,7 +192,7 @@ Repo layout: `docs/` (brief, specs, research), `core/`, `proxy/`, `app/`, `.gith
 | M4 clients | 17 to 20 | Responses and Chat surfaces, Codex and OpenCode smoke, stream-resume on both stories |
 | M5 release | 21 to 22 | jpackage installers, README, docs, v1 tag |
 
-If spike 1 shows the re-issue is not byte-identical, Resume matches on the normalized fingerprint (which already ignores attribution headers and volatile fields) instead of raw bytes; the design does not change, only the match key.
+Resume always matches on the normalized fingerprint. Spike 1 decides whether a re-issued request differs in any field the default rules do not already ignore; if it does, the default rule set gains a rule for that field. The design does not change.
 
 ## 14. Rules with no exceptions
 
