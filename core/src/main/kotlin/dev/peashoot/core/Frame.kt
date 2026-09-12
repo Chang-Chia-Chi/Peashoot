@@ -6,9 +6,9 @@ package dev.peashoot.core
  * byte for byte (given valid UTF-8, which every provider sends). [offsetMillis] is the arrival time
  * relative to the start of the response.
  */
-public data class Frame(val raw: String, val offsetMillis: Long) {
+data class Frame(val raw: String, val offsetMillis: Long) {
     /** The SSE `event:` field, or null when there is none (a comment, a non-streaming body). */
-    public val event: String?
+    val event
         get() =
             raw.splitToSequence('\n')
                 .firstOrNull { it.startsWith(EVENT_FIELD) }
@@ -28,14 +28,14 @@ public data class Frame(val raw: String, val offsetMillis: Long) {
  * one frame, delivered by [end]. Lines end in `\n` or `\r\n`; a bare `\r`, which no provider sends,
  * is line content.
  */
-public class FrameParser(private val streaming: Boolean) {
+class FrameParser(private val streaming: Boolean) {
     // ponytail: pending is copied on every chunk; a growable buffer if non-streaming bodies get
     // large.
     private var pending = ByteArray(0)
     private var lineStart = 0
 
     /** The frames these bytes complete, each stamped with [offsetMillis]. */
-    public fun feed(bytes: ByteArray, offsetMillis: Long): List<Frame> {
+    fun feed(bytes: ByteArray, offsetMillis: Long): List<Frame> {
         val scanFrom = pending.size
         pending += bytes
         if (!streaming) return emptyList()
@@ -58,19 +58,19 @@ public class FrameParser(private val streaming: Boolean) {
     }
 
     /** The unterminated remainder, if any: a non-streaming body, or the tail of a cut stream. */
-    public fun end(offsetMillis: Long): Frame? {
+    fun end(offsetMillis: Long): Frame? {
         val rest = pending
         pending = ByteArray(0)
         lineStart = 0
         return if (rest.isEmpty()) null else Frame(rest.decodeToString(), offsetMillis)
     }
 
-    public companion object {
+    companion object {
         private const val NEWLINE = '\n'.code.toByte()
         private const val RETURN = '\r'.code.toByte()
 
         /** Parses a complete stream, every frame at offset 0. */
-        public fun parse(bytes: ByteArray): List<Frame> =
+        fun parse(bytes: ByteArray) =
             FrameParser(streaming = true).run { feed(bytes, 0) + listOfNotNull(end(0)) }
     }
 }

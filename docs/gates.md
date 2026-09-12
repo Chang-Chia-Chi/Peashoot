@@ -7,7 +7,6 @@ What checks the code, where it runs, where it is configured. Why each exists and
 | Kotlin compiler, warnings as errors plus extra warnings | Every warning: unused values, redundant code, unreachable code | `compileKotlin`, part of `build` | `build.gradle.kts` (`compilerOptions`) |
 | ktfmt, kotlinlang style | Layout; the tool has no options | `ktfmtCheck` under `check`; `ktfmtFormat` by the edit hook and pre-commit | `build.gradle.kts`, `.claude/settings.json`, `.githooks/pre-commit` |
 | detekt 2.0, default rules, no baseline | Complexity, size, swallowed exceptions, utility-class smells | `detekt` under `check` | `build.gradle.kts` (plugin only, no `detekt.yml`) |
-| Explicit API mode | Accidental public API in `core` | `core:compileKotlin` | `core/build.gradle.kts` |
 | ArchUnit | `core` depending on Ktor server or Compose | `core:test` | `core/src/test/kotlin/dev/peashoot/core/ArchitectureTest.kt` |
 | Tests, kotlin-test on JUnit 5 | Behavior at the HTTP seam and in the reducer | `test` under `check` | `build.gradle.kts`; each module's `src/test` |
 | Kover | Untested branches; report only, no threshold | `koverHtmlReport` on demand, output in `build/kover/html` | `build.gradle.kts` |
