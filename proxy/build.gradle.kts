@@ -8,7 +8,11 @@ dependencies {
     implementation(libs.ktor.client.core)
     implementation(libs.ktor.client.cio)
     runtimeOnly(libs.slf4j.simple)
+    testImplementation(project(":core"))
 }
+
+// The fake upstream replays the same captured provider responses the core parser tests use.
+sourceSets.test { resources.srcDir(rootProject.file("core/src/test/resources")) }
 
 application { mainClass.set("dev.peashoot.proxy.MainKt") }
 

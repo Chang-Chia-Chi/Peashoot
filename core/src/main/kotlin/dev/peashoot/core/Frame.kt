@@ -1,0 +1,73 @@
+package dev.peashoot.core
+
+/**
+ * One unit of a response as the client receives it: an SSE event block, or a whole non-streaming
+ * body. [raw] is the text exactly as it arrived, so writing frames back out reproduces the stream
+ * byte for byte. [offsetMillis] is the arrival time relative to the start of the response.
+ */
+public data class Frame(val raw: String, val offsetMillis: Long) {
+    /** The SSE `event:` field, or null when there is none (a comment, a non-streaming body). */
+    public val event: String?
+        get() =
+            raw.lineSequence()
+                .firstOrNull { it.startsWith(EVENT_FIELD) }
+                ?.removePrefix(EVENT_FIELD)
+                ?.removePrefix(" ")
+
+    private companion object {
+        const val EVENT_FIELD = "event:"
+    }
+}
+
+/**
+ * Splits a response body into [Frame]s as its bytes arrive. A streaming (SSE) body splits at each
+ * blank line, so one frame is one event block; whatever is left when the stream ends is the last
+ * frame, which keeps a cut stream byte-faithful too. A non-streaming body is one frame, delivered
+ * by [end]. Lines end in `\n` or `\r\n`; a bare `\r`, which no provider sends, is line content.
+ */
+public class FrameParser(private val streaming: Boolean) {
+    // ponytail: pending is copied on every chunk; a growable buffer if non-streaming bodies get
+    // large.
+    private var pending = ByteArray(0)
+    private var lineStart = 0
+
+    /** The frames these bytes complete, each stamped with [offsetMillis]. */
+    public fun feed(bytes: ByteArray, offsetMillis: Long): List<Frame> {
+        val scanFrom = pending.size
+        pending += bytes
+        if (!streaming) return emptyList()
+        val frames = ArrayList<Frame>()
+        var frameStart = 0
+        for (i in scanFrom until pending.size) {
+            if (pending[i] != NEWLINE) continue
+            val blankLine = i == lineStart || (i == lineStart + 1 && pending[lineStart] == RETURN)
+            lineStart = i + 1
+            if (blankLine) {
+                frames += Frame(pending.decodeToString(frameStart, i + 1), offsetMillis)
+                frameStart = i + 1
+            }
+        }
+        if (frameStart > 0) {
+            pending = pending.copyOfRange(frameStart, pending.size)
+            lineStart -= frameStart
+        }
+        return frames
+    }
+
+    /** The unterminated remainder, if any: a non-streaming body, or the tail of a cut stream. */
+    public fun end(offsetMillis: Long): Frame? {
+        val rest = pending
+        pending = ByteArray(0)
+        lineStart = 0
+        return if (rest.isEmpty()) null else Frame(rest.decodeToString(), offsetMillis)
+    }
+
+    public companion object {
+        private const val NEWLINE = '\n'.code.toByte()
+        private const val RETURN = '\r'.code.toByte()
+
+        /** Parses a complete body, every frame at offset 0. */
+        public fun parse(bytes: ByteArray, streaming: Boolean = true): List<Frame> =
+            FrameParser(streaming).run { feed(bytes, 0) + listOfNotNull(end(0)) }
+    }
+}
