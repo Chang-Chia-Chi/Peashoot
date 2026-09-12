@@ -1,12 +1,17 @@
 package dev.peashoot.proxy
 
 import java.nio.file.Path
+import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.runBlocking
+import org.slf4j.LoggerFactory
+
+private val log = LoggerFactory.getLogger("dev.peashoot.proxy")
 
 /**
  * `peashoot` entry point. Configuration is environment-only until #6 adds the data directory and
  * file.
  */
-fun main() {
+fun main(): Unit = runBlocking {
     val defaults = ProxyConfig()
     val config =
         ProxyConfig(
@@ -15,8 +20,8 @@ fun main() {
                 System.getenv("PEASHOOT_ANTHROPIC_UPSTREAM") ?: defaults.anthropicUpstream,
             dumpFrames = System.getenv("PEASHOOT_DUMP_FRAMES")?.let(Path::of),
         )
-    val server = ProxyServer(config)
-    Runtime.getRuntime().addShutdownHook(Thread { server.close() })
-    println("Peashoot listening on ${server.url}, relaying to ${config.anthropicUpstream}")
-    Thread.currentThread().join()
+    ProxyServer(config).use { server ->
+        log.info("Peashoot listening on {}, relaying to {}", server.url, config.anthropicUpstream)
+        awaitCancellation() // Ktor's own shutdown hook stops the server on SIGINT/SIGTERM.
+    }
 }

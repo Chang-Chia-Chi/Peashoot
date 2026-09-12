@@ -45,10 +45,10 @@ class ProxyServer(private val config: ProxyConfig) : AutoCloseable {
             }
             .start(wait = false)
 
-    val url: String
-        get() = runBlocking {
-            "http://127.0.0.1:${server.engine.resolvedConnectors().first().port}"
-        }
+    /** Resolved once: port 0 is only known after start, and a getter must never block. */
+    val url: String = runBlocking {
+        "http://127.0.0.1:${server.engine.resolvedConnectors().first().port}"
+    }
 
     override fun close() {
         server.stop(gracePeriodMillis = 100, timeoutMillis = 500)

@@ -14,6 +14,7 @@ import io.ktor.server.response.respondText
 import io.ktor.server.routing.route
 import io.ktor.server.routing.routing
 import io.ktor.utils.io.writeStringUtf8
+import java.util.concurrent.CopyOnWriteArrayList
 import kotlinx.coroutines.runBlocking
 
 /** The provider on the far side of the seam. Minimal for #4; #5 adds timing, drops, and errors. */
@@ -38,7 +39,8 @@ class FakeUpstream : AutoCloseable {
         val beforeFrame: suspend (index: Int) -> Unit = {},
     )
 
-    val received = mutableListOf<Received>()
+    /** Handlers append from Netty threads while the test thread reads. */
+    val received = CopyOnWriteArrayList<Received>()
     var reply: (Received) -> Reply = { Reply() }
 
     private val server: EmbeddedServer<*, *> =
