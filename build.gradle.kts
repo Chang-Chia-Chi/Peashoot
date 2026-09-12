@@ -5,16 +5,28 @@ import org.jetbrains.kotlin.gradle.dsl.KotlinJvmProjectExtension
 plugins {
     alias(libs.plugins.kotlin.jvm) apply false
     alias(libs.plugins.ktfmt) apply false
+    alias(libs.plugins.detekt) apply false
+    alias(libs.plugins.kover)
 }
 
 // Catalog accessors resolve against the root project, so capture them before entering subprojects.
 val kotlinTest = libs.kotlin.test
 
-// One convention for every module: the compiler is the linter, ktfmt is the only style,
-// tests run on JUnit 5 under `check`. See docs/research/code-quality-environment.md, Tier 1.
+// One coverage report for the whole build: `./gradlew koverHtmlReport` -> build/kover/html.
+dependencies {
+    kover(project(":core"))
+    kover(project(":proxy"))
+    kover(project(":app"))
+}
+
+// One convention for every module: the compiler is the linter, ktfmt is the only style, detekt
+// runs its default rules with no baseline, tests run on JUnit 5 under `check`.
+// See docs/research/code-quality-environment.md, Tiers 1 and 2.
 subprojects {
     apply(plugin = "org.jetbrains.kotlin.jvm")
     apply(plugin = "com.ncorti.ktfmt.gradle")
+    apply(plugin = "dev.detekt")
+    apply(plugin = "org.jetbrains.kotlinx.kover")
 
     group = "dev.peashoot"
 
