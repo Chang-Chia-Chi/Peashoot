@@ -3,9 +3,9 @@ package dev.peashoot.proxy
 import io.ktor.http.ContentType
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.application.call
-import io.ktor.server.cio.CIO
 import io.ktor.server.engine.EmbeddedServer
 import io.ktor.server.engine.embeddedServer
+import io.ktor.server.netty.Netty
 import io.ktor.server.request.httpMethod
 import io.ktor.server.request.receiveText
 import io.ktor.server.request.uri
@@ -39,7 +39,7 @@ class FakeUpstream : AutoCloseable {
     var reply: (Received) -> Reply = { Reply() }
 
     private val server: EmbeddedServer<*, *> =
-        embeddedServer(CIO, port = 0, host = "127.0.0.1") {
+        embeddedServer(Netty, port = 0, host = "127.0.0.1") {
                 routing {
                     route("{...}") {
                         handle {

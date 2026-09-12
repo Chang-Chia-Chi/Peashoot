@@ -3,7 +3,7 @@ plugins { application }
 
 dependencies {
     implementation(libs.ktor.server.core)
-    implementation(libs.ktor.server.cio)
+    implementation(libs.ktor.server.netty)
     implementation(libs.ktor.server.call.logging)
     implementation(libs.ktor.client.core)
     implementation(libs.ktor.client.cio)

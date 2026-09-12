@@ -2,12 +2,20 @@ package dev.peashoot.proxy
 
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.cio.CIO as ClientCIO
+import io.ktor.http.HttpHeaders
+import io.ktor.http.HttpMethod
+import io.ktor.http.HttpStatusCode
 import io.ktor.server.application.Application
 import io.ktor.server.application.install
-import io.ktor.server.cio.CIO as ServerCIO
 import io.ktor.server.engine.EmbeddedServer
 import io.ktor.server.engine.embeddedServer
+import io.ktor.server.netty.Netty
 import io.ktor.server.plugins.calllogging.CallLogging
+import io.ktor.server.request.header
+import io.ktor.server.request.httpMethod
+import io.ktor.server.request.path
+import io.ktor.server.response.respond
+import io.ktor.server.response.respondText
 import io.ktor.server.routing.route
 import io.ktor.server.routing.routing
 import kotlinx.coroutines.runBlocking
@@ -27,7 +35,7 @@ class ProxyServer(private val config: ProxyConfig) : AutoCloseable {
         }
 
     private val server: EmbeddedServer<*, *> =
-        embeddedServer(ServerCIO, port = config.port, host = config.bindHost) {
+        embeddedServer(Netty, port = config.port, host = config.bindHost) {
                 relayModule(config, upstream)
             }
             .start(wait = false)
@@ -43,7 +51,28 @@ class ProxyServer(private val config: ProxyConfig) : AutoCloseable {
     }
 }
 
-fun Application.relayModule(config: ProxyConfig, upstream: HttpClient) {
+fun Application.relayModule(
+    config: ProxyConfig,
+    upstream: HttpClient,
+) {
     install(CallLogging) // method, path, status, duration; never headers or bodies
-    routing { route("{...}") { handle { relay(call, config.anthropicUpstream, upstream) } } }
+    routing {
+        route("{...}") {
+            handle {
+                when {
+                    // Claude Code's reachability probe; answered here, never relayed.
+                    call.request.httpMethod == HttpMethod.Head &&
+                        call.request.path() == "/api/hello" -> call.respond(HttpStatusCode.OK)
+                    // Codex tries a WebSocket upgrade first and falls back to HTTP on a clean
+                    // refusal.
+                    call.request.header(HttpHeaders.Upgrade) != null ->
+                        call.respondText(
+                            "Peashoot speaks plain HTTP; upgrade refused",
+                            status = HttpStatusCode.UpgradeRequired,
+                        )
+                    else -> relay(call, config.anthropicUpstream, upstream)
+                }
+            }
+        }
+    }
 }

@@ -2,6 +2,8 @@ package dev.peashoot.proxy
 
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.cio.CIO
+import io.ktor.client.request.get
+import io.ktor.client.request.head
 import io.ktor.client.request.header
 import io.ktor.client.request.post
 import io.ktor.client.request.preparePost
@@ -123,6 +125,58 @@ class RelayTest {
                                 channel.readRemaining().readString(),
                             )
                         }
+                }
+            }
+        }
+
+    @Test
+    fun `refuses upgrade requests with 426 so clients fall back to plain http`() = runBlocking {
+        FakeUpstream().use { upstream ->
+            ProxyServer(ProxyConfig(port = 0, anthropicUpstream = upstream.url)).use { proxy ->
+                // Ktor's client refuses to send Upgrade itself, so speak raw HTTP/1.1 like a
+                // WebSocket client would.
+                val (host, port) = proxy.url.removePrefix("http://").split(":")
+                val statusLine =
+                    java.net.Socket(host, port.toInt()).use { socket ->
+                        socket
+                            .getOutputStream()
+                            .write(
+                                ("GET /v1/responses HTTP/1.1\r\nHost: $host:$port\r\nConnection: Upgrade\r\n" +
+                                        "Upgrade: websocket\r\nSec-WebSocket-Version: 13\r\n\r\n")
+                                    .toByteArray()
+                            )
+                        socket.getInputStream().bufferedReader().readLine()
+                    }
+
+                assertEquals("HTTP/1.1 426 Upgrade Required", statusLine)
+                assertTrue(
+                    upstream.received.isEmpty(),
+                    "an upgrade attempt must never reach the upstream",
+                )
+            }
+        }
+    }
+
+    @Test
+    fun `answers the hello probe locally and passes token counting and model listing through`() =
+        runBlocking {
+            FakeUpstream().use { upstream ->
+                ProxyServer(ProxyConfig(port = 0, anthropicUpstream = upstream.url)).use { proxy ->
+                    val client = HttpClient(CIO)
+
+                    assertEquals(200, client.head("${proxy.url}/api/hello").status.value)
+                    assertTrue(
+                        upstream.received.isEmpty(),
+                        "the hello probe is answered by the proxy itself, got ${upstream.received.map { it.method + " " + it.uri }}",
+                    )
+
+                    client.post("${proxy.url}/v1/messages/count_tokens") { setBody("{}") }
+                    client.get("${proxy.url}/v1/models?limit=1000")
+
+                    assertEquals(
+                        listOf("POST /v1/messages/count_tokens", "GET /v1/models?limit=1000"),
+                        upstream.received.map { "${it.method} ${it.uri}" },
+                    )
                 }
             }
         }
