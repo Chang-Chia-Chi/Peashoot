@@ -7,11 +7,12 @@ import java.nio.file.Path
  * file.
  */
 fun main() {
+    val defaults = ProxyConfig()
     val config =
         ProxyConfig(
-            port = System.getenv("PEASHOOT_PORT")?.toInt() ?: 8787,
+            port = System.getenv("PEASHOOT_PORT")?.toInt() ?: defaults.port,
             anthropicUpstream =
-                System.getenv("PEASHOOT_ANTHROPIC_UPSTREAM") ?: "https://api.anthropic.com",
+                System.getenv("PEASHOOT_ANTHROPIC_UPSTREAM") ?: defaults.anthropicUpstream,
             dumpFrames = System.getenv("PEASHOOT_DUMP_FRAMES")?.let(Path::of),
         )
     val server = ProxyServer(config)

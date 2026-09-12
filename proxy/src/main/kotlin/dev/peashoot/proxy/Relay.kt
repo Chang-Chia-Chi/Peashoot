@@ -9,6 +9,7 @@ import io.ktor.http.Headers
 import io.ktor.http.HttpHeaders
 import io.ktor.http.content.ByteArrayContent
 import io.ktor.http.content.OutgoingContent
+import io.ktor.http.contentLength
 import io.ktor.http.contentType
 import io.ktor.server.application.ApplicationCall
 import io.ktor.server.request.header
@@ -40,15 +41,24 @@ private val hopByHop =
 private val notForwardedToUpstream =
     hopByHop + setOf("host", "content-length", "content-type", "accept-encoding")
 
-/** Engine-owned response headers; content-type travels as the response's own content type. */
+/**
+ * Engine-owned response headers; content-type and content-length travel as the response's own
+ * properties.
+ */
 private val notForwardedToClient = hopByHop + setOf("content-length", "content-type")
+
+private fun Headers.without(excluded: Set<String>): Headers = Headers.build {
+    this@without.forEach { name, values ->
+        if (name.lowercase() !in excluded) values.forEach { append(name, it) }
+    }
+}
 
 /** Forward one request to the upstream and stream its response back as it arrives. */
 suspend fun relay(
     call: ApplicationCall,
     upstreamBase: String,
     upstream: HttpClient,
-    dumpFrames: Path? = null,
+    dumpFrames: Path?,
 ) {
     val body = call.receive<ByteArray>()
     val requestContentType = call.request.header(HttpHeaders.ContentType)?.let(ContentType::parse)
@@ -56,30 +66,23 @@ suspend fun relay(
     upstream
         .prepareRequest(upstreamBase.trimEnd('/') + call.request.uri) {
             method = call.request.httpMethod
-            call.request.headers.forEach { name, values ->
-                if (name.lowercase() !in notForwardedToUpstream)
-                    values.forEach { headers.append(name, it) }
-            }
-            if (body.isNotEmpty()) setBody(ByteArrayContent(body, requestContentType))
+            headers.appendAll(call.request.headers.without(notForwardedToUpstream))
+            if (body.isNotEmpty() || requestContentType != null)
+                setBody(ByteArrayContent(body, requestContentType))
         }
         .execute { response ->
-            val forwarded = Headers.build {
-                response.headers.forEach { name, values ->
-                    if (name.lowercase() !in notForwardedToClient)
-                        values.forEach { append(name, it) }
-                }
-            }
             call.respond(
                 object : OutgoingContent.WriteChannelContent() {
                     override val status = response.status
-                    override val headers = forwarded
+                    override val headers = response.headers.without(notForwardedToClient)
                     override val contentType = response.contentType()
+                    override val contentLength = response.contentLength()
 
                     override suspend fun writeTo(channel: ByteWriteChannel) {
                         val source = response.bodyAsChannel()
                         val buffer = ByteArray(8 * 1024)
                         val dump = dumpFrames?.let {
-                            FrameDump.open(
+                            FrameDump(
                                 it,
                                 call.request.httpMethod.value,
                                 call.request.uri,
@@ -94,7 +97,7 @@ suspend fun relay(
                                     channel.writeFully(buffer, 0, read)
                                     channel.flush() // each chunk reaches the client as soon as it
                                     // exists
-                                    dump?.write(buffer, 0, read)
+                                    dump?.append(buffer, 0, read)
                                 }
                             }
                         } finally {

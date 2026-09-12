@@ -18,17 +18,20 @@ import io.ktor.server.response.respond
 import io.ktor.server.response.respondText
 import io.ktor.server.routing.route
 import io.ktor.server.routing.routing
+import java.nio.file.Path
 import kotlinx.coroutines.runBlocking
 
 data class ProxyConfig(
     val port: Int = 8787,
-    val bindHost: String = "127.0.0.1",
     val anthropicUpstream: String = "https://api.anthropic.com",
     /** Debug: append every raw upstream response to this file, for building fixtures. */
-    val dumpFrames: java.nio.file.Path? = null,
+    val dumpFrames: Path? = null,
 )
 
-/** The headless proxy: one Ktor server relaying every request to the configured upstream. */
+/**
+ * The headless proxy: one Ktor server, loopback only, relaying every request to the configured
+ * upstream.
+ */
 class ProxyServer(private val config: ProxyConfig) : AutoCloseable {
     private val upstream =
         HttpClient(ClientCIO) {
@@ -37,14 +40,14 @@ class ProxyServer(private val config: ProxyConfig) : AutoCloseable {
         }
 
     private val server: EmbeddedServer<*, *> =
-        embeddedServer(Netty, port = config.port, host = config.bindHost) {
+        embeddedServer(Netty, port = config.port, host = "127.0.0.1") {
                 relayModule(config, upstream)
             }
             .start(wait = false)
 
     val url: String
         get() = runBlocking {
-            "http://${config.bindHost}:${server.engine.resolvedConnectors().first().port}"
+            "http://127.0.0.1:${server.engine.resolvedConnectors().first().port}"
         }
 
     override fun close() {
@@ -53,10 +56,7 @@ class ProxyServer(private val config: ProxyConfig) : AutoCloseable {
     }
 }
 
-fun Application.relayModule(
-    config: ProxyConfig,
-    upstream: HttpClient,
-) {
+fun Application.relayModule(config: ProxyConfig, upstream: HttpClient) {
     install(CallLogging) {
         disableDefaultColors()
     } // method, path, status, duration; never headers or bodies

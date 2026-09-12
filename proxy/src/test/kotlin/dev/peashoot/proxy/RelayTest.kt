@@ -14,19 +14,22 @@ import io.ktor.http.ContentType
 import io.ktor.http.contentType
 import io.ktor.utils.io.readLine
 import io.ktor.utils.io.readRemaining
+import java.net.Socket
 import java.nio.file.Files
+import java.nio.file.Path
+import java.util.UUID
 import kotlin.test.Test
 import kotlin.test.assertContains
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import kotlinx.io.readString
-
-private val NL = "\n"
 
 class RelayTest {
     @Test
@@ -69,6 +72,7 @@ class RelayTest {
                             mapOf(
                                 "anthropic-ratelimit-tokens-remaining" to "1000",
                                 "x-codex-turn-state" to "sticky",
+                                "proxy-authenticate" to "Basic",
                             )
                     )
                 }
@@ -97,6 +101,10 @@ class RelayTest {
                     )
                     assertEquals("1000", response.headers["anthropic-ratelimit-tokens-remaining"])
                     assertEquals("sticky", response.headers["x-codex-turn-state"])
+                    assertNull(
+                        response.headers["proxy-authenticate"],
+                        "hop-by-hop response headers are not forwarded",
+                    )
                 }
             }
         }
@@ -106,11 +114,13 @@ class RelayTest {
         runBlocking {
             val first = "event: message_start\ndata: {}\n\n"
             val last = "event: message_stop\ndata: {}\n\n"
+            val releaseLast = CompletableDeferred<Unit>()
             FakeUpstream().use { upstream ->
                 upstream.reply = {
                     FakeUpstream.Reply(
                         contentType = ContentType.Text.EventStream,
-                        frames = listOf(0L to first, 1500L to last),
+                        frames = listOf(first, last),
+                        beforeFrame = { index -> if (index == 1) releaseLast.await() },
                     )
                 }
                 ProxyServer(ProxyConfig(port = 0, anthropicUpstream = upstream.url)).use { proxy ->
@@ -118,15 +128,12 @@ class RelayTest {
                         .preparePost("${proxy.url}/v1/messages") { setBody("{}") }
                         .execute { response ->
                             val channel = response.bodyAsChannel()
-                            val startedAt = System.nanoTime()
-                            val firstLine = channel.readLine()
-                            val firstLineAfterMillis = (System.nanoTime() - startedAt) / 1_000_000
-
+                            // The last frame is held back, so this line can only arrive if the
+                            // first was relayed alone.
+                            val firstLine = withTimeout(5_000) { channel.readLine() }
                             assertEquals("event: message_start", firstLine)
-                            assertTrue(
-                                firstLineAfterMillis < 1000,
-                                "first frame took ${firstLineAfterMillis} ms; it was buffered",
-                            )
+
+                            releaseLast.complete(Unit)
                             assertEquals(
                                 first.removePrefix("event: message_start\n") + last,
                                 channel.readRemaining().readString(),
@@ -137,32 +144,54 @@ class RelayTest {
         }
 
     @Test
-    fun `refuses upgrade requests with 426 so clients fall back to plain http`() = runBlocking {
-        FakeUpstream().use { upstream ->
-            ProxyServer(ProxyConfig(port = 0, anthropicUpstream = upstream.url)).use { proxy ->
-                // Ktor's client refuses to send Upgrade itself, so speak raw HTTP/1.1 like a
-                // WebSocket client would.
-                val (host, port) = proxy.url.removePrefix("http://").split(":")
-                val statusLine =
-                    java.net.Socket(host, port.toInt()).use { socket ->
-                        socket
-                            .getOutputStream()
-                            .write(
-                                ("GET /v1/responses HTTP/1.1\r\nHost: $host:$port\r\nConnection: Upgrade\r\n" +
-                                        "Upgrade: websocket\r\nSec-WebSocket-Version: 13\r\n\r\n")
-                                    .toByteArray()
-                            )
-                        socket.getInputStream().bufferedReader().readLine()
-                    }
+    fun `refuses upgrade requests with a plain 426 so clients fall back to plain http`() =
+        runBlocking {
+            FakeUpstream().use { upstream ->
+                ProxyServer(ProxyConfig(port = 0, anthropicUpstream = upstream.url)).use { proxy ->
+                    // Ktor's client refuses to send Upgrade itself, so speak raw HTTP/1.1 like a
+                    // WebSocket client would.
+                    val (host, port) = proxy.url.removePrefix("http://").split(":")
+                    val (statusLine, headers, body) =
+                        Socket(host, port.toInt()).use { socket ->
+                            socket
+                                .getOutputStream()
+                                .write(
+                                    ("GET /v1/responses HTTP/1.1\r\nHost: $host:$port\r\nConnection: Upgrade\r\n" +
+                                            "Upgrade: websocket\r\nSec-WebSocket-Version: 13\r\n\r\n")
+                                        .toByteArray()
+                                )
+                            val reader = socket.getInputStream().bufferedReader()
+                            val statusLine = reader.readLine()
+                            val headers = generateSequence {
+                                reader.readLine()
+                            }
+                                .takeWhile { it.isNotEmpty() }
+                                .toList()
+                            val length = headers.first {
+                                it.startsWith("Content-Length:", ignoreCase = true)
+                            }
+                            val body =
+                                CharArray(length.substringAfter(":").trim().toInt()).also {
+                                    reader.read(it)
+                                }
+                            Triple(statusLine, headers, String(body))
+                        }
 
-                assertEquals("HTTP/1.1 426 Upgrade Required", statusLine)
-                assertTrue(
-                    upstream.received.isEmpty(),
-                    "an upgrade attempt must never reach the upstream",
-                )
+                    assertEquals("HTTP/1.1 426 Upgrade Required", statusLine)
+                    assertTrue(
+                        headers.any {
+                            it.startsWith("Content-Type: text/plain", ignoreCase = true)
+                        },
+                        "$headers",
+                    )
+                    assertContains(body, "upgrade refused")
+                    assertTrue(
+                        upstream.received.isEmpty(),
+                        "an upgrade attempt must never reach the upstream",
+                    )
+                }
             }
         }
-    }
 
     @Test
     fun `answers the hello probe locally and passes token counting and model listing through`() =
@@ -174,7 +203,7 @@ class RelayTest {
                     assertEquals(200, client.head("${proxy.url}/api/hello").status.value)
                     assertTrue(
                         upstream.received.isEmpty(),
-                        "the hello probe is answered by the proxy itself, got ${upstream.received.map { it.method + " " + it.uri }}",
+                        "the hello probe is answered by the proxy itself",
                     )
 
                     client.post("${proxy.url}/v1/messages/count_tokens") { setBody("{}") }
@@ -190,8 +219,8 @@ class RelayTest {
 
     @Test
     fun `logs the request line but never a secret header value`() = runBlocking {
-        val appLog = java.nio.file.Path.of(System.getProperty("peashoot.test.appLog"))
-        val marker = "probe-" + java.util.UUID.randomUUID()
+        val appLog = Path.of(System.getProperty("peashoot.test.appLog"))
+        val marker = "probe-" + UUID.randomUUID()
         FakeUpstream().use { upstream ->
             ProxyServer(ProxyConfig(port = 0, anthropicUpstream = upstream.url)).use { proxy ->
                 HttpClient(CIO).post("${proxy.url}/v1/$marker") {
@@ -203,15 +232,8 @@ class RelayTest {
         }
 
         // The call log is written on a worker after the client already has its reply.
-        val line =
-            withTimeout(5_000) {
-                while (true) {
-                    val hit = Files.readAllLines(appLog).firstOrNull { marker in it }
-                    if (hit != null) return@withTimeout hit
-                    delay(20)
-                }
-                @Suppress("UNREACHABLE_CODE") ""
-            }
+        withTimeout(5_000) { while (Files.readAllLines(appLog).none { marker in it }) delay(20) }
+        val line = Files.readAllLines(appLog).first { marker in it }
         assertContains(line, "POST - /v1/$marker", message = "requests are logged")
         assertFalse(
             Files.readString(appLog).contains("SECRET"),
@@ -220,28 +242,61 @@ class RelayTest {
     }
 
     @Test
-    fun `dumps raw upstream frames to the fixture file when asked`() = runBlocking {
-        val frames =
-            listOf(
-                "event: message_start" + NL + "data: {}" + NL + NL,
-                "event: message_stop" + NL + "data: {}" + NL + NL,
-            )
-        val dump = Files.createTempFile("peashoot-frames", ".txt")
-        FakeUpstream().use { upstream ->
-            upstream.reply = {
-                FakeUpstream.Reply(
-                    contentType = ContentType.Text.EventStream,
-                    frames = frames.map { 0L to it },
+    fun `dumps raw upstream responses to the fixture file, whole, one after another, without secrets`() =
+        runBlocking {
+            val frames =
+                listOf("event: message_start\ndata: {}\n\n", "event: message_stop\ndata: {}\n\n")
+            val dump = Files.createTempFile("peashoot-frames", ".txt")
+            val releaseSecondFrames = CompletableDeferred<Unit>()
+            FakeUpstream().use { upstream ->
+                upstream.reply = { request ->
+                    val tag = request.uri.substringAfterLast('/')
+                    FakeUpstream.Reply(
+                        contentType = ContentType.Text.EventStream,
+                        frames = frames.map { "$tag $it" },
+                        beforeFrame = { index -> if (index == 1) releaseSecondFrames.await() },
+                    )
+                }
+                ProxyServer(
+                        ProxyConfig(port = 0, anthropicUpstream = upstream.url, dumpFrames = dump)
+                    )
+                    .use { proxy ->
+                        val client = HttpClient(CIO)
+                        // Two responses stream at once; their first frames are on the wire before
+                        // either second frame.
+                        val a = async {
+                            client
+                                .post("${proxy.url}/v1/a") {
+                                    header("x-api-key", "sk-ant-SECRET")
+                                    setBody("{}")
+                                }
+                                .bodyAsText()
+                        }
+                        val b = async {
+                            client.post("${proxy.url}/v1/b") { setBody("{}") }.bodyAsText()
+                        }
+                        withTimeout(5_000) { while (upstream.received.size < 2) delay(20) }
+                        releaseSecondFrames.complete(Unit)
+                        a.await()
+                        b.await()
+
+                        // And one non-streaming response.
+                        upstream.reply = { FakeUpstream.Reply(body = """{"type":"message"}""") }
+                        client.post("${proxy.url}/v1/messages") { setBody("{}") }.bodyAsText()
+                    }
+            }
+
+            val dumped = Files.readString(dump)
+            for (tag in listOf("a", "b")) {
+                assertContains(dumped, "POST /v1/$tag 200")
+                assertContains(
+                    dumped,
+                    frames.joinToString("") { "$tag $it" },
+                    message = "response $tag must be contiguous",
                 )
             }
-            ProxyServer(ProxyConfig(port = 0, anthropicUpstream = upstream.url, dumpFrames = dump))
-                .use { proxy ->
-                    HttpClient(CIO).post("${proxy.url}/v1/messages") { setBody("{}") }.bodyAsText()
-                }
+            assertContains(dumped, "POST /v1/messages 200")
+            assertContains(dumped, """{"type":"message"}""")
+            assertFalse(dumped.contains("SECRET"), "a secret header value reached the dump file")
         }
-
-        val dumped = Files.readString(dump)
-        assertContains(dumped, "POST /v1/messages 200")
-        assertContains(dumped, frames.joinToString(""))
-    }
 }
