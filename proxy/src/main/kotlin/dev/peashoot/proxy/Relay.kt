@@ -44,7 +44,8 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
-import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 import org.slf4j.LoggerFactory
 
 private val log = LoggerFactory.getLogger("dev.peashoot.proxy")
@@ -219,11 +220,12 @@ class Relay(
             cause.toString(),
         )
         exchange.response = Exchange.Response(HttpStatusCode.BadGateway.value, Headers.Empty)
-        call.respondText(
-            """{"type":"peashoot_error","error":"upstream_unreachable","detail":${JsonPrimitive(cause.toString())}}""",
-            ContentType.Application.Json,
-            HttpStatusCode.BadGateway,
-        )
+        val body = buildJsonObject {
+            put("type", "peashoot_error")
+            put("error", "upstream_unreachable")
+            put("detail", cause.toString())
+        }
+        call.respondText(body.toString(), ContentType.Application.Json, HttpStatusCode.BadGateway)
         val outcome = Outcome(HttpStatusCode.BadGateway.value)
         interceptors.forEach { it.onComplete(exchange, outcome) }
     }
