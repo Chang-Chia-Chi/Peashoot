@@ -48,6 +48,12 @@ class ProxyServer(config: ProxyConfig, interceptors: List<Interceptor> = emptyLi
     private val applied =
         config.copy(secretHeaders = config.secretHeaders.map(String::lowercase).toSet())
 
+    init {
+        require(DEFAULT_ROUTE in config.routes) {
+            "route '$DEFAULT_ROUTE' is not configured; every request takes it until routing arrives"
+        }
+    }
+
     private val upstream =
         HttpClient(ClientCIO) {
             // Streams outlive the engine's 15 s default; 0 disables the per-request timeout.

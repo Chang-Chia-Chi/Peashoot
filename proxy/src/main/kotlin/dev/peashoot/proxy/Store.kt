@@ -41,6 +41,7 @@ class Store(home: Path) : AutoCloseable {
     private val bodies: Path =
         Files.createDirectories(home.resolve("bodies")).also { dir ->
             // A spill interrupted between staging and its move leaves a .tmp nothing references.
+            // The next open sweeps it, which is soon enough for a local tool: no background task.
             Files.list(dir).use { files ->
                 files.filter { it.fileName.toString().endsWith(".tmp") }.forEach(Files::delete)
             }
@@ -152,9 +153,19 @@ class Store(home: Path) : AutoCloseable {
     }
 
     private companion object {
+        /**
+         * Design section 3. SQLite's own measurements put the crossover where a blob reads faster
+         * from a file than from the database at about 100 KB; 64 KB leaves headroom and keeps the
+         * row small.
+         */
         const val INLINE_LIMIT = 64 * 1024
         const val DEFAULT_LIMIT = 100
         const val POOL_SIZE = 4
+
+        /**
+         * Created if absent, never altered: before v1 a schema change means a fresh database. The
+         * first release adds `PRAGMA user_version` and a migration per bump.
+         */
         const val SCHEMA =
             """CREATE TABLE IF NOT EXISTS exchange (
                 id TEXT PRIMARY KEY,
