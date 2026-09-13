@@ -213,17 +213,17 @@ private suspend fun respondProxyFailure(
     )
     exchange.status = HttpStatusCode.BadGateway.value
     call.respondText(
-        """{"type":"peashoot_error","error":"upstream_unreachable","detail":${jsonString(cause.toString())}}""",
+        """{"type":"peashoot_error","error":"upstream_unreachable","detail":${cause.toString().toJsonString()}}""",
         ContentType.Application.Json,
         HttpStatusCode.BadGateway,
     )
     complete(exchange, interceptors)
 }
 
-/** A JSON string literal, quotes included. */
-private fun jsonString(text: String): String = buildString {
+/** This text as a JSON string literal, quotes included. */
+private fun String.toJsonString(): String = buildString {
     append('"')
-    for (c in text) {
+    for (c in this@toJsonString) {
         when {
             c == '"' -> append("\\\"")
             c == '\\' -> append("\\\\")
