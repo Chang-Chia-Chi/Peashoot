@@ -10,8 +10,11 @@ import kotlinx.coroutines.flow.Flow
  * frame once, with no second parse and no second read of the upstream.
  */
 interface Interceptor {
-    /** Continue down the chain, or answer from a source of your own and skip the upstream. */
-    suspend fun onRequest(exchange: Exchange): Decision = Decision.Continue
+    /**
+     * Answer from a source of your own and skip the upstream, or null to offer nothing and let the
+     * chain continue.
+     */
+    suspend fun onRequest(exchange: Exchange): FrameSource? = null
 
     /**
      * Observe or transform the frames on their way to the sinks. The returned flow must collect
@@ -20,15 +23,13 @@ interface Interceptor {
      */
     fun onFrames(exchange: Exchange, frames: Flow<Frame>): Flow<Frame> = frames
 
+    /**
+     * Must not throw: this runs where a stream ended, so a throw here would replace the exception
+     * that ended it. Catch your own failures, as the Recorder catches the store's.
+     */
     suspend fun onComplete(exchange: Exchange, outcome: Outcome) = Unit
 
     suspend fun onClientGone(exchange: Exchange) = Unit
-}
-
-sealed interface Decision {
-    data object Continue : Decision
-
-    data class Respond(val source: FrameSource) : Decision
 }
 
 /** Where a response comes from: the upstream, a cassette, or a resume buffer. */

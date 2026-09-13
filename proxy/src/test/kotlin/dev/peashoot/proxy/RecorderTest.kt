@@ -59,7 +59,7 @@ class RecorderTest {
         )
 
     private suspend fun post(proxy: ProxyServer, body: String) =
-        HttpClient(CIO).post("${proxy.url}/v1/messages") { setBody(body) }
+        HttpClient(CIO).use { it.post("${proxy.url}/v1/messages") { setBody(body) } }
 
     @Test
     fun `record mode persists a streamed exchange with its frames and offsets, minus secrets`() =
@@ -77,20 +77,22 @@ class RecorderTest {
                     }
                     val config = ProxyConfig(port = 0, anthropicUpstream = upstream.url)
                     ProxyServer(config, listOf(Recorder(store))).use { proxy ->
-                        HttpClient(CIO)
-                            .preparePost("${proxy.url}/v1/messages") {
-                                header("x-api-key", "sk-ant-SECRET")
-                                header("authorization", "Bearer SECRET-TOKEN")
-                                header("anthropic-beta", "kept")
-                                setBody("""{"model":"claude"}""")
-                            }
-                            .execute { response ->
-                                val channel = response.bodyAsChannel()
-                                assertEquals("event: message_start", channel.readLine())
-                                delay(50)
-                                releaseSecond.complete(Unit)
-                                channel.readRemaining().readString()
-                            }
+                        HttpClient(CIO).use { client ->
+                            client
+                                .preparePost("${proxy.url}/v1/messages") {
+                                    header("x-api-key", "sk-ant-SECRET")
+                                    header("authorization", "Bearer SECRET-TOKEN")
+                                    header("anthropic-beta", "kept")
+                                    setBody("""{"model":"claude"}""")
+                                }
+                                .execute { response ->
+                                    val channel = response.bodyAsChannel()
+                                    assertEquals("event: message_start", channel.readLine())
+                                    delay(50)
+                                    releaseSecond.complete(Unit)
+                                    channel.readRemaining().readString()
+                                }
+                        }
                     }
                 }
 
@@ -105,8 +107,9 @@ class RecorderTest {
                 assertNull(exchange.request.headers["x-api-key"])
                 assertNull(exchange.request.headers["authorization"])
                 assertEquals(Mode.RECORD, exchange.mode)
-                assertEquals(200, exchange.status)
-                assertEquals("9", exchange.responseHeaders["anthropic-ratelimit-tokens-remaining"])
+                val response = checkNotNull(exchange.response)
+                assertEquals(200, response.status)
+                assertEquals("9", response.headers["anthropic-ratelimit-tokens-remaining"])
                 assertEquals(
                     FrameParser.parse(fixture).map { it.raw },
                     recorded.frames.map { it.raw },
@@ -138,9 +141,9 @@ class RecorderTest {
                     upstream.reply = { streamReply(bigFrames) }
                     val config = ProxyConfig(port = 0, anthropicUpstream = upstream.url)
                     ProxyServer(config, listOf(Recorder(store))).use { proxy ->
-                        HttpClient(CIO)
-                            .post("${proxy.url}/v1/messages") { setBody(bigBody) }
-                            .bodyAsText()
+                        HttpClient(CIO).use {
+                            it.post("${proxy.url}/v1/messages") { setBody(bigBody) }.bodyAsText()
+                        }
                     }
                 }
 
@@ -170,7 +173,7 @@ class RecorderTest {
                     ProxyServer(config, listOf(Recorder(store))).use { proxy -> post(proxy, "{}") }
                 }
                 val recorded = store.list().single()
-                assertEquals(529, recorded.exchange.status)
+                assertEquals(529, recorded.exchange.response?.status)
                 assertEquals(listOf(body), recorded.frames.map { it.raw })
             }
         }
@@ -269,9 +272,9 @@ class RecorderTest {
                     )
                 ProxyServer(config, listOf(Recorder(store))).use { proxy ->
                     val body =
-                        HttpClient(CIO)
-                            .post("${proxy.url}/v1/messages") { setBody("{}") }
-                            .bodyAsText()
+                        HttpClient(CIO).use {
+                            it.post("${proxy.url}/v1/messages") { setBody("{}") }.bodyAsText()
+                        }
                     assertEquals(fixture.decodeToString(), body, "passthrough still relays")
                 }
             }

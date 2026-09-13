@@ -1,6 +1,5 @@
 package dev.peashoot.proxy
 
-import dev.peashoot.core.Decision
 import dev.peashoot.core.Exchange
 import dev.peashoot.core.Frame
 import dev.peashoot.core.FrameParser
@@ -44,10 +43,10 @@ class InterceptorChainTest {
         val log = CopyOnWriteArrayList<String>()
         lateinit var exchange: Exchange
 
-        override suspend fun onRequest(exchange: Exchange): Decision {
+        override suspend fun onRequest(exchange: Exchange): FrameSource? {
             this.exchange = exchange
             log += "request ${exchange.request.method} ${exchange.request.path}"
-            return Decision.Continue
+            return null
         }
 
         override fun onFrames(exchange: Exchange, frames: Flow<Frame>) = frames.onEach {
@@ -80,16 +79,17 @@ class InterceptorChainTest {
                     )
                 ProxyServer(config, chain).use { proxy ->
                     val body =
-                        HttpClient(CIO)
-                            .post("${proxy.url}/v1/messages") {
-                                header("x-api-key", "sk-ant-SECRET")
-                                header("X-CUSTOM-SECRET", "also-SECRET")
-                                header("anthropic-beta", "kept")
-                                setBody("{}")
-                            }
-                            .bodyAsChannel()
-                            .readRemaining()
-                            .readByteArray()
+                        HttpClient(CIO).use {
+                            it.post("${proxy.url}/v1/messages") {
+                                    header("x-api-key", "sk-ant-SECRET")
+                                    header("X-CUSTOM-SECRET", "also-SECRET")
+                                    header("anthropic-beta", "kept")
+                                    setBody("{}")
+                                }
+                                .bodyAsChannel()
+                                .readRemaining()
+                                .readByteArray()
+                        }
                     assertContentEquals(fixture, body)
                 }
                 val sent = upstream.received.single().headers.mapKeys { it.key.lowercase() }
@@ -122,32 +122,31 @@ class InterceptorChainTest {
             val replay =
                 object : Interceptor {
                     override suspend fun onRequest(exchange: Exchange) =
-                        Decision.Respond(
-                            object : FrameSource {
-                                override val status = 200
-                                override val headers =
-                                    headersOf(
-                                        "content-type" to listOf("text/event-stream"),
-                                        "x-peashoot-replay" to listOf("true"),
-                                    )
+                        object : FrameSource {
+                            override val status = 200
+                            override val headers =
+                                headersOf(
+                                    "content-type" to listOf("text/event-stream"),
+                                    "x-peashoot-replay" to listOf("true"),
+                                )
 
-                                override fun frames() = FrameParser.parse(fixture).asFlow()
-                            }
-                        )
+                            override fun frames() = FrameParser.parse(fixture).asFlow()
+                        }
                 }
             val observer = Observer()
             FakeUpstream().use { upstream ->
                 val chain = listOf(replay, observer)
                 ProxyServer(ProxyConfig(port = 0, anthropicUpstream = upstream.url), chain).use {
                     proxy ->
-                    val response =
-                        HttpClient(CIO).post("${proxy.url}/v1/messages") { setBody("{}") }
-                    assertEquals(200, response.status.value)
-                    assertEquals("true", response.headers["x-peashoot-replay"])
-                    assertContentEquals(
-                        fixture,
-                        response.bodyAsChannel().readRemaining().readByteArray(),
-                    )
+                    HttpClient(CIO).use { client ->
+                        val response = client.post("${proxy.url}/v1/messages") { setBody("{}") }
+                        assertEquals(200, response.status.value)
+                        assertEquals("true", response.headers["x-peashoot-replay"])
+                        assertContentEquals(
+                            fixture,
+                            response.bodyAsChannel().readRemaining().readByteArray(),
+                        )
+                    }
                 }
                 assertEquals(0, upstream.received.size, "the upstream must not be called")
             }
@@ -182,9 +181,9 @@ class InterceptorChainTest {
                 ProxyServer(ProxyConfig(port = 0, anthropicUpstream = upstream.url), chain).use {
                     proxy ->
                     val body =
-                        HttpClient(CIO)
-                            .post("${proxy.url}/v1/messages") { setBody("{}") }
-                            .bodyAsText()
+                        HttpClient(CIO).use {
+                            it.post("${proxy.url}/v1/messages") { setBody("{}") }.bodyAsText()
+                        }
                     val relayed = FrameParser.parse(fixture).dropLast(1)
                     assertEquals(relayed.joinToString("") { it.raw }, body)
                 }
@@ -207,7 +206,9 @@ class InterceptorChainTest {
             ProxyServer(ProxyConfig(port = 0, anthropicUpstream = upstream.url), listOf(observer))
                 .use { proxy ->
                     val response =
-                        HttpClient(CIO).post("${proxy.url}/v1/messages") { setBody("{}") }
+                        HttpClient(CIO).use {
+                            it.post("${proxy.url}/v1/messages") { setBody("{}") }
+                        }
                     assertEquals(529, response.status.value)
                     assertEquals(body, response.bodyAsText())
                     assertEquals("3", response.headers["retry-after"])
@@ -217,7 +218,7 @@ class InterceptorChainTest {
             listOf("request POST /v1/messages", "frame $body", "complete 529"),
             observer.log,
         )
-        assertEquals(529, observer.exchange.status)
+        assertEquals(529, observer.exchange.response?.status)
     }
 
     @Test
@@ -227,7 +228,8 @@ class InterceptorChainTest {
             val observer = Observer()
             val config = ProxyConfig(port = 0, anthropicUpstream = "http://127.0.0.1:$closedPort")
             ProxyServer(config, listOf(observer)).use { proxy ->
-                val response = HttpClient(CIO).post("${proxy.url}/v1/messages") { setBody("{}") }
+                val response =
+                    HttpClient(CIO).use { it.post("${proxy.url}/v1/messages") { setBody("{}") } }
                 assertEquals(502, response.status.value)
                 assertEquals(
                     "application/json",

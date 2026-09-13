@@ -3,8 +3,9 @@ package dev.peashoot.core
 /**
  * One unit of a response as the client receives it: an SSE event block, or a whole non-streaming
  * body. [raw] is the text exactly as it arrived, so writing frames back out reproduces the stream
- * byte for byte (given valid UTF-8, which every provider sends). [offsetMillis] is the arrival time
- * relative to the start of the response.
+ * byte for byte; a malformed byte ends the response rather than being rewritten as U+FFFD, so a
+ * recording is never silently corrupted. [offsetMillis] is the arrival time relative to the start
+ * of the response.
  */
 data class Frame(val raw: String, val offsetMillis: Long) {
     /**
@@ -39,10 +40,15 @@ class FrameParser(private val streaming: Boolean) {
     private var pending = ByteArray(0)
     private var lineStart = 0
 
-    /** The frames these bytes complete, each stamped with [offsetMillis]. */
-    fun feed(bytes: ByteArray, offsetMillis: Long): List<Frame> {
+    /**
+     * The frames the first [length] bytes of [bytes] complete, each stamped with [offsetMillis].
+     * The caller keeps its read buffer; only the bytes it just filled are taken.
+     */
+    fun feed(bytes: ByteArray, length: Int, offsetMillis: Long): List<Frame> {
         val scanFrom = pending.size
-        pending += bytes
+        val grown = pending.copyOf(scanFrom + length)
+        bytes.copyInto(grown, destinationOffset = scanFrom, startIndex = 0, endIndex = length)
+        pending = grown
         if (!streaming) return emptyList()
         val frames = ArrayList<Frame>()
         var frameStart = 0
@@ -51,7 +57,11 @@ class FrameParser(private val streaming: Boolean) {
             val blankLine = i == lineStart || (i == lineStart + 1 && pending[lineStart] == RETURN)
             lineStart = i + 1
             if (blankLine) {
-                frames += Frame(pending.decodeToString(frameStart, i + 1), offsetMillis)
+                frames +=
+                    Frame(
+                        pending.decodeToString(frameStart, i + 1, throwOnInvalidSequence = true),
+                        offsetMillis,
+                    )
                 frameStart = i + 1
             }
         }
@@ -67,7 +77,8 @@ class FrameParser(private val streaming: Boolean) {
         val rest = pending
         pending = ByteArray(0)
         lineStart = 0
-        return if (rest.isEmpty()) null else Frame(rest.decodeToString(), offsetMillis)
+        return if (rest.isEmpty()) null
+        else Frame(rest.decodeToString(throwOnInvalidSequence = true), offsetMillis)
     }
 
     companion object {
@@ -76,6 +87,6 @@ class FrameParser(private val streaming: Boolean) {
 
         /** Parses a complete stream, every frame at offset 0. */
         fun parse(bytes: ByteArray) =
-            FrameParser(streaming = true).run { feed(bytes, 0) + listOfNotNull(end(0)) }
+            FrameParser(streaming = true).run { feed(bytes, bytes.size, 0) + listOfNotNull(end(0)) }
     }
 }
