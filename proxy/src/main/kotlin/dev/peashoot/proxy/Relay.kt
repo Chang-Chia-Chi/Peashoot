@@ -30,7 +30,6 @@ import io.ktor.utils.io.readAvailable
 import io.ktor.utils.io.writeStringUtf8
 import java.io.IOException
 import java.nio.channels.UnresolvedAddressException
-import java.nio.charset.CharacterCodingException
 import java.nio.file.Path
 import kotlin.time.TimeSource
 import kotlinx.coroutines.CoroutineExceptionHandler
@@ -369,15 +368,6 @@ private class UpstreamSource(
                 }
             }
             parser.end(start.elapsedNow().inWholeMilliseconds)?.let { emit(it) }
-        } catch (e: CharacterCodingException) {
-            // Ends the response loudly: Ktor logs the rethrow at DEBUG only.
-            log.warn(
-                "invalid UTF-8 from upstream for {} {}; response ended: {}",
-                response.call.request.method.value,
-                response.call.request.url.encodedPath,
-                e.toString(),
-            )
-            throw e
         } finally {
             dump?.close()
         }
