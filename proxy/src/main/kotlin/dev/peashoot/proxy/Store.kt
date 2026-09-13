@@ -14,6 +14,7 @@ import java.sql.DriverManager
 import java.sql.ResultSet
 import java.time.Instant
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -37,7 +38,13 @@ data class Recorded(val exchange: Exchange, val frames: List<Frame>)
  * request threads.
  */
 class Store(home: Path) : AutoCloseable {
-    private val bodies: Path = Files.createDirectories(home.resolve("bodies"))
+    private val bodies: Path =
+        Files.createDirectories(home.resolve("bodies")).also { dir ->
+            // A spill interrupted between staging and its move leaves a .tmp nothing references.
+            Files.list(dir).use { files ->
+                files.filter { it.fileName.toString().endsWith(".tmp") }.forEach(Files::delete)
+            }
+        }
     private val connection: Connection =
         DriverManager.getConnection("jdbc:sqlite:${home.resolve("peashoot.db")}").also { c ->
             c.createStatement().use {
@@ -50,25 +57,28 @@ class Store(home: Path) : AutoCloseable {
     suspend fun put(exchange: Exchange, frames: List<Frame>): Unit = io {
         val (body, bodyRef) = inlineOrSpill(exchange.request.body)
         val (framesInline, framesRef) = inlineOrSpill(frames.toJson().toByteArray())
-        val values =
-            listOf(
-                exchange.id,
-                exchange.receivedAt.toEpochMilli(),
-                exchange.route,
-                exchange.mode.name,
-                exchange.request.method,
-                exchange.request.path,
-                exchange.request.headers.toJson(),
-                body,
-                bodyRef,
-                exchange.status,
-                exchange.responseHeaders.toJson(),
-                framesInline,
-                framesRef,
-                exchange.clientDisconnected,
+        val columns =
+            linkedMapOf(
+                "id" to exchange.id,
+                "received_at" to exchange.receivedAt.toEpochMilli(),
+                "route" to exchange.route,
+                "mode" to exchange.mode.name,
+                "method" to exchange.request.method,
+                "path" to exchange.request.path,
+                "request_headers" to exchange.request.headers.toJson(),
+                "request_body" to body,
+                "request_body_ref" to bodyRef,
+                "status" to exchange.status,
+                "response_headers" to exchange.responseHeaders.toJson(),
+                "frames" to framesInline,
+                "frames_ref" to framesRef,
+                "client_disconnected" to exchange.clientDisconnected,
             )
-        connection.prepareStatement(INSERT).use { statement ->
-            values.forEachIndexed { i, value -> statement.setObject(i + 1, value) }
+        val names = columns.keys.joinToString()
+        val marks = columns.keys.joinToString { "?" }
+        connection.prepareStatement("INSERT INTO exchange ($names) VALUES ($marks)").use { statement
+            ->
+            columns.values.forEachIndexed { i, value -> statement.setObject(i + 1, value) }
             statement.executeUpdate()
         }
     }
@@ -91,7 +101,8 @@ class Store(home: Path) : AutoCloseable {
         }
     }
 
-    override fun close() = connection.close()
+    /** Waits for an in-flight call rather than closing the connection under it. */
+    override fun close() = runBlocking { lock.withLock { connection.close() } }
 
     private suspend fun <T> io(block: () -> T): T =
         withContext(Dispatchers.IO) { lock.withLock { block() } }
@@ -155,10 +166,6 @@ class Store(home: Path) : AutoCloseable {
             )"""
         const val INDEX =
             "CREATE INDEX IF NOT EXISTS exchange_received_at ON exchange (received_at)"
-        const val INSERT =
-            """INSERT INTO exchange (id, received_at, route, mode, method, path, request_headers,
-                request_body, request_body_ref, status, response_headers, frames, frames_ref,
-                client_disconnected) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"""
         const val SELECT = "SELECT * FROM exchange"
     }
 }

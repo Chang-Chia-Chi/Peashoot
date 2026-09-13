@@ -9,6 +9,7 @@ import io.ktor.client.request.post
 import io.ktor.client.request.setBody
 import io.ktor.client.statement.bodyAsText
 import io.ktor.http.ContentType
+import java.net.ServerSocket
 import java.nio.file.Files
 import java.nio.file.Path
 import java.security.MessageDigest
@@ -22,6 +23,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 
 /** What a record or passthrough route leaves in the data directory, seen through the store. */
@@ -32,12 +34,21 @@ class RecorderTest {
 
     private fun home(): Path = Files.createTempDirectory("peashoot-home")
 
-    private fun streamReply(frames: List<String>) =
+    private fun streamReply(
+        frames: List<String>,
+        cutAfterFrames: Int? = null,
+        beforeFrame: suspend (Int) -> Unit = {},
+    ) =
         FakeUpstream.Reply(
             contentType = ContentType.Text.EventStream,
             frames = frames,
             headers = mapOf("anthropic-ratelimit-tokens-remaining" to "9"),
+            beforeFrame = beforeFrame,
+            cutAfterFrames = cutAfterFrames,
         )
+
+    private suspend fun post(proxy: ProxyServer, body: String) =
+        HttpClient(CIO).post("${proxy.url}/v1/messages") { setBody(body) }
 
     @Test
     fun `record mode persists a streamed exchange with its frames and offsets, minus secrets`() =
@@ -46,12 +57,14 @@ class RecorderTest {
             val home = home()
             Store(home).use { store ->
                 FakeUpstream().use { upstream ->
-                    upstream.reply = { streamReply(FrameParser.parse(fixture).map { it.raw }) }
+                    val frames = FrameParser.parse(fixture).map { it.raw }
+                    upstream.reply = { streamReply(frames) { index -> if (index == 1) delay(50) } }
                     val config = ProxyConfig(port = 0, anthropicUpstream = upstream.url)
                     ProxyServer(config, listOf(Recorder(store))).use { proxy ->
                         HttpClient(CIO)
                             .post("${proxy.url}/v1/messages") {
                                 header("x-api-key", "sk-ant-SECRET")
+                                header("authorization", "Bearer SECRET-TOKEN")
                                 header("anthropic-beta", "kept")
                                 setBody("""{"model":"claude"}""")
                             }
@@ -68,6 +81,7 @@ class RecorderTest {
                 assertEquals("""{"model":"claude"}""", exchange.request.body.decodeToString())
                 assertEquals("kept", exchange.request.headers["anthropic-beta"])
                 assertNull(exchange.request.headers["x-api-key"])
+                assertNull(exchange.request.headers["authorization"])
                 assertEquals(Mode.RECORD, exchange.mode)
                 assertEquals(200, exchange.status)
                 assertEquals("9", exchange.responseHeaders["anthropic-ratelimit-tokens-remaining"])
@@ -77,7 +91,7 @@ class RecorderTest {
                 )
                 val offsets = recorded.frames.map { it.offsetMillis }
                 assertEquals(offsets.sorted(), offsets, "offsets never go backwards")
-                assertTrue(offsets.all { it >= 0 })
+                assertTrue(offsets.last() >= 50, "the held-back frame arrived later: $offsets")
                 assertEquals(exchange.id, store.get(exchange.id)?.exchange?.id)
             }
             // Nothing under the data directory, database or spill file, holds the secret.
@@ -119,6 +133,48 @@ class RecorderTest {
                 home.resolve("bodies").resolve(bodyName).readBytes(),
             )
         }
+
+    @Test
+    fun `a non-streaming response, an upstream error included, is stored as one frame`() =
+        runBlocking {
+            val body = """{"type":"error","error":{"type":"overloaded_error"}}"""
+            Store(home()).use { store ->
+                FakeUpstream().use { upstream ->
+                    upstream.reply = { FakeUpstream.Reply(status = 529, body = body) }
+                    val config = ProxyConfig(port = 0, anthropicUpstream = upstream.url)
+                    ProxyServer(config, listOf(Recorder(store))).use { proxy -> post(proxy, "{}") }
+                }
+                val recorded = store.list().single()
+                assertEquals(529, recorded.exchange.status)
+                assertEquals(listOf(body), recorded.frames.map { it.raw })
+            }
+        }
+
+    @Test
+    fun `an upstream cut mid-stream persists the frames that arrived`() = runBlocking {
+        val frames = FrameParser.parse(fixture("stream-with-tool-use.sse")).map { it.raw }
+        Store(home()).use { store ->
+            FakeUpstream().use { upstream ->
+                upstream.reply = { streamReply(frames, cutAfterFrames = 3) }
+                val config = ProxyConfig(port = 0, anthropicUpstream = upstream.url)
+                ProxyServer(config, listOf(Recorder(store))).use { proxy -> post(proxy, "{}") }
+            }
+            val recorded = store.list().single()
+            assertEquals(frames.take(3), recorded.frames.map { it.raw })
+        }
+    }
+
+    @Test
+    fun `a proxy-side failure had no source and records nothing`() = runBlocking {
+        val closedPort = ServerSocket(0).use { it.localPort }
+        Store(home()).use { store ->
+            val config = ProxyConfig(port = 0, anthropicUpstream = "http://127.0.0.1:$closedPort")
+            ProxyServer(config, listOf(Recorder(store))).use { proxy ->
+                assertEquals(502, post(proxy, "{}").status.value)
+            }
+            assertEquals(emptyList(), store.list())
+        }
+    }
 
     @Test
     fun `a passthrough route persists nothing`() = runBlocking {

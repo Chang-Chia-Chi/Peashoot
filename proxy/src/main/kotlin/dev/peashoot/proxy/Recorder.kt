@@ -9,16 +9,30 @@ import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.onEach
 
-/** Record mode persists every exchange when it completes; the other modes persist nothing here. */
+/**
+ * Record mode persists every exchange a source answered, when it ends; the other modes persist
+ * nothing here, and neither does a proxy-side failure, which never had a source.
+ */
 class Recorder(private val store: Store) : Interceptor {
-    /** Frames so far, per exchange. Only the exchange's own coroutine touches its list. */
+    /**
+     * Frames so far, per exchange with a source. Only the exchange's own coroutine touches its
+     * list.
+     */
     private val buffers = ConcurrentHashMap<String, MutableList<Frame>>()
 
-    override fun onFrames(exchange: Exchange, frames: Flow<Frame>): Flow<Frame> =
-        if (exchange.mode != Mode.RECORD) frames
-        else frames.onEach { buffers.getOrPut(exchange.id) { mutableListOf() } += it }
+    override fun onFrames(exchange: Exchange, frames: Flow<Frame>): Flow<Frame> {
+        if (exchange.mode != Mode.RECORD) return frames
+        val buffer = buffers.getOrPut(exchange.id) { mutableListOf() }
+        return frames.onEach { buffer += it }
+    }
 
-    override suspend fun onComplete(exchange: Exchange, outcome: Outcome) {
-        if (exchange.mode == Mode.RECORD) store.put(exchange, buffers.remove(exchange.id).orEmpty())
+    override suspend fun onComplete(exchange: Exchange, outcome: Outcome) = persist(exchange)
+
+    /** What arrived before the client left is kept, flagged. #9 keeps consuming and completes. */
+    override suspend fun onClientGone(exchange: Exchange) = persist(exchange)
+
+    private suspend fun persist(exchange: Exchange) {
+        val frames = buffers.remove(exchange.id) ?: return
+        store.put(exchange, frames)
     }
 }
