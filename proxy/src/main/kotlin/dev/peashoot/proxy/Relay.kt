@@ -37,6 +37,7 @@ import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.withContext
+import kotlinx.serialization.json.JsonPrimitive
 import org.slf4j.LoggerFactory
 
 private val log = LoggerFactory.getLogger("dev.peashoot.proxy")
@@ -88,9 +89,11 @@ suspend fun relay(
             Exchange.Request(
                 call.request.httpMethod.value,
                 call.request.uri,
-                call.request.headers.without(config.secretHeaders),
+                call.request.headers.without(config.lowercaseSecretHeaders),
                 body,
-            )
+            ),
+            route = DEFAULT_ROUTE,
+            mode = config.routes.getValue(DEFAULT_ROUTE),
         )
     // Every interceptor hears the request; the first source offered wins.
     val offered =
@@ -213,25 +216,11 @@ private suspend fun respondProxyFailure(
     )
     exchange.status = HttpStatusCode.BadGateway.value
     call.respondText(
-        """{"type":"peashoot_error","error":"upstream_unreachable","detail":${cause.toString().toJsonString()}}""",
+        """{"type":"peashoot_error","error":"upstream_unreachable","detail":${JsonPrimitive(cause.toString())}}""",
         ContentType.Application.Json,
         HttpStatusCode.BadGateway,
     )
     complete(exchange, interceptors)
-}
-
-/** This text as a JSON string literal, quotes included. */
-private fun String.toJsonString(): String = buildString {
-    append('"')
-    for (c in this@toJsonString) {
-        when {
-            c == '"' -> append("\\\"")
-            c == '\\' -> append("\\\\")
-            c < ' ' -> append("\\u%04x".format(c.code))
-            else -> append(c)
-        }
-    }
-    append('"')
 }
 
 /** The terminal source: the provider's response, parsed into frames as its bytes arrive. */

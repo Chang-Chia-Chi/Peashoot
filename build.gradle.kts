@@ -1,4 +1,5 @@
 import com.ncorti.ktfmt.gradle.KtfmtExtension
+import org.gradle.api.tasks.testing.logging.TestExceptionFormat
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 import org.jetbrains.kotlin.gradle.dsl.KotlinJvmProjectExtension
 
@@ -45,6 +46,10 @@ subprojects {
 
     dependencies { "testImplementation"(kotlinTest) }
 
-    tasks.withType<Test>().configureEach { useJUnitPlatform() }
+    tasks.withType<Test>().configureEach {
+        useJUnitPlatform()
+        // CI keeps only the console, so a failing assertion must say what it saw there.
+        testLogging { exceptionFormat = TestExceptionFormat.FULL }
+    }
     tasks.named("check") { dependsOn("ktfmtCheck") }
 }

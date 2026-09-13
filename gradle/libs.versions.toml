@@ -2,18 +2,26 @@
 [versions]
 archunit = "1.5.0"
 detekt = "2.0.0-alpha.6"
+hikaricp = "6.3.0"
+jdbi = "3.49.3"
 kotlin = "2.4.20"
 kotlinx-coroutines = "1.11.0"
+kotlinx-serialization = "1.11.0"
 kover = "0.9.9"
 ktfmt-plugin = "0.27.0"
 ktor = "3.5.2"
 slf4j = "2.0.19"
+sqlite-jdbc = "3.49.1.0"
+tomlj = "1.1.1"
 ulid-creator = "5.2.3"
 
 [libraries]
 archunit-junit5 = { module = "com.tngtech.archunit:archunit-junit5", version.ref = "archunit" }
+hikaricp = { module = "com.zaxxer:HikariCP", version.ref = "hikaricp" }
+jdbi3-core = { module = "org.jdbi:jdbi3-core", version.ref = "jdbi" }
 kotlin-test = { module = "org.jetbrains.kotlin:kotlin-test", version.ref = "kotlin" }
 kotlinx-coroutines-core = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-core", version.ref = "kotlinx-coroutines" }
+kotlinx-serialization-json = { module = "org.jetbrains.kotlinx:kotlinx-serialization-json", version.ref = "kotlinx-serialization" }
 ktor-http = { module = "io.ktor:ktor-http", version.ref = "ktor" }
 ktor-server-core = { module = "io.ktor:ktor-server-core", version.ref = "ktor" }
 ktor-server-netty = { module = "io.ktor:ktor-server-netty", version.ref = "ktor" }
@@ -21,6 +29,8 @@ ktor-server-call-logging = { module = "io.ktor:ktor-server-call-logging", versio
 ktor-client-core = { module = "io.ktor:ktor-client-core", version.ref = "ktor" }
 ktor-client-cio = { module = "io.ktor:ktor-client-cio", version.ref = "ktor" }
 slf4j-simple = { module = "org.slf4j:slf4j-simple", version.ref = "slf4j" }
+sqlite-jdbc = { module = "org.xerial:sqlite-jdbc", version.ref = "sqlite-jdbc" }
+tomlj = { module = "org.tomlj:tomlj", version.ref = "tomlj" }
 ulid-creator = { module = "com.github.f4b6a3:ulid-creator", version.ref = "ulid-creator" }
 
 [plugins]

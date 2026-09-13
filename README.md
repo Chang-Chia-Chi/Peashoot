@@ -25,10 +25,11 @@ Then point a client at it. Claude Code needs one variable and keeps its saved lo
 ANTHROPIC_BASE_URL=http://localhost:8787 claude
 ```
 
-Environment (a config file arrives with the data directory):
+The data directory holds `peashoot.db` (the store), `bodies/` (request bodies and frame lists over 64 KB, named by SHA-256), and `peashoot.toml`, written with defaults on first start: port, upstream, secret headers, and the mode of each route (`record`, `replay`, or `passthrough`). Environment variables override the file:
 
 | Variable | Default | Meaning |
 |---|---|---|
+| `PEASHOOT_HOME` | `~/.peashoot` | The data directory |
 | `PEASHOOT_PORT` | `8787` | Listen port, loopback only |
 | `PEASHOOT_ANTHROPIC_UPSTREAM` | `https://api.anthropic.com` | Where Messages requests go |
 | `PEASHOOT_DUMP_FRAMES` | unset | Append every raw upstream response to this file, for capturing fixtures |
