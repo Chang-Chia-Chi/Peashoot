@@ -5,39 +5,23 @@ import dev.peashoot.core.Mode
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.cio.CIO as ClientCIO
 import io.ktor.http.HttpHeaders
-import io.ktor.http.HttpMethod
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.application.Application
+import io.ktor.server.application.ApplicationCallPipeline
+import io.ktor.server.application.call
 import io.ktor.server.application.install
 import io.ktor.server.engine.EmbeddedServer
 import io.ktor.server.engine.embeddedServer
 import io.ktor.server.netty.Netty
 import io.ktor.server.plugins.calllogging.CallLogging
 import io.ktor.server.request.header
-import io.ktor.server.request.httpMethod
-import io.ktor.server.request.path
+import io.ktor.server.request.uri
 import io.ktor.server.response.respond
 import io.ktor.server.response.respondText
+import io.ktor.server.routing.head
 import io.ktor.server.routing.route
 import io.ktor.server.routing.routing
-import java.nio.file.Path
 import kotlinx.coroutines.runBlocking
-
-data class ProxyConfig(
-    val port: Int = 8787,
-    val anthropicUpstream: String = "https://api.anthropic.com",
-    /** Debug: append every raw upstream response to this file, for building fixtures. */
-    val dumpFrames: Path? = null,
-    /** Sent upstream, never kept: not on the Exchange, not in any log or file. Any case. */
-    val secretHeaders: Set<String> = setOf("authorization", "x-api-key"),
-    /** What each route does; every request takes [DEFAULT_ROUTE] until routing arrives. */
-    val routes: Map<String, Mode> = mapOf(DEFAULT_ROUTE to Mode.RECORD),
-) {
-    /** [secretHeaders] lower-cased once, since header names compare case-insensitively. */
-    val lowercaseSecretHeaders: Set<String> = secretHeaders.map(String::lowercase).toSet()
-}
-
-const val DEFAULT_ROUTE = "default"
 
 /**
  * The headless proxy: one Ktor server, loopback only, relaying every request to the configured
@@ -50,6 +34,11 @@ class ProxyServer(
     init {
         require(DEFAULT_ROUTE in config.routes) {
             "route '$DEFAULT_ROUTE' is not configured; every request takes it until routing arrives"
+        }
+        // Checked here, not only in the loader: a directly constructed config must fail the same
+        // way.
+        require(Mode.REPLAY !in config.routes.values) {
+            "replay mode is not implemented yet (#12); use record or passthrough"
         }
     }
 
@@ -84,13 +73,24 @@ fun Application.relayModule(
     install(CallLogging) {
         disableDefaultColors()
     } // method, path, status, duration; never headers or bodies
+    // A request target that does not start with `/` (`@evil.com/v1/messages`) would concatenate in
+    // relay() into a URL whose host is evil.com, secret headers and all. Refused before routing, so
+    // no handler, present or future, sees one.
+    intercept(ApplicationCallPipeline.Plugins) {
+        if (!call.request.uri.startsWith("/")) {
+            call.respondText(
+                "request target must start with /",
+                status = HttpStatusCode.BadRequest,
+            )
+            finish()
+        }
+    }
     routing {
+        // Claude Code's reachability probe; answered here, never relayed.
+        head("/api/hello") { call.respond(HttpStatusCode.OK) }
         route("{...}") {
             handle {
                 when {
-                    // Claude Code's reachability probe; answered here, never relayed.
-                    call.request.httpMethod == HttpMethod.Head &&
-                        call.request.path() == "/api/hello" -> call.respond(HttpStatusCode.OK)
                     // Codex tries a WebSocket upgrade first and falls back to HTTP on a clean
                     // refusal.
                     call.request.header(HttpHeaders.Upgrade) != null ->

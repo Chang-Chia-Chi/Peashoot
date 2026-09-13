@@ -52,7 +52,7 @@ class FakeUpstream : AutoCloseable {
 
     /** Handlers append from Netty threads while the test thread reads. */
     val received = CopyOnWriteArrayList<Received>()
-    var reply: (Received) -> Reply = { Reply() }
+    @Volatile var reply: (Received) -> Reply = { Reply() }
 
     // The engine call is intercepted directly, not through routing, so a cut can reach the socket.
     private val server: EmbeddedServer<*, *> =

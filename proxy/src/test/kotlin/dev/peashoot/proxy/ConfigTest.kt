@@ -8,6 +8,7 @@ import kotlin.io.path.writeText
 import kotlin.test.Test
 import kotlin.test.assertContains
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 
 /** The data directory and its config file, from a first start to an edited file. */
@@ -52,9 +53,6 @@ class ConfigTest {
 
                 [routes.default]
                 mode = "passthrough"
-
-                [routes.ci]
-                mode = "replay"
                 """
                     .trimIndent()
             )
@@ -63,7 +61,7 @@ class ConfigTest {
         assertEquals(9999, fromFile.port)
         assertEquals("http://localhost:11434", fromFile.anthropicUpstream)
         assertEquals(setOf("authorization", "x-api-key", "x-goog-api-key"), fromFile.secretHeaders)
-        assertEquals(mapOf("default" to Mode.PASSTHROUGH, "ci" to Mode.REPLAY), fromFile.routes)
+        assertEquals(mapOf("default" to Mode.PASSTHROUGH), fromFile.routes)
 
         val fromEnv =
             loadConfig(
@@ -76,5 +74,40 @@ class ConfigTest {
         assertEquals(1234, fromEnv.port)
         assertEquals("http://127.0.0.1:1", fromEnv.anthropicUpstream)
         assertEquals(fromFile.routes, fromEnv.routes)
+    }
+
+    @Test
+    fun `a route in replay mode is refused at startup until replay is implemented`() {
+        // At the server, not only the loader: a directly constructed config fails the same way.
+        val config = ProxyConfig(routes = mapOf(DEFAULT_ROUTE to Mode.REPLAY))
+
+        val error = assertFailsWith<IllegalArgumentException> { ProxyServer(config) }
+        assertContains(error.message.orEmpty(), "#12")
+    }
+
+    @Test
+    fun `a route other than default is refused until routing is wired`() {
+        val home = Files.createTempDirectory("peashoot-home")
+        home
+            .resolve("peashoot.toml")
+            .writeText(
+                """
+                [routes.ci]
+                mode = "record"
+                """
+                    .trimIndent()
+            )
+
+        val error = assertFailsWith<IllegalStateException> { loadConfig(home, env()) }
+        assertContains(error.message.orEmpty(), "routing is not wired")
+    }
+
+    @Test
+    fun `a non-string secretHeaders entry is refused with a typed message`() {
+        val home = Files.createTempDirectory("peashoot-home")
+        home.resolve("peashoot.toml").writeText("""secretHeaders = [1, true]""")
+
+        val error = assertFailsWith<IllegalStateException> { loadConfig(home, env()) }
+        assertContains(error.message.orEmpty(), "secretHeaders must be a list of strings")
     }
 }

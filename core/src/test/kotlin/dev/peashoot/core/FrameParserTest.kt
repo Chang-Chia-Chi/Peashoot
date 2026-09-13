@@ -3,6 +3,7 @@ package dev.peashoot.core
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 
 class FrameParserTest {
@@ -51,7 +52,7 @@ class FrameParserTest {
         val parser = FrameParser(streaming = true)
         val byteAtATime =
             bytes.indices.flatMap { i ->
-                parser.feed(byteArrayOf(bytes[i]), offsetMillis = i.toLong())
+                parser.feed(byteArrayOf(bytes[i]), length = 1, offsetMillis = i.toLong())
             } + listOfNotNull(parser.end(bytes.size.toLong()))
 
         assertEquals(whole.map { it.raw }, byteAtATime.map { it.raw })
@@ -65,9 +66,9 @@ class FrameParserTest {
     fun `a non-streaming JSON response is one frame, however it arrived`() {
         val bytes = fixture("non-streaming-401.json")
         val parser = FrameParser(streaming = false)
-        val early =
-            parser.feed(bytes.copyOfRange(0, 10), 0) +
-                parser.feed(bytes.copyOfRange(10, bytes.size), 5)
+        val head = bytes.copyOfRange(0, 10)
+        val tail = bytes.copyOfRange(10, bytes.size)
+        val early = parser.feed(head, head.size, 0) + parser.feed(tail, tail.size, 5)
         val frame = parser.end(7)
 
         assertEquals(emptyList(), early)
@@ -98,15 +99,35 @@ class FrameParserTest {
     }
 
     @Test
+    fun `a malformed byte ends the response rather than being rewritten`() {
+        // A lone 0x80 is a continuation byte with nothing to continue: no valid split produces it.
+        val bytes = "event: x\ndata: ".toByteArray() + 0x80.toByte() + "\n\n".toByteArray()
+
+        assertFailsWith<CharacterCodingException> {
+            FrameParser(streaming = true).feed(bytes, bytes.size, offsetMillis = 0)
+        }
+    }
+
+    @Test
+    fun `a stream cut inside a multi-byte character ends on the last complete one`() {
+        val bytes = "event: content_block_delta\ndata: {\"text\":\"café".toByteArray()
+        val cut = bytes.copyOfRange(0, bytes.size - 1) // é is 0xC3 0xA9; only 0xC3 arrived
+        val parser = FrameParser(streaming = true)
+
+        assertEquals(emptyList(), parser.feed(cut, cut.size, offsetMillis = 0))
+        assertEquals("event: content_block_delta\ndata: {\"text\":\"caf", parser.end(0)?.raw)
+    }
+
+    @Test
     fun `a multi-byte character split across chunks decodes intact`() {
         val text = "event: content_block_delta\ndata: {\"text\":\"café\"}\n\n"
         val bytes = text.toByteArray()
         val split = bytes.indexOf(0xC3.toByte()) + 1 // between the two bytes of é
         val parser = FrameParser(streaming = true)
 
-        val frames =
-            parser.feed(bytes.copyOfRange(0, split), 0) +
-                parser.feed(bytes.copyOfRange(split, bytes.size), 1)
+        val head = bytes.copyOfRange(0, split)
+        val tail = bytes.copyOfRange(split, bytes.size)
+        val frames = parser.feed(head, head.size, 0) + parser.feed(tail, tail.size, 1)
 
         assertEquals(listOf(Frame(text, 1)), frames)
     }

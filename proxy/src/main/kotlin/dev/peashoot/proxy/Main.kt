@@ -11,14 +11,23 @@ fun main(): Unit = runBlocking {
     val home = homeDir()
     val config = loadConfig(home)
     Store(home).use { store ->
-        ProxyServer(config, listOf(Recorder(store))).use { server ->
-            log.info(
-                "Peashoot listening on {}, relaying to {}, data in {}",
-                server.url,
-                config.anthropicUpstream,
-                home,
+        val server = ProxyServer(config, listOf(Recorder(store)))
+        // `use` unwinds only if the server fails to start. Ktor's own shutdown hook stops only the
+        // engine, and awaitCancellation never returns, so on SIGINT/SIGTERM this hook is what
+        // closes the upstream client and then the connection pool.
+        Runtime.getRuntime()
+            .addShutdownHook(
+                Thread {
+                    server.close()
+                    store.close()
+                }
             )
-            awaitCancellation() // Ktor's own shutdown hook stops the server on SIGINT/SIGTERM.
-        }
+        log.info(
+            "Peashoot listening on {}, relaying to {}, data in {}",
+            server.url,
+            config.anthropicUpstream,
+            home,
+        )
+        awaitCancellation()
     }
 }

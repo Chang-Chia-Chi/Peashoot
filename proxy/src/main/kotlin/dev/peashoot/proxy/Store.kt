@@ -64,6 +64,8 @@ class Store(home: Path) : AutoCloseable {
         }
 
     suspend fun put(exchange: Exchange, frames: List<Frame>): Unit = io { handle ->
+        // Only a sourced exchange is persisted; one without a response is a programming error.
+        val response = checkNotNull(exchange.response) { "exchange ${exchange.id} has no response" }
         val (body, bodyRef) = inlineOrSpill(exchange.request.body)
         val (framesInline, framesRef) = inlineOrSpill(frames.toJson().toByteArray())
         val columns =
@@ -77,18 +79,13 @@ class Store(home: Path) : AutoCloseable {
                 "request_headers" to exchange.request.headers.toJson(),
                 "request_body" to body,
                 "request_body_ref" to bodyRef,
-                "status" to exchange.status,
-                "response_headers" to exchange.responseHeaders.toJson(),
+                "status" to response.status,
+                "response_headers" to response.headers.toJson(),
                 "frames" to framesInline,
                 "frames_ref" to framesRef,
                 "client_disconnected" to exchange.clientDisconnected,
             )
-        val names = columns.keys.joinToString()
-        val binds = columns.keys.joinToString { ":$it" }
-        handle
-            .createUpdate("INSERT INTO exchange ($names) VALUES ($binds)")
-            .bindMap(columns)
-            .execute()
+        handle.createUpdate(INSERT).bindMap(columns).execute()
     }
 
     suspend fun get(id: String): Recorded? = io { handle ->
@@ -145,8 +142,8 @@ class Store(home: Path) : AutoCloseable {
                 id = getString("id"),
                 receivedAt = Instant.ofEpochMilli(getLong("received_at")),
             )
-        exchange.status = getInt("status").takeUnless { wasNull() }
-        exchange.responseHeaders = headersFromJson(getString("response_headers"))
+        exchange.response =
+            Exchange.Response(getInt("status"), headersFromJson(getString("response_headers")))
         exchange.clientDisconnected = getBoolean("client_disconnected")
         val frames = framesFromJson(inlineOrSpilled("frames", "frames_ref").decodeToString())
         return Recorded(exchange, frames)
@@ -177,11 +174,24 @@ class Store(home: Path) : AutoCloseable {
                 request_headers TEXT NOT NULL,
                 request_body BLOB,
                 request_body_ref TEXT,
-                status INTEGER,
+                status INTEGER NOT NULL,
                 response_headers TEXT NOT NULL,
                 frames BLOB,
                 frames_ref TEXT,
                 client_disconnected INTEGER NOT NULL
+            )"""
+        /**
+         * Names the same 14 columns as [SCHEMA] and [put]'s map; RecorderTest's round trip is the
+         * check when one is added.
+         */
+        const val INSERT =
+            """INSERT INTO exchange (
+                id, received_at, route, mode, method, path, request_headers, request_body,
+                request_body_ref, status, response_headers, frames, frames_ref, client_disconnected
+            ) VALUES (
+                :id, :received_at, :route, :mode, :method, :path, :request_headers, :request_body,
+                :request_body_ref, :status, :response_headers, :frames, :frames_ref,
+                :client_disconnected
             )"""
         /** Matches the order [list] asks for, so newest-first needs no sort. */
         const val INDEX =

@@ -8,6 +8,25 @@ import org.tomlj.TomlTable
 
 const val CONFIG_FILE = "peashoot.toml"
 
+const val DEFAULT_ROUTE = "default"
+
+data class ProxyConfig(
+    val port: Int = 8787,
+    val anthropicUpstream: String = "https://api.anthropic.com",
+    /** Debug: append every raw upstream response to this file, for building fixtures. */
+    val dumpFrames: Path? = null,
+    /** Sent upstream, never kept: not on the Exchange, not in any log or file. Any case. */
+    val secretHeaders: Set<String> = setOf("authorization", "x-api-key"),
+    /** What each route does; every request takes [DEFAULT_ROUTE] until routing arrives. */
+    val routes: Map<String, Mode> = mapOf(DEFAULT_ROUTE to Mode.RECORD),
+) {
+    /** [secretHeaders] lower-cased once, since header names compare case-insensitively. */
+    val lowercaseSecretHeaders: Set<String> = secretHeaders.map(String::lowercase).toSet()
+
+    /** [anthropicUpstream] without a trailing slash, so a request path appends directly. */
+    val upstreamBase: String = anthropicUpstream.trimEnd('/')
+}
+
 /** The data directory: `PEASHOOT_HOME`, else `.peashoot` under the user's home. */
 fun homeDir(env: (String) -> String? = System::getenv): Path =
     env("PEASHOOT_HOME")?.let(Path::of) ?: Path.of(System.getProperty("user.home"), ".peashoot")
@@ -35,8 +54,11 @@ fun loadConfig(home: Path, env: (String) -> String? = System::getenv): ProxyConf
                 ?: defaults.anthropicUpstream,
         dumpFrames = env("PEASHOOT_DUMP_FRAMES")?.let(Path::of),
         secretHeaders =
-            toml.getArray("secretHeaders")?.toList()?.map { it.toString() }?.toSet()
-                ?: defaults.secretHeaders,
+            toml
+                .getArray("secretHeaders")
+                ?.toList()
+                ?.map { it as? String ?: error("secretHeaders must be a list of strings, not $it") }
+                ?.toSet() ?: defaults.secretHeaders,
         routes = defaults.routes + toml.getTable("routes")?.routes().orEmpty(),
     )
 }
@@ -60,7 +82,10 @@ private fun ProxyConfig.toToml(): String = buildString {
 
 private fun TomlTable.routes(): Map<String, Mode> =
     keySet().associateWith { name ->
-        val mode = getString(listOf(name, "mode")) ?: error("routes.$name.mode is required")
-        Mode.entries.firstOrNull { it.name.equals(mode, ignoreCase = true) }
-            ?: error("routes.$name.mode must be record, replay, or passthrough, not $mode")
+        check(name == DEFAULT_ROUTE) {
+            "routes.$name: routing is not wired yet; only the '$DEFAULT_ROUTE' route exists"
+        }
+        val modeString = getString(listOf(name, "mode")) ?: error("routes.$name.mode is required")
+        Mode.entries.firstOrNull { it.name.equals(modeString, ignoreCase = true) }
+            ?: error("routes.$name.mode must be record, replay, or passthrough, not $modeString")
     }

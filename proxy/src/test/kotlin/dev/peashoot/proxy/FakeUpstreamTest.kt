@@ -50,11 +50,12 @@ class FakeUpstreamTest {
                 upstream.reply = { streamOf(FrameParser.parse(fixture).map { it.raw }) }
                 ProxyServer(ProxyConfig(port = 0, anthropicUpstream = upstream.url)).use { proxy ->
                     val body =
-                        HttpClient(CIO)
-                            .post("${proxy.url}/v1/messages") { setBody("{}") }
-                            .bodyAsChannel()
-                            .readRemaining()
-                            .readByteArray()
+                        HttpClient(CIO).use {
+                            it.post("${proxy.url}/v1/messages") { setBody("{}") }
+                                .bodyAsChannel()
+                                .readRemaining()
+                                .readByteArray()
+                        }
                     assertContentEquals(fixture, body)
                 }
             }
@@ -64,15 +65,16 @@ class FakeUpstreamTest {
     fun `returns 429, 529, and 500 with the given bodies, forwarded unchanged`() = runBlocking {
         FakeUpstream().use { upstream ->
             ProxyServer(ProxyConfig(port = 0, anthropicUpstream = upstream.url)).use { proxy ->
-                for (status in listOf(429, 529, 500)) {
-                    val body = """{"type":"error","error":{"type":"status_$status"}}"""
-                    upstream.reply = { FakeUpstream.Reply(status = status, body = body) }
+                HttpClient(CIO).use { client ->
+                    for (status in listOf(429, 529, 500)) {
+                        val body = """{"type":"error","error":{"type":"status_$status"}}"""
+                        upstream.reply = { FakeUpstream.Reply(status = status, body = body) }
 
-                    val response =
-                        HttpClient(CIO).post("${proxy.url}/v1/messages") { setBody("{}") }
+                        val response = client.post("${proxy.url}/v1/messages") { setBody("{}") }
 
-                    assertEquals(status, response.status.value)
-                    assertEquals(body, response.bodyAsText())
+                        assertEquals(status, response.status.value)
+                        assertEquals(body, response.bodyAsText())
+                    }
                 }
             }
         }
@@ -85,15 +87,17 @@ class FakeUpstreamTest {
         FakeUpstream().use { upstream ->
             upstream.reply = { streamOf(frames) { index -> if (index == 1) delay(300) } }
             ProxyServer(ProxyConfig(port = 0, anthropicUpstream = upstream.url)).use { proxy ->
-                HttpClient(CIO)
-                    .preparePost("${proxy.url}/v1/messages") { setBody("{}") }
-                    .execute { response ->
-                        val channel = response.bodyAsChannel()
-                        channel.readLine()
-                        val firstAt = TimeSource.Monotonic.markNow()
-                        channel.readRemaining().readString()
-                        assertTrue(firstAt.elapsedNow().inWholeMilliseconds >= 250, "$firstAt")
-                    }
+                HttpClient(CIO).use { client ->
+                    client
+                        .preparePost("${proxy.url}/v1/messages") { setBody("{}") }
+                        .execute { response ->
+                            val channel = response.bodyAsChannel()
+                            channel.readLine()
+                            val firstAt = TimeSource.Monotonic.markNow()
+                            channel.readRemaining().readString()
+                            assertTrue(firstAt.elapsedNow().inWholeMilliseconds >= 250, "$firstAt")
+                        }
+                }
             }
         }
     }
@@ -107,9 +111,9 @@ class FakeUpstreamTest {
                 upstream.reply = { streamOf(frames, cutAfterFrames = 1) }
                 ProxyServer(ProxyConfig(port = 0, anthropicUpstream = upstream.url)).use { proxy ->
                     val body =
-                        HttpClient(CIO)
-                            .post("${proxy.url}/v1/messages") { setBody("{}") }
-                            .bodyAsText()
+                        HttpClient(CIO).use {
+                            it.post("${proxy.url}/v1/messages") { setBody("{}") }.bodyAsText()
+                        }
 
                     // The relay ends its own response cleanly; whether to propagate the cut is
                     // the client-gone and resume tickets' decision.

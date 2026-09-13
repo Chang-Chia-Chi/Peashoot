@@ -1,6 +1,5 @@
 package dev.peashoot.proxy
 
-import dev.peashoot.core.Decision
 import dev.peashoot.core.Exchange
 import dev.peashoot.core.Frame
 import dev.peashoot.core.FrameParser
@@ -31,6 +30,7 @@ import io.ktor.utils.io.readAvailable
 import io.ktor.utils.io.writeStringUtf8
 import java.io.IOException
 import java.nio.channels.UnresolvedAddressException
+import java.nio.charset.CharacterCodingException
 import kotlin.coroutines.cancellation.CancellationException
 import kotlin.time.TimeSource
 import kotlinx.coroutines.NonCancellable
@@ -95,19 +95,18 @@ suspend fun relay(
             route = DEFAULT_ROUTE,
             mode = config.routes.getValue(DEFAULT_ROUTE),
         )
-    // Every interceptor hears the request; the first source offered wins.
-    val offered =
-        interceptors
-            .map { it.onRequest(exchange) }
-            .firstNotNullOfOrNull { (it as? Decision.Respond)?.source }
+    // Every interceptor hears the request; the first source offered wins. mapNotNull is eager on
+    // purpose: firstNotNullOfOrNull would stop asking at the first answer.
+    val offered = interceptors.mapNotNull { it.onRequest(exchange) }.firstOrNull()
     if (offered != null) {
         respondFrom(call, exchange, offered, interceptors)
         return
     }
 
     val requestContentType = call.request.header(HttpHeaders.ContentType)?.let(ContentType::parse)
+    // The target starts with `/` (relayModule refuses others), so it can only extend the path.
     val statement =
-        upstream.prepareRequest(config.anthropicUpstream.trimEnd('/') + call.request.uri) {
+        upstream.prepareRequest(config.upstreamBase + call.request.uri) {
             method = call.request.httpMethod
             headers.appendAll(call.request.headers.without(notForwardedToUpstream))
             if (body.isNotEmpty() || requestContentType != null)
@@ -146,8 +145,7 @@ private suspend fun respondFrom(
     source: FrameSource,
     interceptors: List<Interceptor>,
 ) {
-    exchange.status = source.status
-    exchange.responseHeaders = source.headers
+    exchange.response = Exchange.Response(source.status, source.headers)
     val frames =
         interceptors.fold(source.frames()) { acc, interceptor ->
             interceptor.onFrames(exchange, acc)
@@ -160,7 +158,7 @@ private suspend fun respondFrom(
                 source.headers[HttpHeaders.ContentType]?.let(ContentType::parse)
 
             override suspend fun writeTo(channel: ByteWriteChannel) =
-                writeFrames(channel, exchange, frames, interceptors)
+                writeFrames(channel, exchange, source.status, frames, interceptors)
         }
     )
 }
@@ -173,6 +171,7 @@ private suspend fun respondFrom(
 private suspend fun writeFrames(
     channel: ByteWriteChannel,
     exchange: Exchange,
+    status: Int,
     frames: Flow<Frame>,
     interceptors: List<Interceptor>,
 ) {
@@ -183,18 +182,18 @@ private suspend fun writeFrames(
             channel.flush()
         }
     } catch (e: CancellationException) {
-        // The engine cancels the writer when the client goes away. #9 verifies and extends this.
+        // The engine cancels the writer when the client goes away. #10 verifies and extends this.
         clientGone = true
         exchange.clientDisconnected = true
         withContext(NonCancellable) { interceptors.forEach { it.onClientGone(exchange) } }
         throw e
     } finally {
-        if (!clientGone) complete(exchange, interceptors)
+        if (!clientGone) complete(exchange, status, interceptors)
     }
 }
 
-private suspend fun complete(exchange: Exchange, interceptors: List<Interceptor>) {
-    val outcome = Outcome(checkNotNull(exchange.status))
+private suspend fun complete(exchange: Exchange, status: Int, interceptors: List<Interceptor>) {
+    val outcome = Outcome(status)
     interceptors.forEach { it.onComplete(exchange, outcome) }
 }
 
@@ -214,13 +213,13 @@ private suspend fun respondProxyFailure(
         exchange.request.path,
         cause.toString(),
     )
-    exchange.status = HttpStatusCode.BadGateway.value
+    exchange.response = Exchange.Response(HttpStatusCode.BadGateway.value, Headers.Empty)
     call.respondText(
         """{"type":"peashoot_error","error":"upstream_unreachable","detail":${JsonPrimitive(cause.toString())}}""",
         ContentType.Application.Json,
         HttpStatusCode.BadGateway,
     )
-    complete(exchange, interceptors)
+    complete(exchange, HttpStatusCode.BadGateway.value, interceptors)
 }
 
 /** The terminal source: the provider's response, parsed into frames as its bytes arrive. */
@@ -246,10 +245,19 @@ private class UpstreamSource(private val response: HttpResponse, private val dum
                 if (read > 0) {
                     dump?.append(buffer, 0, read)
                     val offset = start.elapsedNow().inWholeMilliseconds
-                    parser.feed(buffer.copyOf(read), offset).forEach { emit(it) }
+                    parser.feed(buffer, read, offset).forEach { emit(it) }
                 }
             }
             parser.end(start.elapsedNow().inWholeMilliseconds)?.let { emit(it) }
+        } catch (e: CharacterCodingException) {
+            // Ends the response loudly: Ktor logs the rethrow at DEBUG only.
+            log.warn(
+                "invalid UTF-8 from upstream for {} {}; response ended: {}",
+                response.call.request.method.value,
+                response.call.request.url.encodedPath,
+                e.toString(),
+            )
+            throw e
         } finally {
             dump?.close()
         }

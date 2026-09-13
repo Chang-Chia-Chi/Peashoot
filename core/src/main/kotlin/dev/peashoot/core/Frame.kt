@@ -3,8 +3,9 @@ package dev.peashoot.core
 /**
  * One unit of a response as the client receives it: an SSE event block, or a whole non-streaming
  * body. [raw] is the text exactly as it arrived, so writing frames back out reproduces the stream
- * byte for byte (given valid UTF-8, which every provider sends). [offsetMillis] is the arrival time
- * relative to the start of the response.
+ * byte for byte; a malformed byte ends the response rather than being rewritten as U+FFFD, so a
+ * recording is never silently corrupted. [offsetMillis] is the arrival time relative to the start
+ * of the response.
  */
 data class Frame(val raw: String, val offsetMillis: Long) {
     /**
@@ -39,10 +40,15 @@ class FrameParser(private val streaming: Boolean) {
     private var pending = ByteArray(0)
     private var lineStart = 0
 
-    /** The frames these bytes complete, each stamped with [offsetMillis]. */
-    fun feed(bytes: ByteArray, offsetMillis: Long): List<Frame> {
+    /**
+     * The frames the first [length] bytes of [bytes] complete, each stamped with [offsetMillis].
+     * The caller keeps its read buffer; only the bytes it just filled are taken.
+     */
+    fun feed(bytes: ByteArray, length: Int, offsetMillis: Long): List<Frame> {
         val scanFrom = pending.size
-        pending += bytes
+        val grown = pending.copyOf(scanFrom + length)
+        bytes.copyInto(grown, destinationOffset = scanFrom, startIndex = 0, endIndex = length)
+        pending = grown
         if (!streaming) return emptyList()
         val frames = ArrayList<Frame>()
         var frameStart = 0
@@ -51,7 +57,14 @@ class FrameParser(private val streaming: Boolean) {
             val blankLine = i == lineStart || (i == lineStart + 1 && pending[lineStart] == RETURN)
             lineStart = i + 1
             if (blankLine) {
-                frames += Frame(pending.decodeToString(frameStart, i + 1), offsetMillis)
+                // ponytail: a malformed byte here throws away the valid frames this call already
+                // decoded; the stream is ending anyway. Park the exception and rethrow on the next
+                // call if a chunk of good frames turns out to matter.
+                frames +=
+                    Frame(
+                        pending.decodeToString(frameStart, i + 1, throwOnInvalidSequence = true),
+                        offsetMillis,
+                    )
                 frameStart = i + 1
             }
         }
@@ -62,20 +75,58 @@ class FrameParser(private val streaming: Boolean) {
         return frames
     }
 
-    /** The unterminated remainder, if any: a non-streaming body, or the tail of a cut stream. */
+    /**
+     * The unterminated remainder, if any: a non-streaming body, or the tail of a cut stream. A cut
+     * inside a multi-byte character drops that character's leading bytes, so the frame ends on the
+     * last complete one.
+     */
     fun end(offsetMillis: Long): Frame? {
         val rest = pending
         pending = ByteArray(0)
         lineStart = 0
-        return if (rest.isEmpty()) null else Frame(rest.decodeToString(), offsetMillis)
+        val complete = rest.size - rest.incompleteTail()
+        return if (complete == 0) null
+        else Frame(rest.decodeToString(0, complete, throwOnInvalidSequence = true), offsetMillis)
     }
 
     companion object {
         private const val NEWLINE = '\n'.code.toByte()
         private const val RETURN = '\r'.code.toByte()
+        private const val BYTE_MASK = 0xFF
+        private const val CONTINUATION_MASK = 0xC0
+        private const val CONTINUATION = 0x80
+        private const val LONGEST_CHARACTER = 4
+        private val LEAD_OF_4 = 0xF0..0xF7
+        private val LEAD_OF_3 = 0xE0..0xEF
+        private val LEAD_OF_2 = 0xC2..0xDF
+
+        /**
+         * How many trailing bytes start a multi-byte character that has not finished: 0 when the
+         * array ends on a complete character, or on bytes that are malformed either way and are
+         * left for the strict decode to report.
+         */
+        private fun ByteArray.incompleteTail(): Int {
+            var lead = size - 1
+            while (lead >= 0 && size - lead < LONGEST_CHARACTER && isContinuation(this[lead])) {
+                lead--
+            }
+            val expected =
+                if (lead < 0) 0
+                else
+                    when (this[lead].toInt() and BYTE_MASK) {
+                        in LEAD_OF_4 -> 4
+                        in LEAD_OF_3 -> 3
+                        in LEAD_OF_2 -> 2
+                        else -> 0
+                    }
+            val present = size - lead
+            return if (present < expected) present else 0
+        }
+
+        private fun isContinuation(byte: Byte) = byte.toInt() and CONTINUATION_MASK == CONTINUATION
 
         /** Parses a complete stream, every frame at offset 0. */
         fun parse(bytes: ByteArray) =
-            FrameParser(streaming = true).run { feed(bytes, 0) + listOfNotNull(end(0)) }
+            FrameParser(streaming = true).run { feed(bytes, bytes.size, 0) + listOfNotNull(end(0)) }
     }
 }
