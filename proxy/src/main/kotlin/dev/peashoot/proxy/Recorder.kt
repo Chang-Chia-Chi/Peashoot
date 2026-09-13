@@ -48,13 +48,10 @@ class Recorder(private val store: Store) : Interceptor {
             try {
                 store.put(exchange, frames)
             } catch (e: IOException) {
-                dropped(exchange, e)
+                log.warn("exchange {} not recorded: {}", exchange.id, e.toString())
             } catch (e: JdbiException) {
-                dropped(exchange, e)
+                log.warn("exchange {} not recorded: {}", exchange.id, e.toString())
             }
         }
     }
-
-    private fun dropped(exchange: Exchange, cause: Exception) =
-        log.warn("exchange {} not recorded: {}", exchange.id, cause.toString())
 }
