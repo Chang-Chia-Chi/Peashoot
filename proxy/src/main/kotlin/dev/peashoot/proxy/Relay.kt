@@ -110,11 +110,9 @@ suspend fun relay(
             if (body.isNotEmpty() || requestContentType != null)
                 setBody(ByteArrayContent(body, requestContentType))
         }
-    var responding = false
     val failure =
         try {
             statement.execute { response ->
-                responding = true
                 val dump =
                     config.dumpFrames?.let {
                         FrameDump(
@@ -133,7 +131,8 @@ suspend fun relay(
             e
         }
     if (failure != null) {
-        if (responding) throw failure
+        // Once the headers are out the client already sees the break; before them, we name it.
+        if (call.response.isCommitted) throw failure
         respondProxyFailure(call, exchange, interceptors, failure)
     }
 }
