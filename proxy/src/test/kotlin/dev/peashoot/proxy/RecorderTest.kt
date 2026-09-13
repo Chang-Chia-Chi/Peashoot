@@ -6,9 +6,13 @@ import io.ktor.client.HttpClient
 import io.ktor.client.engine.cio.CIO
 import io.ktor.client.request.header
 import io.ktor.client.request.post
+import io.ktor.client.request.preparePost
 import io.ktor.client.request.setBody
+import io.ktor.client.statement.bodyAsChannel
 import io.ktor.client.statement.bodyAsText
 import io.ktor.http.ContentType
+import io.ktor.utils.io.readLine
+import io.ktor.utils.io.readRemaining
 import java.net.ServerSocket
 import java.nio.file.Files
 import java.nio.file.Path
@@ -23,8 +27,10 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
+import kotlinx.io.readString
 
 /** What a record or passthrough route leaves in the data directory, seen through the store. */
 class RecorderTest {
@@ -55,20 +61,31 @@ class RecorderTest {
         runBlocking {
             val fixture = fixture("stream-with-tool-use.sse")
             val home = home()
+            // The second frame waits until the client has the first, then 50 ms more, so the
+            // recorded offsets must show a real gap whatever the machine's speed.
+            val releaseSecond = CompletableDeferred<Unit>()
             Store(home).use { store ->
                 FakeUpstream().use { upstream ->
                     val frames = FrameParser.parse(fixture).map { it.raw }
-                    upstream.reply = { streamReply(frames) { index -> if (index == 1) delay(50) } }
+                    upstream.reply = {
+                        streamReply(frames) { index -> if (index == 1) releaseSecond.await() }
+                    }
                     val config = ProxyConfig(port = 0, anthropicUpstream = upstream.url)
                     ProxyServer(config, listOf(Recorder(store))).use { proxy ->
                         HttpClient(CIO)
-                            .post("${proxy.url}/v1/messages") {
+                            .preparePost("${proxy.url}/v1/messages") {
                                 header("x-api-key", "sk-ant-SECRET")
                                 header("authorization", "Bearer SECRET-TOKEN")
                                 header("anthropic-beta", "kept")
                                 setBody("""{"model":"claude"}""")
                             }
-                            .bodyAsText()
+                            .execute { response ->
+                                val channel = response.bodyAsChannel()
+                                assertEquals("event: message_start", channel.readLine())
+                                delay(50)
+                                releaseSecond.complete(Unit)
+                                channel.readRemaining().readString()
+                            }
                     }
                 }
 
@@ -91,7 +108,10 @@ class RecorderTest {
                 )
                 val offsets = recorded.frames.map { it.offsetMillis }
                 assertEquals(offsets.sorted(), offsets, "offsets never go backwards")
-                assertTrue(offsets.last() >= 50, "the held-back frame arrived later: $offsets")
+                assertTrue(
+                    offsets[1] - offsets[0] >= 50,
+                    "the held-back frame arrived later: $offsets",
+                )
                 assertEquals(exchange.id, store.get(exchange.id)?.exchange?.id)
             }
             // Nothing under the data directory, database or spill file, holds the secret.
