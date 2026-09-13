@@ -32,8 +32,10 @@ data class Frame(val raw: String, val offsetMillis: Long) {
  * is line content.
  */
 class FrameParser(private val streaming: Boolean) {
-    // ponytail: pending is copied on every chunk; a growable buffer if non-streaming bodies get
-    // large.
+    // ponytail: pending is recopied on every chunk, quadratic for one big body (1 MB in 8 KB
+    // chunks moves ~64 MB, a few ms). Streams stay linear because completed frames are cut off
+    // each call. Upgrade: a doubling ByteArray with a length, private to this class; feed and
+    // end keep their signatures.
     private var pending = ByteArray(0)
     private var lineStart = 0
 
