@@ -13,6 +13,8 @@ import java.nio.file.StandardCopyOption.REPLACE_EXISTING
 import java.security.MessageDigest
 import java.sql.ResultSet
 import java.time.Instant
+import kotlin.io.path.deleteIfExists
+import kotlin.io.path.listDirectoryEntries
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
@@ -42,9 +44,7 @@ class Store(home: Path) : AutoCloseable {
         Files.createDirectories(home.resolve("bodies")).also { dir ->
             // A spill interrupted between staging and its move leaves a .tmp nothing references.
             // The next open sweeps it, which is soon enough for a local tool: no background task.
-            Files.list(dir).use { files ->
-                files.filter { it.fileName.toString().endsWith(".tmp") }.forEach(Files::delete)
-            }
+            dir.listDirectoryEntries("*.tmp").forEach { it.deleteIfExists() }
         }
     private val pool =
         HikariDataSource(
@@ -183,14 +183,16 @@ class Store(home: Path) : AutoCloseable {
                 frames_ref TEXT,
                 client_disconnected INTEGER NOT NULL
             )"""
+        /** Matches the order [list] asks for, so newest-first needs no sort. */
         const val INDEX =
-            "CREATE INDEX IF NOT EXISTS exchange_received_at ON exchange (received_at)"
+            """CREATE INDEX IF NOT EXISTS exchange_received_at_id
+                ON exchange (received_at DESC, id DESC)"""
         const val SELECT = "SELECT * FROM exchange"
     }
 }
 
 private fun sha256(bytes: ByteArray): String =
-    MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
+    MessageDigest.getInstance("SHA-256").digest(bytes).toHexString()
 
 private fun Headers.toJson(): String {
     val json = buildJsonObject {

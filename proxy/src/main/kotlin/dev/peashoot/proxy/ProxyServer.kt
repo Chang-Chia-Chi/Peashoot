@@ -32,7 +32,10 @@ data class ProxyConfig(
     val secretHeaders: Set<String> = setOf("authorization", "x-api-key"),
     /** What each route does; every request takes [DEFAULT_ROUTE] until routing arrives. */
     val routes: Map<String, Mode> = mapOf(DEFAULT_ROUTE to Mode.RECORD),
-)
+) {
+    /** [secretHeaders] lower-cased once, since header names compare case-insensitively. */
+    val lowercaseSecretHeaders: Set<String> = secretHeaders.map(String::lowercase).toSet()
+}
 
 const val DEFAULT_ROUTE = "default"
 
@@ -40,14 +43,10 @@ const val DEFAULT_ROUTE = "default"
  * The headless proxy: one Ktor server, loopback only, relaying every request to the configured
  * upstream.
  */
-class ProxyServer(config: ProxyConfig, interceptors: List<Interceptor> = emptyList()) :
-    AutoCloseable {
-    // Header names compare case-insensitively; normalize the configured secrets once. Named apart
-    // from the parameter: in the initializers below, the parameter would shadow a same-named
-    // property.
-    private val applied =
-        config.copy(secretHeaders = config.secretHeaders.map(String::lowercase).toSet())
-
+class ProxyServer(
+    private val config: ProxyConfig,
+    interceptors: List<Interceptor> = emptyList(),
+) : AutoCloseable {
     init {
         require(DEFAULT_ROUTE in config.routes) {
             "route '$DEFAULT_ROUTE' is not configured; every request takes it until routing arrives"
@@ -61,8 +60,8 @@ class ProxyServer(config: ProxyConfig, interceptors: List<Interceptor> = emptyLi
         }
 
     private val server: EmbeddedServer<*, *> =
-        embeddedServer(Netty, port = applied.port, host = "127.0.0.1") {
-                relayModule(applied, upstream, interceptors)
+        embeddedServer(Netty, port = config.port, host = "127.0.0.1") {
+                relayModule(config, upstream, interceptors)
             }
             .start(wait = false)
 

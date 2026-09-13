@@ -89,7 +89,7 @@ suspend fun relay(
             Exchange.Request(
                 call.request.httpMethod.value,
                 call.request.uri,
-                call.request.headers.without(config.secretHeaders),
+                call.request.headers.without(config.lowercaseSecretHeaders),
                 body,
             ),
             route = DEFAULT_ROUTE,
