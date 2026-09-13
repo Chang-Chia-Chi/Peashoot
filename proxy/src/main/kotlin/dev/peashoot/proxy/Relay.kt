@@ -94,7 +94,8 @@ suspend fun relay(
             route = DEFAULT_ROUTE,
             mode = config.routes.getValue(DEFAULT_ROUTE),
         )
-    // Every interceptor hears the request; the first source offered wins.
+    // Every interceptor hears the request; the first source offered wins. mapNotNull is eager on
+    // purpose: firstNotNullOfOrNull would stop asking at the first answer.
     val offered = interceptors.mapNotNull { it.onRequest(exchange) }.firstOrNull()
     if (offered != null) {
         respondFrom(call, exchange, offered, interceptors)
