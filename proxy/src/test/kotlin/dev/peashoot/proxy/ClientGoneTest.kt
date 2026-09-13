@@ -92,7 +92,9 @@ class ClientGoneTest {
     /**
      * The upstream is held until the client has left, and the frames after it are spaced out. The
      * engine hears a clean close only when a write to the departed client provokes its reset, and
-     * that takes a round trip to come back, so those frames must not all go out in one burst.
+     * that takes a round trip to come back, so those frames must not all go out in one burst. The
+     * spacing buys detection, nothing else: the ordering of client-gone before completion is the
+     * stream's lock, not this timing, so a shorter gap would only make the departure go unheard.
      */
     private fun clientLeavesMidStream(reset: Boolean) = runBlocking {
         val frames = FrameParser.parse(fixture()).map { it.raw }
@@ -109,6 +111,8 @@ class ClientGoneTest {
                         beforeFrame = { index ->
                             reached += index
                             if (index == readBeforeLeaving) clientGone.await()
+                            // Slow on purpose, and not a race guard: shortening it only risks the
+                            // departure going unheard.
                             if (index > readBeforeLeaving) delay(50)
                         },
                     )

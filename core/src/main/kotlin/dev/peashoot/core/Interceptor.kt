@@ -32,7 +32,9 @@ interface Interceptor {
 
     /**
      * The client left mid-stream. Fires at most once, and before [onComplete]; the frames keep
-     * flowing to the other sinks.
+     * flowing to the other sinks. Must not throw, for the same reason [onComplete] must not: this
+     * runs where the client's write failed, so a throw here would replace the exception that ended
+     * it.
      */
     suspend fun onClientGone(exchange: Exchange) = Unit
 }

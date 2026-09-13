@@ -34,15 +34,12 @@ import java.nio.charset.CharacterCodingException
 import java.nio.file.Path
 import kotlin.time.TimeSource
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.channels.ClosedSendChannelException
-import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.flow
-import kotlinx.coroutines.job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -162,13 +159,6 @@ class Relay(
         exchange.response = Exchange.Response(source.status, source.headers)
         val stream = ExchangeStream(exchange, source, interceptors)
         val drive = streams.launch { stream.drive() }
-        // A reset cancels the call, and a child of it hears that at once, even when the writer is
-        // left in a write the engine never fails. The departure is recorded there and then rather
-        // than waiting for a call that can be a long time unwinding.
-        val clientPresent = Job(currentCoroutineContext().job)
-        clientPresent.invokeOnCompletion { cancelled ->
-            if (cancelled != null) streams.launch { stream.detach() }
-        }
         var delivered = false
         try {
             call.respond(
@@ -184,7 +174,6 @@ class Relay(
             )
             delivered = true
         } finally {
-            clientPresent.complete()
             // The upstream body lives only inside the client library's execute block, so the call
             // waits for the drive even when it was cancelled. An abandoned exchange therefore holds
             // its call coroutine until the upstream finishes: the cost of keeping the body open
@@ -291,17 +280,19 @@ private class ExchangeStream(
     /** The client sink: each frame goes out as soon as it exists, in the call's own coroutine. */
     suspend fun writeTo(channel: ByteWriteChannel) {
         // Keep-alive pings (#10) are a timeout on this receive, not a clause here: a write that
-        // fails is how a clean close is heard, and the call path turns it into a detach.
+        // fails is how a clean close is heard.
+        var drained = false
         try {
             for (frame in handoff) {
                 channel.writeStringUtf8(frame.raw)
                 channel.flush()
             }
+            drained = true
         } finally {
-            // The writer is the hand-off's only receiver, so once it is done, however it ended,
-            // nothing will take another frame: freeing the drive here beats leaving it offering
-            // one until the call unwinds. Not a detach; the flag and client-gone come from that.
-            handoff.close()
+            // The writer is the hand-off's only receiver, so a writer that stopped early is a
+            // client that left. Detaching here frees the drive at once, and the flag and
+            // client-gone still go under the same lock, before any completion can take it.
+            if (!drained) withContext(NonCancellable) { detach() }
         }
     }
 
