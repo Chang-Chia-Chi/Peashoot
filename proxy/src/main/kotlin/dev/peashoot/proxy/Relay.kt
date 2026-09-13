@@ -31,11 +31,21 @@ import io.ktor.utils.io.writeStringUtf8
 import java.io.IOException
 import java.nio.channels.UnresolvedAddressException
 import java.nio.charset.CharacterCodingException
-import kotlin.coroutines.cancellation.CancellationException
+import java.nio.file.Path
 import kotlin.time.TimeSource
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.channels.ClosedSendChannelException
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.job
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.JsonPrimitive
 import org.slf4j.LoggerFactory
@@ -74,157 +84,253 @@ private fun Headers.without(excluded: Set<String>): Headers = Headers.build {
 }
 
 /**
- * One request through the chain. The first interceptor to respond is the source; otherwise the
+ * Every request through the chain. The first interceptor to respond is the source; otherwise the
  * upstream is, and a failure to reach it is a proxy error, never a provider one.
  */
-suspend fun relay(
-    call: ApplicationCall,
-    config: ProxyConfig,
-    upstream: HttpClient,
-    interceptors: List<Interceptor>,
+class Relay(
+    private val config: ProxyConfig,
+    private val upstream: HttpClient,
+    private val interceptors: List<Interceptor>,
+    /**
+     * The Ktor application: its job is a SupervisorJob, so one failing stream cancels nothing else,
+     * and nothing outlives server stop.
+     */
+    private val streams: CoroutineScope,
 ) {
-    val body = call.receive<ByteArray>()
-    val exchange =
-        Exchange(
-            Exchange.Request(
-                call.request.httpMethod.value,
-                call.request.uri,
-                call.request.headers.without(config.lowercaseSecretHeaders),
-                body,
-            ),
-            route = DEFAULT_ROUTE,
-            mode = config.routes.getValue(DEFAULT_ROUTE),
-        )
-    // Every interceptor hears the request; the first source offered wins. mapNotNull is eager on
-    // purpose: firstNotNullOfOrNull would stop asking at the first answer.
-    val offered = interceptors.mapNotNull { it.onRequest(exchange) }.firstOrNull()
-    if (offered != null) {
-        respondFrom(call, exchange, offered, interceptors)
-        return
+    suspend fun handle(call: ApplicationCall) {
+        val body = call.receive<ByteArray>()
+        val exchange =
+            Exchange(
+                Exchange.Request(
+                    call.request.httpMethod.value,
+                    call.request.uri,
+                    call.request.headers.without(config.lowercaseSecretHeaders),
+                    body,
+                ),
+                route = DEFAULT_ROUTE,
+                mode = config.routes.getValue(DEFAULT_ROUTE),
+            )
+        // Every interceptor hears the request; the first source offered wins. mapNotNull is eager
+        // on purpose: firstNotNullOfOrNull would stop asking at the first answer.
+        val offered = interceptors.mapNotNull { it.onRequest(exchange) }.firstOrNull()
+        if (offered != null) {
+            respondFrom(call, exchange, offered)
+            return
+        }
+
+        val requestContentType =
+            call.request.header(HttpHeaders.ContentType)?.let(ContentType::parse)
+        // The target starts with `/` (relayModule refuses others), so it can only extend the path.
+        val statement =
+            upstream.prepareRequest(config.upstreamBase + call.request.uri) {
+                method = call.request.httpMethod
+                headers.appendAll(call.request.headers.without(notForwardedToUpstream))
+                if (body.isNotEmpty() || requestContentType != null)
+                    setBody(ByteArrayContent(body, requestContentType))
+            }
+        val failure =
+            try {
+                statement.execute { response ->
+                    respondFrom(
+                        call,
+                        exchange,
+                        UpstreamSource(response, exchange, config.dumpFrames),
+                    )
+                }
+                null
+            } catch (e: IOException) {
+                e
+            } catch (e: UnresolvedAddressException) {
+                e
+            }
+        if (failure != null) {
+            // Once the headers are out the client already sees the break; before them, we name it.
+            if (call.response.isCommitted) throw failure
+            respondProxyFailure(call, exchange, failure)
+        }
     }
 
-    val requestContentType = call.request.header(HttpHeaders.ContentType)?.let(ContentType::parse)
-    // The target starts with `/` (relayModule refuses others), so it can only extend the path.
-    val statement =
-        upstream.prepareRequest(config.upstreamBase + call.request.uri) {
-            method = call.request.httpMethod
-            headers.appendAll(call.request.headers.without(notForwardedToUpstream))
-            if (body.isNotEmpty() || requestContentType != null)
-                setBody(ByteArrayContent(body, requestContentType))
+    /**
+     * Starts the exchange's own stream, then offers it to the client. The client is a sink like any
+     * other: if it never arrives or leaves early the stream still runs to its end.
+     */
+    private suspend fun respondFrom(
+        call: ApplicationCall,
+        exchange: Exchange,
+        source: FrameSource,
+    ) {
+        exchange.response = Exchange.Response(source.status, source.headers)
+        val stream = ExchangeStream(exchange, source, interceptors)
+        val drive = streams.launch { stream.drive() }
+        // A reset cancels the call, and a child of it hears that at once, even when the writer is
+        // left in a write the engine never fails. The departure is recorded there and then rather
+        // than waiting for a call that can be a long time unwinding.
+        val clientPresent = Job(currentCoroutineContext().job)
+        clientPresent.invokeOnCompletion { cancelled ->
+            if (cancelled != null) streams.launch { stream.detach() }
         }
-    val failure =
+        var delivered = false
         try {
-            statement.execute { response ->
-                val dump =
-                    config.dumpFrames?.let {
-                        FrameDump(
-                            it,
-                            exchange.request.method,
-                            exchange.request.path,
-                            response.status.value,
-                        )
-                    }
-                respondFrom(call, exchange, UpstreamSource(response, dump), interceptors)
+            call.respond(
+                object : OutgoingContent.WriteChannelContent() {
+                    override val status = HttpStatusCode.fromValue(source.status)
+                    override val headers = source.headers.without(notForwardedToClient)
+                    override val contentType =
+                        source.headers[HttpHeaders.ContentType]?.let(ContentType::parse)
+
+                    override suspend fun writeTo(channel: ByteWriteChannel) =
+                        stream.writeTo(channel)
+                }
+            )
+            delivered = true
+        } finally {
+            clientPresent.complete()
+            // The upstream body lives only inside the client library's execute block, so the call
+            // waits for the drive even when it was cancelled. An abandoned exchange therefore holds
+            // its call coroutine until the upstream finishes: the cost of keeping the body open
+            // without internal APIs.
+            withContext(NonCancellable) {
+                if (!delivered) stream.detach()
+                drive.join()
             }
-            null
-        } catch (e: IOException) {
-            e
-        } catch (e: UnresolvedAddressException) {
-            e
         }
-    if (failure != null) {
-        // Once the headers are out the client already sees the break; before them, we name it.
-        if (call.response.isCommitted) throw failure
-        respondProxyFailure(call, exchange, interceptors, failure)
+    }
+
+    /**
+     * Never imitates a provider's error shape: a client's retry logic must not mistake us for one.
+     * The exchange still completes, with the 502, so nothing that started goes unfinished. It never
+     * had a source, so it never had a stream: this is the one completion the drive does not run.
+     */
+    private suspend fun respondProxyFailure(
+        call: ApplicationCall,
+        exchange: Exchange,
+        cause: Exception,
+    ) {
+        log.warn(
+            "upstream unreachable for {} {}: {}",
+            exchange.request.method,
+            exchange.request.path,
+            cause.toString(),
+        )
+        exchange.response = Exchange.Response(HttpStatusCode.BadGateway.value, Headers.Empty)
+        call.respondText(
+            """{"type":"peashoot_error","error":"upstream_unreachable","detail":${JsonPrimitive(cause.toString())}}""",
+            ContentType.Application.Json,
+            HttpStatusCode.BadGateway,
+        )
+        val outcome = Outcome(HttpStatusCode.BadGateway.value)
+        interceptors.forEach { it.onComplete(exchange, outcome) }
     }
 }
 
-private suspend fun respondFrom(
-    call: ApplicationCall,
-    exchange: Exchange,
+/**
+ * One exchange's frames on their way to the sinks. The drive is the only collector, so the client
+ * is a sink and not the pump: it takes frames through a rendezvous while it is there, and the drive
+ * keeps collecting once it is gone. A resume tap (#26) is an interceptor with its own buffer and
+ * needs exactly that.
+ */
+private class ExchangeStream(
+    private val exchange: Exchange,
     source: FrameSource,
-    interceptors: List<Interceptor>,
+    private val interceptors: List<Interceptor>,
 ) {
-    exchange.response = Exchange.Response(source.status, source.headers)
-    val frames =
+    private val status = source.status
+    private val frames =
         interceptors.fold(source.frames()) { acc, interceptor ->
             interceptor.onFrames(exchange, acc)
         }
-    call.respond(
-        object : OutgoingContent.WriteChannelContent() {
-            override val status = HttpStatusCode.fromValue(source.status)
-            override val headers = source.headers.without(notForwardedToClient)
-            override val contentType =
-                source.headers[HttpHeaders.ContentType]?.let(ContentType::parse)
 
-            override suspend fun writeTo(channel: ByteWriteChannel) =
-                writeFrames(channel, exchange, source.status, frames, interceptors)
-        }
-    )
-}
+    /** One frame in flight: the drive does not pull the next until the writer took the last. */
+    private val handoff = Channel<Frame>(Channel.RENDEZVOUS)
 
-/**
- * The client sink: each frame goes out as soon as it exists, then the chain hears the outcome. A
- * source or interceptor that fails mid-stream ends the client's response where it is and still
- * completes the exchange; the missing terminal frame says what happened.
- */
-private suspend fun writeFrames(
-    channel: ByteWriteChannel,
-    exchange: Exchange,
-    status: Int,
-    frames: Flow<Frame>,
-    interceptors: List<Interceptor>,
-) {
-    var clientGone = false
-    try {
-        frames.collect { frame ->
-            channel.writeStringUtf8(frame.raw)
-            channel.flush()
+    /** Client-gone and completion take it in turn, and it publishes the flag to the chain. */
+    private val lock = Mutex()
+
+    private var completed = false
+    private var detached = false
+
+    /**
+     * The one collector: the source is cold and single-use. A source or interceptor that fails
+     * mid-stream ends the frames where they are and the exchange still completes; the missing
+     * terminal frame says what happened.
+     */
+    suspend fun drive() {
+        var attached = true
+        try {
+            frames
+                .catch { e ->
+                    log.warn(
+                        "stream failed for {} {}: {}",
+                        exchange.request.method,
+                        exchange.request.path,
+                        e.toString(),
+                    )
+                }
+                .collect { frame ->
+                    if (attached) {
+                        try {
+                            handoff.send(frame)
+                        } catch (_: ClosedSendChannelException) {
+                            // The writer left; the rest of the response is for the other sinks.
+                            attached = false
+                        }
+                    }
+                }
+        } finally {
+            // Ends the client's response as soon as the last frame is out, before the sinks work.
+            handoff.close()
+            withContext(NonCancellable) {
+                lock.withLock {
+                    completed = true
+                    interceptors.forEach { it.onComplete(exchange, Outcome(status)) }
+                }
+            }
         }
-    } catch (e: CancellationException) {
-        // The engine cancels the writer when the client goes away. #10 verifies and extends this.
-        clientGone = true
-        exchange.clientDisconnected = true
-        withContext(NonCancellable) { interceptors.forEach { it.onClientGone(exchange) } }
-        throw e
-    } finally {
-        if (!clientGone) complete(exchange, status, interceptors)
+    }
+
+    /** The client sink: each frame goes out as soon as it exists, in the call's own coroutine. */
+    suspend fun writeTo(channel: ByteWriteChannel) {
+        // Keep-alive pings (#10) are a timeout on this receive, not a clause here: a write that
+        // fails is how a clean close is heard, and the call path turns it into a detach.
+        try {
+            for (frame in handoff) {
+                channel.writeStringUtf8(frame.raw)
+                channel.flush()
+            }
+        } finally {
+            // The writer is the hand-off's only receiver, so once it is done, however it ended,
+            // nothing will take another frame: freeing the drive here beats leaving it offering
+            // one until the call unwinds. Not a detach; the flag and client-gone come from that.
+            handoff.close()
+        }
+    }
+
+    /**
+     * The client left before the response ended, however it left. Idempotent, and never after
+     * completion: a client that leaves once the stream is over is not a mid-stream disconnect, and
+     * completion never waits to hear, or a client that vanished quietly would wedge the exchange.
+     */
+    suspend fun detach() {
+        lock.withLock {
+            if (detached || completed) return
+            detached = true
+            // Closed, never cancelled: the drive's pending send then fails on its own instead of
+            // taking the collection down with it.
+            handoff.close()
+            // The bytes sent so far, for #10's client-gone event, are a field on the exchange set
+            // here.
+            exchange.clientDisconnected = true
+            interceptors.forEach { it.onClientGone(exchange) }
+        }
     }
 }
 
-private suspend fun complete(exchange: Exchange, status: Int, interceptors: List<Interceptor>) {
-    val outcome = Outcome(status)
-    interceptors.forEach { it.onComplete(exchange, outcome) }
-}
-
-/**
- * Never imitates a provider's error shape: a client's retry logic must not mistake us for one. The
- * exchange still completes, with the 502, so nothing that started goes unfinished.
- */
-private suspend fun respondProxyFailure(
-    call: ApplicationCall,
-    exchange: Exchange,
-    interceptors: List<Interceptor>,
-    cause: Exception,
-) {
-    log.warn(
-        "upstream unreachable for {} {}: {}",
-        exchange.request.method,
-        exchange.request.path,
-        cause.toString(),
-    )
-    exchange.response = Exchange.Response(HttpStatusCode.BadGateway.value, Headers.Empty)
-    call.respondText(
-        """{"type":"peashoot_error","error":"upstream_unreachable","detail":${JsonPrimitive(cause.toString())}}""",
-        ContentType.Application.Json,
-        HttpStatusCode.BadGateway,
-    )
-    complete(exchange, HttpStatusCode.BadGateway.value, interceptors)
-}
-
 /** The terminal source: the provider's response, parsed into frames as its bytes arrive. */
-private class UpstreamSource(private val response: HttpResponse, private val dump: FrameDump?) :
-    FrameSource {
+private class UpstreamSource(
+    private val response: HttpResponse,
+    private val exchange: Exchange,
+    private val dumpPath: Path?,
+) : FrameSource {
     override val status = response.status.value
     override val headers = response.headers
     private var collected = false
@@ -233,6 +339,9 @@ private class UpstreamSource(private val response: HttpResponse, private val dum
         // A second collection would read an exhausted body and silently yield nothing.
         check(!collected) { "the upstream body can be collected once" }
         collected = true
+        val dump = dumpPath?.let {
+            FrameDump(it, exchange.request.method, exchange.request.path, status)
+        }
         val streaming = response.contentType()?.match(ContentType.Text.EventStream) == true
         val parser = FrameParser(streaming)
         val start = TimeSource.Monotonic.markNow()

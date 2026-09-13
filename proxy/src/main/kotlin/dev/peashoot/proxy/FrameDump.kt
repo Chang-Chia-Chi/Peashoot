@@ -6,7 +6,6 @@ import java.nio.file.Path
 import java.nio.file.StandardOpenOption.APPEND
 import java.nio.file.StandardOpenOption.CREATE
 import java.time.Instant
-import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.sync.Mutex
@@ -35,20 +34,19 @@ class FrameDump(
     /** Appends the response; a dump the client abandoned mid-stream is still written. */
     suspend fun close() =
         withContext(Dispatchers.IO + NonCancellable) {
-            dumpLocks
-                .getOrPut(file.toAbsolutePath().normalize()) { Mutex() }
-                .withLock {
-                    Files.newOutputStream(file, CREATE, APPEND).use { out ->
-                        out.write(header.toByteArray())
-                        out.write('\n'.code)
-                        bytes.writeTo(out)
-                        out.write('\n'.code)
-                    }
+            lock.withLock {
+                Files.newOutputStream(file, CREATE, APPEND).use { out ->
+                    out.write(header.toByteArray())
+                    out.write('\n'.code)
+                    bytes.writeTo(out)
+                    out.write('\n'.code)
                 }
+            }
         }
 
     companion object {
-        /** One lock per dump file: concurrent responses to the same file must not interleave. */
-        private val dumpLocks = ConcurrentHashMap<Path, Mutex>()
+        // ponytail: one lock for every dump: one dump path per process; re-key by path if that
+        // ever changes.
+        private val lock = Mutex()
     }
 }

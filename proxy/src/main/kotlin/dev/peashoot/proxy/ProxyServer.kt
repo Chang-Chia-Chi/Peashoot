@@ -74,8 +74,8 @@ fun Application.relayModule(
         disableDefaultColors()
     } // method, path, status, duration; never headers or bodies
     // A request target that does not start with `/` (`@evil.com/v1/messages`) would concatenate in
-    // relay() into a URL whose host is evil.com, secret headers and all. Refused before routing, so
-    // no handler, present or future, sees one.
+    // the relay into a URL whose host is evil.com, secret headers and all. Refused before routing,
+    // so no handler, present or future, sees one.
     intercept(ApplicationCallPipeline.Plugins) {
         if (!call.request.uri.startsWith("/")) {
             call.respondText(
@@ -85,6 +85,9 @@ fun Application.relayModule(
             finish()
         }
     }
+    // The application is the scope every exchange's stream runs in, so a client that leaves does
+    // not take its stream with it, and server stop ends them all.
+    val relay = Relay(config, upstream, interceptors, this)
     routing {
         // Claude Code's reachability probe; answered here, never relayed.
         head("/api/hello") { call.respond(HttpStatusCode.OK) }
@@ -98,7 +101,7 @@ fun Application.relayModule(
                             "Peashoot speaks plain HTTP; upgrade refused",
                             status = HttpStatusCode.UpgradeRequired,
                         )
-                    else -> relay(call, config, upstream, interceptors)
+                    else -> relay.handle(call)
                 }
             }
         }
