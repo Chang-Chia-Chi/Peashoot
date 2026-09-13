@@ -107,7 +107,7 @@ suspend fun relay(
 
     val requestContentType = call.request.header(HttpHeaders.ContentType)?.let(ContentType::parse)
     val statement =
-        upstream.prepareRequest(config.anthropicUpstream.trimEnd('/') + call.request.uri) {
+        upstream.prepareRequest(config.upstreamBase + call.request.uri) {
             method = call.request.httpMethod
             headers.appendAll(call.request.headers.without(notForwardedToUpstream))
             if (body.isNotEmpty() || requestContentType != null)

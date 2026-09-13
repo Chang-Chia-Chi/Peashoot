@@ -8,6 +8,25 @@ import org.tomlj.TomlTable
 
 const val CONFIG_FILE = "peashoot.toml"
 
+const val DEFAULT_ROUTE = "default"
+
+data class ProxyConfig(
+    val port: Int = 8787,
+    val anthropicUpstream: String = "https://api.anthropic.com",
+    /** Debug: append every raw upstream response to this file, for building fixtures. */
+    val dumpFrames: Path? = null,
+    /** Sent upstream, never kept: not on the Exchange, not in any log or file. Any case. */
+    val secretHeaders: Set<String> = setOf("authorization", "x-api-key"),
+    /** What each route does; every request takes [DEFAULT_ROUTE] until routing arrives. */
+    val routes: Map<String, Mode> = mapOf(DEFAULT_ROUTE to Mode.RECORD),
+) {
+    /** [secretHeaders] lower-cased once, since header names compare case-insensitively. */
+    val lowercaseSecretHeaders: Set<String> = secretHeaders.map(String::lowercase).toSet()
+
+    /** [anthropicUpstream] without a trailing slash, so a request path appends directly. */
+    val upstreamBase: String = anthropicUpstream.trimEnd('/')
+}
+
 /** The data directory: `PEASHOOT_HOME`, else `.peashoot` under the user's home. */
 fun homeDir(env: (String) -> String? = System::getenv): Path =
     env("PEASHOOT_HOME")?.let(Path::of) ?: Path.of(System.getProperty("user.home"), ".peashoot")
