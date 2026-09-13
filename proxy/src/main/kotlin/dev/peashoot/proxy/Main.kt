@@ -10,23 +10,24 @@ private val log = LoggerFactory.getLogger("dev.peashoot.proxy")
 fun main(): Unit = runBlocking {
     val home = homeDir()
     val config = loadConfig(home)
-    val store = Store(home)
-    val server = ProxyServer(config, listOf(Recorder(store)))
-    // Ktor's own shutdown hook stops only the engine, and awaitCancellation below never returns,
-    // so this hook is the one that closes the connection pool and the upstream client on
-    // SIGINT/SIGTERM.
-    Runtime.getRuntime()
-        .addShutdownHook(
-            Thread {
-                server.close()
-                store.close()
-            }
+    Store(home).use { store ->
+        val server = ProxyServer(config, listOf(Recorder(store)))
+        // `use` unwinds only if the server fails to start. Ktor's own shutdown hook stops only the
+        // engine, and awaitCancellation never returns, so on SIGINT/SIGTERM this hook is what
+        // closes the upstream client and then the connection pool.
+        Runtime.getRuntime()
+            .addShutdownHook(
+                Thread {
+                    server.close()
+                    store.close()
+                }
+            )
+        log.info(
+            "Peashoot listening on {}, relaying to {}, data in {}",
+            server.url,
+            config.anthropicUpstream,
+            home,
         )
-    log.info(
-        "Peashoot listening on {}, relaying to {}, data in {}",
-        server.url,
-        config.anthropicUpstream,
-        home,
-    )
-    awaitCancellation()
+        awaitCancellation()
+    }
 }

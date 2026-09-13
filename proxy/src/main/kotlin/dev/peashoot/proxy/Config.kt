@@ -82,19 +82,10 @@ private fun ProxyConfig.toToml(): String = buildString {
 
 private fun TomlTable.routes(): Map<String, Mode> =
     keySet().associateWith { name ->
-        if (name != DEFAULT_ROUTE) {
-            error("routes.$name: routing is not wired yet; only the '$DEFAULT_ROUTE' route exists")
+        check(name == DEFAULT_ROUTE) {
+            "routes.$name: routing is not wired yet; only the '$DEFAULT_ROUTE' route exists"
         }
         val modeString = getString(listOf(name, "mode")) ?: error("routes.$name.mode is required")
-        val mode =
-            Mode.entries.firstOrNull { it.name.equals(modeString, ignoreCase = true) }
-                ?: error(
-                    "routes.$name.mode must be record, replay, or passthrough, not $modeString"
-                )
-        if (mode == Mode.REPLAY) {
-            error(
-                "routes.$name.mode = replay is not implemented yet (#12): use record or passthrough"
-            )
-        }
-        mode
+        Mode.entries.firstOrNull { it.name.equals(modeString, ignoreCase = true) }
+            ?: error("routes.$name.mode must be record, replay, or passthrough, not $modeString")
     }

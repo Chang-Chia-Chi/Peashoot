@@ -251,22 +251,21 @@ class RelayTest {
                     // host by concatenation; speak raw HTTP/1.1 since no client library builds a
                     // request line like this.
                     val (host, port) = proxy.url.removePrefix("http://").split(":")
-                    val statusLine =
+                    val response =
                         Socket(host, port.toInt()).use { socket ->
                             socket
                                 .getOutputStream()
                                 .write(
-                                    "POST @evil.com/v1/messages HTTP/1.1\r\nHost: $host:$port\r\nContent-Length: 0\r\n\r\n"
+                                    "POST @evil.com/v1/messages HTTP/1.1\r\nHost: $host:$port\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
                                         .toByteArray()
                                 )
-                            socket.getInputStream().bufferedReader().readLine()
+                            socket.getInputStream().bufferedReader().readText()
                         }
 
-                    assertEquals("HTTP/1.1 400 Bad Request", statusLine)
-                    assertTrue(
-                        upstream.received.isEmpty(),
-                        "a malformed request target must never reach the upstream",
-                    )
+                    // The refusal's own words prove the guard answered; an unguarded relay would
+                    // send the request to evil.com, so the fake upstream cannot witness it.
+                    assertTrue(response.startsWith("HTTP/1.1 400 Bad Request"), response)
+                    assertContains(response, "request target must start with /")
                 }
             }
         }

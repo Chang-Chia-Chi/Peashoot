@@ -30,6 +30,7 @@ import io.ktor.utils.io.readAvailable
 import io.ktor.utils.io.writeStringUtf8
 import java.io.IOException
 import java.nio.channels.UnresolvedAddressException
+import java.nio.charset.CharacterCodingException
 import kotlin.coroutines.cancellation.CancellationException
 import kotlin.time.TimeSource
 import kotlinx.coroutines.NonCancellable
@@ -103,6 +104,7 @@ suspend fun relay(
     }
 
     val requestContentType = call.request.header(HttpHeaders.ContentType)?.let(ContentType::parse)
+    // The target starts with `/` (relayModule refuses others), so it can only extend the path.
     val statement =
         upstream.prepareRequest(config.upstreamBase + call.request.uri) {
             method = call.request.httpMethod
@@ -247,6 +249,15 @@ private class UpstreamSource(private val response: HttpResponse, private val dum
                 }
             }
             parser.end(start.elapsedNow().inWholeMilliseconds)?.let { emit(it) }
+        } catch (e: CharacterCodingException) {
+            // Ends the response loudly: Ktor logs the rethrow at DEBUG only.
+            log.warn(
+                "invalid UTF-8 from upstream for {} {}; response ended: {}",
+                response.call.request.method.value,
+                response.call.request.url.encodedPath,
+                e.toString(),
+            )
+            throw e
         } finally {
             dump?.close()
         }

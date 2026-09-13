@@ -64,6 +64,8 @@ class Store(home: Path) : AutoCloseable {
         }
 
     suspend fun put(exchange: Exchange, frames: List<Frame>): Unit = io { handle ->
+        // Only a sourced exchange is persisted; one without a response is a programming error.
+        val response = checkNotNull(exchange.response) { "exchange ${exchange.id} has no response" }
         val (body, bodyRef) = inlineOrSpill(exchange.request.body)
         val (framesInline, framesRef) = inlineOrSpill(frames.toJson().toByteArray())
         val columns =
@@ -77,10 +79,8 @@ class Store(home: Path) : AutoCloseable {
                 "request_headers" to exchange.request.headers.toJson(),
                 "request_body" to body,
                 "request_body_ref" to bodyRef,
-                // Only a sourced exchange is persisted, so the response is never null here; the
-                // NOT NULL status column is the safety net if that ever stops being true.
-                "status" to exchange.response?.status,
-                "response_headers" to exchange.response?.headers?.toJson(),
+                "status" to response.status,
+                "response_headers" to response.headers.toJson(),
                 "frames" to framesInline,
                 "frames_ref" to framesRef,
                 "client_disconnected" to exchange.clientDisconnected,
@@ -180,6 +180,10 @@ class Store(home: Path) : AutoCloseable {
                 frames_ref TEXT,
                 client_disconnected INTEGER NOT NULL
             )"""
+        /**
+         * Names the same 14 columns as [SCHEMA] and [put]'s map; RecorderTest's round trip is the
+         * check when one is added.
+         */
         const val INSERT =
             """INSERT INTO exchange (
                 id, received_at, route, mode, method, path, request_headers, request_body,

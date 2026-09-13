@@ -1,6 +1,7 @@
 package dev.peashoot.proxy
 
 import dev.peashoot.core.Interceptor
+import dev.peashoot.core.Mode
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.cio.CIO as ClientCIO
 import io.ktor.http.HttpHeaders
@@ -33,6 +34,11 @@ class ProxyServer(
     init {
         require(DEFAULT_ROUTE in config.routes) {
             "route '$DEFAULT_ROUTE' is not configured; every request takes it until routing arrives"
+        }
+        // Checked here, not only in the loader: a directly constructed config must fail the same
+        // way.
+        require(Mode.REPLAY !in config.routes.values) {
+            "replay mode is not implemented yet (#12); use record or passthrough"
         }
     }
 
@@ -67,10 +73,9 @@ fun Application.relayModule(
     install(CallLogging) {
         disableDefaultColors()
     } // method, path, status, duration; never headers or bodies
-    // A request-target that does not start with `/` (e.g. `@evil.com/v1/messages`, which would
-    // otherwise concatenate into a URL whose host is evil.com, secret headers and all) never
-    // reaches routing: it fails to match "{...}" and would 404 rather than 400. Refused here,
-    // before routing runs, so the secret headers never leave this process for the wrong host.
+    // A request target that does not start with `/` (`@evil.com/v1/messages`) would concatenate in
+    // relay() into a URL whose host is evil.com, secret headers and all. Refused before routing, so
+    // no handler, present or future, sees one.
     intercept(ApplicationCallPipeline.Plugins) {
         if (!call.request.uri.startsWith("/")) {
             call.respondText(

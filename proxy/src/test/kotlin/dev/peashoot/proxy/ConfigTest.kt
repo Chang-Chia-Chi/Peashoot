@@ -77,19 +77,11 @@ class ConfigTest {
     }
 
     @Test
-    fun `a route in replay mode is refused until replay is implemented`() {
-        val home = Files.createTempDirectory("peashoot-home")
-        home
-            .resolve("peashoot.toml")
-            .writeText(
-                """
-                [routes.default]
-                mode = "replay"
-                """
-                    .trimIndent()
-            )
+    fun `a route in replay mode is refused at startup until replay is implemented`() {
+        // At the server, not only the loader: a directly constructed config fails the same way.
+        val config = ProxyConfig(routes = mapOf(DEFAULT_ROUTE to Mode.REPLAY))
 
-        val error = assertFailsWith<IllegalStateException> { loadConfig(home, env()) }
+        val error = assertFailsWith<IllegalArgumentException> { ProxyServer(config) }
         assertContains(error.message.orEmpty(), "#12")
     }
 

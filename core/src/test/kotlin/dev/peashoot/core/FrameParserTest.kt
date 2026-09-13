@@ -109,6 +109,16 @@ class FrameParserTest {
     }
 
     @Test
+    fun `a stream cut inside a multi-byte character ends on the last complete one`() {
+        val bytes = "event: content_block_delta\ndata: {\"text\":\"café".toByteArray()
+        val cut = bytes.copyOfRange(0, bytes.size - 1) // é is 0xC3 0xA9; only 0xC3 arrived
+        val parser = FrameParser(streaming = true)
+
+        assertEquals(emptyList(), parser.feed(cut, cut.size, offsetMillis = 0))
+        assertEquals("event: content_block_delta\ndata: {\"text\":\"caf", parser.end(0)?.raw)
+    }
+
+    @Test
     fun `a multi-byte character split across chunks decodes intact`() {
         val text = "event: content_block_delta\ndata: {\"text\":\"café\"}\n\n"
         val bytes = text.toByteArray()

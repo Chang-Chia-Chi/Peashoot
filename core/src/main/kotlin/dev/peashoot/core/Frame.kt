@@ -57,6 +57,9 @@ class FrameParser(private val streaming: Boolean) {
             val blankLine = i == lineStart || (i == lineStart + 1 && pending[lineStart] == RETURN)
             lineStart = i + 1
             if (blankLine) {
+                // ponytail: a malformed byte here throws away the valid frames this call already
+                // decoded; the stream is ending anyway. Park the exception and rethrow on the next
+                // call if a chunk of good frames turns out to matter.
                 frames +=
                     Frame(
                         pending.decodeToString(frameStart, i + 1, throwOnInvalidSequence = true),
@@ -72,18 +75,55 @@ class FrameParser(private val streaming: Boolean) {
         return frames
     }
 
-    /** The unterminated remainder, if any: a non-streaming body, or the tail of a cut stream. */
+    /**
+     * The unterminated remainder, if any: a non-streaming body, or the tail of a cut stream. A cut
+     * inside a multi-byte character drops that character's leading bytes, so the frame ends on the
+     * last complete one.
+     */
     fun end(offsetMillis: Long): Frame? {
         val rest = pending
         pending = ByteArray(0)
         lineStart = 0
-        return if (rest.isEmpty()) null
-        else Frame(rest.decodeToString(throwOnInvalidSequence = true), offsetMillis)
+        val complete = rest.size - rest.incompleteTail()
+        return if (complete == 0) null
+        else Frame(rest.decodeToString(0, complete, throwOnInvalidSequence = true), offsetMillis)
     }
 
     companion object {
         private const val NEWLINE = '\n'.code.toByte()
         private const val RETURN = '\r'.code.toByte()
+        private const val BYTE_MASK = 0xFF
+        private const val CONTINUATION_MASK = 0xC0
+        private const val CONTINUATION = 0x80
+        private const val LONGEST_CHARACTER = 4
+        private val LEAD_OF_4 = 0xF0..0xF7
+        private val LEAD_OF_3 = 0xE0..0xEF
+        private val LEAD_OF_2 = 0xC2..0xDF
+
+        /**
+         * How many trailing bytes start a multi-byte character that has not finished: 0 when the
+         * array ends on a complete character, or on bytes that are malformed either way and are
+         * left for the strict decode to report.
+         */
+        private fun ByteArray.incompleteTail(): Int {
+            var lead = size - 1
+            while (lead >= 0 && size - lead < LONGEST_CHARACTER && isContinuation(this[lead])) {
+                lead--
+            }
+            val expected =
+                if (lead < 0) 0
+                else
+                    when (this[lead].toInt() and BYTE_MASK) {
+                        in LEAD_OF_4 -> 4
+                        in LEAD_OF_3 -> 3
+                        in LEAD_OF_2 -> 2
+                        else -> 0
+                    }
+            val present = size - lead
+            return if (present < expected) present else 0
+        }
+
+        private fun isContinuation(byte: Byte) = byte.toInt() and CONTINUATION_MASK == CONTINUATION
 
         /** Parses a complete stream, every frame at offset 0. */
         fun parse(bytes: ByteArray) =
