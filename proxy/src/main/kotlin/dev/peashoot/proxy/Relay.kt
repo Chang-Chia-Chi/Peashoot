@@ -28,7 +28,7 @@ import io.ktor.server.response.respond
 import io.ktor.server.response.respondText
 import io.ktor.utils.io.ByteWriteChannel
 import io.ktor.utils.io.readAvailable
-import io.ktor.utils.io.writeFully
+import io.ktor.utils.io.writeStringUtf8
 import java.io.IOException
 import java.nio.channels.UnresolvedAddressException
 import kotlin.coroutines.cancellation.CancellationException
@@ -176,7 +176,7 @@ private suspend fun writeFrames(
     var clientGone = false
     try {
         frames.collect { frame ->
-            channel.writeFully(frame.raw.toByteArray())
+            channel.writeStringUtf8(frame.raw)
             channel.flush()
         }
     } catch (e: CancellationException) {

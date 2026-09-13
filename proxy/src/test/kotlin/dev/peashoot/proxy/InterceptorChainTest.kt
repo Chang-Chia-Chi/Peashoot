@@ -76,14 +76,14 @@ class InterceptorChainTest {
                     ProxyConfig(
                         port = 0,
                         anthropicUpstream = upstream.url,
-                        secretHeaders = setOf("authorization", "x-api-key", "x-custom-secret"),
+                        secretHeaders = setOf("authorization", "x-api-key", "X-Custom-Secret"),
                     )
                 ProxyServer(config, chain).use { proxy ->
                     val body =
                         HttpClient(CIO)
                             .post("${proxy.url}/v1/messages") {
                                 header("x-api-key", "sk-ant-SECRET")
-                                header("x-custom-secret", "also-SECRET")
+                                header("X-CUSTOM-SECRET", "also-SECRET")
                                 header("anthropic-beta", "kept")
                                 setBody("{}")
                             }
@@ -111,7 +111,7 @@ class InterceptorChainTest {
             assertNull(kept["x-api-key"], "a secret header must never reach the exchange")
             assertNull(
                 kept["x-custom-secret"],
-                "a configured secret header must never reach the exchange",
+                "a configured secret header must never reach the exchange, whatever its case",
             )
         }
 

@@ -28,7 +28,7 @@ interface Interceptor {
 sealed interface Decision {
     data object Continue : Decision
 
-    class Respond(val source: FrameSource) : Decision
+    data class Respond(val source: FrameSource) : Decision
 }
 
 /** Where a response comes from: the upstream, a cassette, or a resume buffer. */
