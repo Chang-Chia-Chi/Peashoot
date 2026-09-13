@@ -1,6 +1,7 @@
 package dev.peashoot.proxy
 
 import dev.peashoot.core.Interceptor
+import dev.peashoot.core.Mode
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.cio.CIO as ClientCIO
 import io.ktor.http.HttpHeaders
@@ -29,7 +30,11 @@ data class ProxyConfig(
     val dumpFrames: Path? = null,
     /** Sent upstream, never kept: not on the Exchange, not in any log or file. Any case. */
     val secretHeaders: Set<String> = setOf("authorization", "x-api-key"),
+    /** What each route does; every request takes [DEFAULT_ROUTE] until routing arrives. */
+    val routes: Map<String, Mode> = mapOf(DEFAULT_ROUTE to Mode.RECORD),
 )
+
+const val DEFAULT_ROUTE = "default"
 
 /**
  * The headless proxy: one Ktor server, loopback only, relaying every request to the configured

@@ -90,7 +90,9 @@ suspend fun relay(
                 call.request.uri,
                 call.request.headers.without(config.secretHeaders),
                 body,
-            )
+            ),
+            route = DEFAULT_ROUTE,
+            mode = config.routes.getValue(DEFAULT_ROUTE),
         )
     // Every interceptor hears the request; the first source offered wins.
     val offered =
