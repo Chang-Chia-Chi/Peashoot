@@ -7,11 +7,14 @@ package dev.peashoot.core
  * relative to the start of the response.
  */
 data class Frame(val raw: String, val offsetMillis: Long) {
-    /** The SSE `event:` field, or null when there is none (a comment, a non-streaming body). */
+    /**
+     * The SSE `event:` field, or null when there is none (a comment, a non-streaming body). The
+     * last one wins when a block repeats it, as the SSE spec says.
+     */
     val event
         get() =
             raw.splitToSequence('\n')
-                .firstOrNull { it.startsWith(EVENT_FIELD) }
+                .lastOrNull { it.startsWith(EVENT_FIELD) }
                 ?.removePrefix(EVENT_FIELD)
                 ?.removePrefix(" ")
                 ?.trimEnd('\r')
