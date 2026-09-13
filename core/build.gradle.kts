@@ -1,2 +1,8 @@
 // Shared models, rules, fingerprint, event line, surface grammars. No server dependency.
-dependencies { "testImplementation"(libs.archunit.junit5) }
+dependencies {
+    // Flow<Frame> and Headers are part of the interceptor contract. ktor-http is not the server.
+    "api"(libs.kotlinx.coroutines.core)
+    "api"(libs.ktor.http)
+    "implementation"(libs.ulid.creator)
+    "testImplementation"(libs.archunit.junit5)
+}

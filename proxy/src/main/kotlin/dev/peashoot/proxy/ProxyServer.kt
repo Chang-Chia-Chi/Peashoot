@@ -1,5 +1,6 @@
 package dev.peashoot.proxy
 
+import dev.peashoot.core.Interceptor
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.cio.CIO as ClientCIO
 import io.ktor.http.HttpHeaders
@@ -26,13 +27,22 @@ data class ProxyConfig(
     val anthropicUpstream: String = "https://api.anthropic.com",
     /** Debug: append every raw upstream response to this file, for building fixtures. */
     val dumpFrames: Path? = null,
+    /** Sent upstream, never kept: not on the Exchange, not in any log or file. Any case. */
+    val secretHeaders: Set<String> = setOf("authorization", "x-api-key"),
 )
 
 /**
  * The headless proxy: one Ktor server, loopback only, relaying every request to the configured
  * upstream.
  */
-class ProxyServer(private val config: ProxyConfig) : AutoCloseable {
+class ProxyServer(config: ProxyConfig, interceptors: List<Interceptor> = emptyList()) :
+    AutoCloseable {
+    // Header names compare case-insensitively; normalize the configured secrets once. Named apart
+    // from the parameter: in the initializers below, the parameter would shadow a same-named
+    // property.
+    private val applied =
+        config.copy(secretHeaders = config.secretHeaders.map(String::lowercase).toSet())
+
     private val upstream =
         HttpClient(ClientCIO) {
             // Streams outlive the engine's 15 s default; 0 disables the per-request timeout.
@@ -40,8 +50,8 @@ class ProxyServer(private val config: ProxyConfig) : AutoCloseable {
         }
 
     private val server: EmbeddedServer<*, *> =
-        embeddedServer(Netty, port = config.port, host = "127.0.0.1") {
-                relayModule(config, upstream)
+        embeddedServer(Netty, port = applied.port, host = "127.0.0.1") {
+                relayModule(applied, upstream, interceptors)
             }
             .start(wait = false)
 
@@ -56,7 +66,11 @@ class ProxyServer(private val config: ProxyConfig) : AutoCloseable {
     }
 }
 
-fun Application.relayModule(config: ProxyConfig, upstream: HttpClient) {
+fun Application.relayModule(
+    config: ProxyConfig,
+    upstream: HttpClient,
+    interceptors: List<Interceptor>,
+) {
     install(CallLogging) {
         disableDefaultColors()
     } // method, path, status, duration; never headers or bodies
@@ -74,7 +88,7 @@ fun Application.relayModule(config: ProxyConfig, upstream: HttpClient) {
                             "Peashoot speaks plain HTTP; upgrade refused",
                             status = HttpStatusCode.UpgradeRequired,
                         )
-                    else -> relay(call, config.anthropicUpstream, upstream, config.dumpFrames)
+                    else -> relay(call, config, upstream, interceptors)
                 }
             }
         }
