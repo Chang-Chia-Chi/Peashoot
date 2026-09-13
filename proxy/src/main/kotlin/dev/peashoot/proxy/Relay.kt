@@ -33,6 +33,7 @@ import java.nio.channels.UnresolvedAddressException
 import java.nio.charset.CharacterCodingException
 import java.nio.file.Path
 import kotlin.time.TimeSource
+import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.channels.Channel
@@ -158,7 +159,7 @@ class Relay(
     ) {
         exchange.response = Exchange.Response(source.status, source.headers)
         val stream = ExchangeStream(exchange, source, interceptors)
-        val drive = streams.launch { stream.drive() }
+        val drive = streams.launch(brokenInterceptor(exchange)) { stream.drive() }
         var delivered = false
         try {
             call.respond(
@@ -179,10 +180,27 @@ class Relay(
             // its call coroutine until the upstream finishes: the cost of keeping the body open
             // without internal APIs.
             withContext(NonCancellable) {
+                // The price of taking any failed respond for a departure: an engine that refuses
+                // the response header is recorded as a client that left, flag and all. It is also
+                // what keeps the drive from wedging on its very first send.
                 if (!delivered) stream.detach()
                 drive.join()
             }
         }
+    }
+
+    /**
+     * An interceptor that breaks the must-not-throw contract dies on the stream's own coroutine,
+     * whose SupervisorJob would send it to the JVM's default handler instead of the log. The one
+     * place a stack trace earns its keep: it means a sink is broken.
+     */
+    private fun brokenInterceptor(exchange: Exchange) = CoroutineExceptionHandler { _, e ->
+        log.error(
+            "interceptor threw for {} {}",
+            exchange.request.method,
+            exchange.request.path,
+            e,
+        )
     }
 
     /**
@@ -244,7 +262,7 @@ private class ExchangeStream(
      * terminal frame says what happened.
      */
     suspend fun drive() {
-        var attached = true
+        var writerGone = false
         try {
             frames
                 .catch { e ->
@@ -256,12 +274,12 @@ private class ExchangeStream(
                     )
                 }
                 .collect { frame ->
-                    if (attached) {
+                    if (!writerGone) {
                         try {
                             handoff.send(frame)
                         } catch (_: ClosedSendChannelException) {
                             // The writer left; the rest of the response is for the other sinks.
-                            attached = false
+                            writerGone = true
                         }
                     }
                 }
@@ -300,6 +318,8 @@ private class ExchangeStream(
      * The client left before the response ended, however it left. Idempotent, and never after
      * completion: a client that leaves once the stream is over is not a mid-stream disconnect, and
      * completion never waits to hear, or a client that vanished quietly would wedge the exchange.
+     * That leaves one accepted window: a write of the final frame that fails after the drive has
+     * finished collecting is stored as a clean completion, with the flag unset.
      */
     suspend fun detach() {
         lock.withLock {
@@ -308,8 +328,8 @@ private class ExchangeStream(
             // Closed, never cancelled: the drive's pending send then fails on its own instead of
             // taking the collection down with it.
             handoff.close()
-            // The bytes sent so far, for #10's client-gone event, are a field on the exchange set
-            // here.
+            // #10's client-gone event wants the bytes sent so far: this is where it would set
+            // that field on the exchange.
             exchange.clientDisconnected = true
             interceptors.forEach { it.onClientGone(exchange) }
         }

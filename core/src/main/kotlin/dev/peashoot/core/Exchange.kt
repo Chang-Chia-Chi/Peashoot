@@ -14,9 +14,10 @@ enum class Mode {
 /**
  * One request through the proxy, from receipt to completion. The request side is fixed at receipt;
  * the source fills in the response side and the sinks set the flags, so this is a context object,
- * not a value. Secret headers are stripped before construction and never appear here.
- * [clientDisconnected] is set when the client detaches, under the stream's mutex, which also keeps
- * client-gone and completion apart; everything else is written on the drive coroutine. The store
+ * not a value. Secret headers are stripped before construction and never appear here. The request
+ * side, at receipt, and [response], before the stream starts, are both written on the call
+ * coroutine; [clientDisconnected] is set at detach, under the stream's mutex, which keeps
+ * client-gone and completion apart. Nothing else is written while the stream runs. The store
  * rebuilds one from a row, which is why id and receivedAt are parameters.
  */
 class Exchange(
