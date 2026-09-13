@@ -9,6 +9,8 @@ dependencies {
     implementation(libs.ktor.client.core)
     implementation(libs.ktor.client.cio)
     implementation(libs.kotlinx.serialization.json) // the store's JSON columns, tree API only
+    implementation(libs.hikaricp)
+    implementation(libs.jdbi3.core)
     implementation(libs.sqlite.jdbc)
     implementation(libs.tomlj)
     runtimeOnly(libs.slf4j.simple)

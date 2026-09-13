@@ -5,9 +5,16 @@ import dev.peashoot.core.Frame
 import dev.peashoot.core.Interceptor
 import dev.peashoot.core.Mode
 import dev.peashoot.core.Outcome
+import java.io.IOException
 import java.util.concurrent.ConcurrentHashMap
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.onEach
+import kotlinx.coroutines.withContext
+import org.jdbi.v3.core.JdbiException
+import org.slf4j.LoggerFactory
+
+private val log = LoggerFactory.getLogger("dev.peashoot.proxy")
 
 /**
  * Record mode persists every exchange a source answered, when it ends; the other modes persist
@@ -31,8 +38,23 @@ class Recorder(private val store: Store) : Interceptor {
     /** What arrived before the client left is kept, flagged. #9 keeps consuming and completes. */
     override suspend fun onClientGone(exchange: Exchange) = persist(exchange)
 
+    /**
+     * A persist that started finishes, and a store that cannot write costs this recording only:
+     * never the client's response, never the rest of the chain.
+     */
     private suspend fun persist(exchange: Exchange) {
         val frames = buffers.remove(exchange.id) ?: return
-        store.put(exchange, frames)
+        withContext(NonCancellable) {
+            try {
+                store.put(exchange, frames)
+            } catch (e: IOException) {
+                dropped(exchange, e)
+            } catch (e: JdbiException) {
+                dropped(exchange, e)
+            }
+        }
     }
+
+    private fun dropped(exchange: Exchange, cause: Exception) =
+        log.warn("exchange {} not recorded: {}", exchange.id, cause.toString())
 }

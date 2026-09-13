@@ -1,5 +1,7 @@
 package dev.peashoot.proxy
 
+import com.zaxxer.hikari.HikariConfig
+import com.zaxxer.hikari.HikariDataSource
 import dev.peashoot.core.Exchange
 import dev.peashoot.core.Frame
 import dev.peashoot.core.Mode
@@ -9,14 +11,9 @@ import java.nio.file.Path
 import java.nio.file.StandardCopyOption.ATOMIC_MOVE
 import java.nio.file.StandardCopyOption.REPLACE_EXISTING
 import java.security.MessageDigest
-import java.sql.Connection
-import java.sql.DriverManager
 import java.sql.ResultSet
 import java.time.Instant
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.runBlocking
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
@@ -28,14 +25,17 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.long
 import kotlinx.serialization.json.put
+import org.jdbi.v3.core.Handle
+import org.jdbi.v3.core.Jdbi
 
 /** A stored exchange: the context object rebuilt from its row, plus the frames it produced. */
 data class Recorded(val exchange: Exchange, val frames: List<Frame>)
 
 /**
  * The store of record: `peashoot.db` in the data directory, plus `bodies/` for request bodies and
- * frame lists over 64 KB, named by their SHA-256. One connection, one caller at a time, off the
- * request threads.
+ * frame lists over 64 KB, named by their SHA-256. The only path to the database: one pool, so the
+ * control API can read while the recorder writes, with WAL for the readers and a busy timeout to
+ * queue the writers.
  */
 class Store(home: Path) : AutoCloseable {
     private val bodies: Path =
@@ -45,16 +45,24 @@ class Store(home: Path) : AutoCloseable {
                 files.filter { it.fileName.toString().endsWith(".tmp") }.forEach(Files::delete)
             }
         }
-    private val connection: Connection =
-        DriverManager.getConnection("jdbc:sqlite:${home.resolve("peashoot.db")}").also { c ->
-            c.createStatement().use {
-                it.executeUpdate(SCHEMA)
-                it.executeUpdate(INDEX)
+    private val pool =
+        HikariDataSource(
+            HikariConfig().apply {
+                jdbcUrl =
+                    "jdbc:sqlite:${home.resolve("peashoot.db")}?journal_mode=WAL&busy_timeout=5000"
+                poolName = "peashoot"
+                maximumPoolSize = POOL_SIZE
+            }
+        )
+    private val jdbi: Jdbi =
+        Jdbi.create(pool).also { db ->
+            db.useHandle<Exception> {
+                it.execute(SCHEMA)
+                it.execute(INDEX)
             }
         }
-    private val lock = Mutex()
 
-    suspend fun put(exchange: Exchange, frames: List<Frame>): Unit = io {
+    suspend fun put(exchange: Exchange, frames: List<Frame>): Unit = io { handle ->
         val (body, bodyRef) = inlineOrSpill(exchange.request.body)
         val (framesInline, framesRef) = inlineOrSpill(frames.toJson().toByteArray())
         val columns =
@@ -75,37 +83,36 @@ class Store(home: Path) : AutoCloseable {
                 "client_disconnected" to exchange.clientDisconnected,
             )
         val names = columns.keys.joinToString()
-        val marks = columns.keys.joinToString { "?" }
-        connection.prepareStatement("INSERT INTO exchange ($names) VALUES ($marks)").use { statement
-            ->
-            columns.values.forEachIndexed { i, value -> statement.setObject(i + 1, value) }
-            statement.executeUpdate()
-        }
+        val binds = columns.keys.joinToString { ":$it" }
+        handle
+            .createUpdate("INSERT INTO exchange ($names) VALUES ($binds)")
+            .bindMap(columns)
+            .execute()
     }
 
-    suspend fun get(id: String): Recorded? = io {
-        connection.prepareStatement("$SELECT WHERE id = ?").use { statement ->
-            statement.setString(1, id)
-            statement.executeQuery().use { rows -> if (rows.next()) rows.toRecorded() else null }
-        }
+    suspend fun get(id: String): Recorded? = io { handle ->
+        handle
+            .createQuery("$SELECT WHERE id = :id")
+            .bind("id", id)
+            .map { rows, _ -> rows.toRecorded() }
+            .findOne()
+            .orElse(null)
     }
 
     /** Newest first. */
-    suspend fun list(limit: Int = DEFAULT_LIMIT): List<Recorded> = io {
-        connection.prepareStatement("$SELECT ORDER BY received_at DESC, id DESC LIMIT ?").use {
-            statement ->
-            statement.setInt(1, limit)
-            statement.executeQuery().use { rows ->
-                generateSequence { if (rows.next()) rows.toRecorded() else null }.toList()
-            }
-        }
+    suspend fun list(limit: Int = DEFAULT_LIMIT): List<Recorded> = io { handle ->
+        handle
+            .createQuery("$SELECT ORDER BY received_at DESC, id DESC LIMIT :limit")
+            .bind("limit", limit)
+            .map { rows, _ -> rows.toRecorded() }
+            .list()
     }
 
-    /** Waits for an in-flight call rather than closing the connection under it. */
-    override fun close() = runBlocking { lock.withLock { connection.close() } }
+    override fun close() = pool.close()
 
-    private suspend fun <T> io(block: () -> T): T =
-        withContext(Dispatchers.IO) { lock.withLock { block() } }
+    /** Off the request threads, on a pooled connection returned when the block ends. */
+    private suspend fun <T> io(block: (Handle) -> T): T =
+        withContext(Dispatchers.IO) { jdbi.open().use(block) }
 
     /** Up to the limit the bytes go in the row; over it they go to a spill file the row names. */
     private fun inlineOrSpill(bytes: ByteArray): Pair<ByteArray?, String?> {
@@ -147,6 +154,7 @@ class Store(home: Path) : AutoCloseable {
     private companion object {
         const val INLINE_LIMIT = 64 * 1024
         const val DEFAULT_LIMIT = 100
+        const val POOL_SIZE = 4
         const val SCHEMA =
             """CREATE TABLE IF NOT EXISTS exchange (
                 id TEXT PRIMARY KEY,

@@ -1,7 +1,10 @@
 package dev.peashoot.proxy
 
+import dev.peashoot.core.Exchange
 import dev.peashoot.core.FrameParser
+import dev.peashoot.core.Interceptor
 import dev.peashoot.core.Mode
+import dev.peashoot.core.Outcome
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.cio.CIO
 import io.ktor.client.request.header
@@ -30,6 +33,7 @@ import kotlin.test.assertTrue
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import kotlinx.io.readString
 
 /** What a record or passthrough route leaves in the data directory, seen through the store. */
@@ -195,6 +199,29 @@ class RecorderTest {
             assertEquals(emptyList(), store.list())
         }
     }
+
+    @Test
+    fun `a store that cannot write costs the recording only, never the client or the chain`() =
+        runBlocking {
+            val fixture = fixture("stream-with-tool-use.sse")
+            val closed = Store(home()).also { it.close() } // every write fails from here on
+            val after =
+                object : Interceptor {
+                    val completed = CompletableDeferred<Int>()
+
+                    override suspend fun onComplete(exchange: Exchange, outcome: Outcome) {
+                        completed.complete(outcome.status)
+                    }
+                }
+            FakeUpstream().use { upstream ->
+                upstream.reply = { streamReply(FrameParser.parse(fixture).map { it.raw }) }
+                val config = ProxyConfig(port = 0, anthropicUpstream = upstream.url)
+                ProxyServer(config, listOf(Recorder(closed), after)).use { proxy ->
+                    assertEquals(fixture.decodeToString(), post(proxy, "{}").bodyAsText())
+                }
+            }
+            assertEquals(200, withTimeout(5_000) { after.completed.await() })
+        }
 
     @Test
     fun `a passthrough route persists nothing`() = runBlocking {
