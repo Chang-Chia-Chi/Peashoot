@@ -14,7 +14,8 @@ fun homeDir(env: (String) -> String? = System::getenv): Path =
 
 /**
  * Creates the directory and a default config file on first start, then loads the file with the
- * environment on top for the keys CI needs.
+ * environment on top for the keys CI needs. The file is rendered from [ProxyConfig]'s own defaults,
+ * so the two cannot drift.
  */
 fun loadConfig(home: Path, env: (String) -> String? = System::getenv): ProxyConfig {
     Files.createDirectories(home)

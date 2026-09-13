@@ -31,6 +31,7 @@ import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
@@ -221,6 +222,36 @@ class RecorderTest {
                 }
             }
             assertEquals(200, withTimeout(5_000) { after.completed.await() })
+        }
+
+    @Test
+    fun `concurrent exchanges record separately, each with its own body and every frame`() =
+        runBlocking {
+            val frames = FrameParser.parse(fixture("stream-with-tool-use.sse")).map { it.raw }
+            val releaseRest = CompletableDeferred<Unit>()
+            Store(home()).use { store ->
+                FakeUpstream().use { upstream ->
+                    // Both streams are on the wire before either gets past its first frame.
+                    upstream.reply = {
+                        streamReply(frames) { index -> if (index == 1) releaseRest.await() }
+                    }
+                    val config = ProxyConfig(port = 0, anthropicUpstream = upstream.url)
+                    ProxyServer(config, listOf(Recorder(store))).use { proxy ->
+                        val a = async { post(proxy, """{"id":"a"}""").bodyAsText() }
+                        val b = async { post(proxy, """{"id":"b"}""").bodyAsText() }
+                        withTimeout(5_000) { while (upstream.received.size < 2) delay(20) }
+                        releaseRest.complete(Unit)
+                        assertEquals(frames.joinToString(""), a.await())
+                        assertEquals(frames.joinToString(""), b.await())
+                    }
+                }
+                val recorded = store.list()
+                assertEquals(
+                    setOf("""{"id":"a"}""", """{"id":"b"}"""),
+                    recorded.map { it.exchange.request.body.decodeToString() }.toSet(),
+                )
+                recorded.forEach { assertEquals(frames, it.frames.map { frame -> frame.raw }) }
+            }
         }
 
     @Test
