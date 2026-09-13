@@ -24,5 +24,4 @@ object ArchitectureTest {
             .should()
             .dependOnClassesThat()
             .resideInAnyPackage("io.ktor.server..", "androidx.compose..", "org.jetbrains.compose..")
-            .allowEmptyShould(true) // core has no production classes yet
 }

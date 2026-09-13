@@ -54,8 +54,11 @@ fun loadConfig(home: Path, env: (String) -> String? = System::getenv): ProxyConf
                 ?: defaults.anthropicUpstream,
         dumpFrames = env("PEASHOOT_DUMP_FRAMES")?.let(Path::of),
         secretHeaders =
-            toml.getArray("secretHeaders")?.toList()?.map { it.toString() }?.toSet()
-                ?: defaults.secretHeaders,
+            toml
+                .getArray("secretHeaders")
+                ?.toList()
+                ?.map { it as? String ?: error("secretHeaders must be a list of strings, not $it") }
+                ?.toSet() ?: defaults.secretHeaders,
         routes = defaults.routes + toml.getTable("routes")?.routes().orEmpty(),
     )
 }
@@ -79,7 +82,19 @@ private fun ProxyConfig.toToml(): String = buildString {
 
 private fun TomlTable.routes(): Map<String, Mode> =
     keySet().associateWith { name ->
-        val mode = getString(listOf(name, "mode")) ?: error("routes.$name.mode is required")
-        Mode.entries.firstOrNull { it.name.equals(mode, ignoreCase = true) }
-            ?: error("routes.$name.mode must be record, replay, or passthrough, not $mode")
+        if (name != DEFAULT_ROUTE) {
+            error("routes.$name: routing is not wired yet; only the '$DEFAULT_ROUTE' route exists")
+        }
+        val modeString = getString(listOf(name, "mode")) ?: error("routes.$name.mode is required")
+        val mode =
+            Mode.entries.firstOrNull { it.name.equals(modeString, ignoreCase = true) }
+                ?: error(
+                    "routes.$name.mode must be record, replay, or passthrough, not $modeString"
+                )
+        if (mode == Mode.REPLAY) {
+            error(
+                "routes.$name.mode = replay is not implemented yet (#12): use record or passthrough"
+            )
+        }
+        mode
     }
