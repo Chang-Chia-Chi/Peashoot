@@ -2,13 +2,13 @@
 plugins { application }
 
 dependencies {
+    implementation(project(":core"))
     implementation(libs.ktor.server.core)
     implementation(libs.ktor.server.netty)
     implementation(libs.ktor.server.call.logging)
     implementation(libs.ktor.client.core)
     implementation(libs.ktor.client.cio)
     runtimeOnly(libs.slf4j.simple)
-    testImplementation(project(":core"))
 }
 
 // The fake upstream replays the same captured provider responses the core parser tests use.

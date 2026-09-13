@@ -3,6 +3,7 @@
 archunit = "1.5.0"
 detekt = "2.0.0-alpha.6"
 kotlin = "2.4.20"
+kotlinx-coroutines = "1.11.0"
 kover = "0.9.9"
 ktfmt-plugin = "0.27.0"
 ktor = "3.5.2"
@@ -11,6 +12,7 @@ slf4j = "2.0.19"
 [libraries]
 archunit-junit5 = { module = "com.tngtech.archunit:archunit-junit5", version.ref = "archunit" }
 kotlin-test = { module = "org.jetbrains.kotlin:kotlin-test", version.ref = "kotlin" }
+kotlinx-coroutines-core = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-core", version.ref = "kotlinx-coroutines" }
 ktor-server-core = { module = "io.ktor:ktor-server-core", version.ref = "ktor" }
 ktor-server-netty = { module = "io.ktor:ktor-server-netty", version.ref = "ktor" }
 ktor-server-call-logging = { module = "io.ktor:ktor-server-call-logging", version.ref = "ktor" }

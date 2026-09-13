@@ -1,5 +1,6 @@
 package dev.peashoot.proxy
 
+import dev.peashoot.core.Interceptor
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.cio.CIO as ClientCIO
 import io.ktor.http.HttpHeaders
@@ -32,7 +33,10 @@ data class ProxyConfig(
  * The headless proxy: one Ktor server, loopback only, relaying every request to the configured
  * upstream.
  */
-class ProxyServer(private val config: ProxyConfig) : AutoCloseable {
+class ProxyServer(
+    private val config: ProxyConfig,
+    interceptors: List<Interceptor> = emptyList(),
+) : AutoCloseable {
     private val upstream =
         HttpClient(ClientCIO) {
             // Streams outlive the engine's 15 s default; 0 disables the per-request timeout.
@@ -41,7 +45,7 @@ class ProxyServer(private val config: ProxyConfig) : AutoCloseable {
 
     private val server: EmbeddedServer<*, *> =
         embeddedServer(Netty, port = config.port, host = "127.0.0.1") {
-                relayModule(config, upstream)
+                relayModule(config, upstream, interceptors)
             }
             .start(wait = false)
 
@@ -56,7 +60,11 @@ class ProxyServer(private val config: ProxyConfig) : AutoCloseable {
     }
 }
 
-fun Application.relayModule(config: ProxyConfig, upstream: HttpClient) {
+fun Application.relayModule(
+    config: ProxyConfig,
+    upstream: HttpClient,
+    interceptors: List<Interceptor>,
+) {
     install(CallLogging) {
         disableDefaultColors()
     } // method, path, status, duration; never headers or bodies
@@ -74,7 +82,14 @@ fun Application.relayModule(config: ProxyConfig, upstream: HttpClient) {
                             "Peashoot speaks plain HTTP; upgrade refused",
                             status = HttpStatusCode.UpgradeRequired,
                         )
-                    else -> relay(call, config.anthropicUpstream, upstream, config.dumpFrames)
+                    else ->
+                        relay(
+                            call,
+                            config.anthropicUpstream,
+                            upstream,
+                            interceptors,
+                            config.dumpFrames,
+                        )
                 }
             }
         }
