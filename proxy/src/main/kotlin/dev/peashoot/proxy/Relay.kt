@@ -163,13 +163,18 @@ private suspend fun respondFrom(
     )
 }
 
-/** The client sink: each frame goes out as soon as it exists, then the chain hears the outcome. */
+/**
+ * The client sink: each frame goes out as soon as it exists, then the chain hears the outcome. A
+ * source or interceptor that fails mid-stream ends the client's response where it is and still
+ * completes the exchange; the missing terminal frame says what happened.
+ */
 private suspend fun writeFrames(
     channel: ByteWriteChannel,
     exchange: Exchange,
     frames: Flow<Frame>,
     interceptors: List<Interceptor>,
 ) {
+    var clientGone = false
     try {
         frames.collect { frame ->
             channel.writeFully(frame.raw.toByteArray())
@@ -177,16 +182,13 @@ private suspend fun writeFrames(
         }
     } catch (e: CancellationException) {
         // The engine cancels the writer when the client goes away. #9 verifies and extends this.
+        clientGone = true
         exchange.clientDisconnected = true
         withContext(NonCancellable) { interceptors.forEach { it.onClientGone(exchange) } }
         throw e
-    } catch (e: IOException) {
-        // The source failed mid-stream. The client's response ends here; the chain still hears
-        // the outcome, and the missing terminal frame says what happened.
-        complete(exchange, interceptors)
-        throw e
+    } finally {
+        if (!clientGone) complete(exchange, interceptors)
     }
-    complete(exchange, interceptors)
 }
 
 private suspend fun complete(exchange: Exchange, interceptors: List<Interceptor>) {
@@ -238,8 +240,12 @@ private class UpstreamSource(private val response: HttpResponse, private val dum
     FrameSource {
     override val status = response.status.value
     override val headers = response.headers
+    private var collected = false
 
     override fun frames(): Flow<Frame> = flow {
+        // A second collection would read an exhausted body and silently yield nothing.
+        check(!collected) { "the upstream body can be collected once" }
+        collected = true
         val streaming = response.contentType()?.match(ContentType.Text.EventStream) == true
         val parser = FrameParser(streaming)
         val start = TimeSource.Monotonic.markNow()

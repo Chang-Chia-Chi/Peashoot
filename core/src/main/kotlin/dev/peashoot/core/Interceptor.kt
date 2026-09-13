@@ -11,7 +11,11 @@ interface Interceptor {
     /** Continue down the chain, or answer from a source of your own and skip the upstream. */
     suspend fun onRequest(exchange: Exchange): Decision = Decision.Continue
 
-    /** Observe or transform the frames on their way to the sinks. */
+    /**
+     * Observe or transform the frames on their way to the sinks. The returned flow must collect
+     * [frames] exactly once and stay unbuffered: the source is cold and single-use, and the
+     * client's pace is the upstream's pace.
+     */
     fun onFrames(exchange: Exchange, frames: Flow<Frame>): Flow<Frame> = frames
 
     suspend fun onComplete(exchange: Exchange, outcome: Outcome) = Unit

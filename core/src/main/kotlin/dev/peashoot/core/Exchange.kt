@@ -7,7 +7,9 @@ import kotlin.random.Random
 /**
  * One request through the proxy, from receipt to completion. The request side is fixed at receipt;
  * the source fills in the response side and the sinks set the flags, so this is a context object,
- * not a value. Secret headers are stripped before construction and never appear here.
+ * not a value. Secret headers are stripped before construction and never appear here. Every field
+ * is written and read on the exchange's own coroutine; a second coroutine (client-gone, #9) must
+ * synchronize.
  */
 class Exchange(val request: Request) {
     class Request(val method: String, val path: String, val headers: Headers, val body: ByteArray)
