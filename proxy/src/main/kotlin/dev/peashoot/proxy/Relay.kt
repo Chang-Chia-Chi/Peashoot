@@ -31,7 +31,6 @@ import io.ktor.utils.io.readAvailable
 import io.ktor.utils.io.writeFully
 import java.io.IOException
 import java.nio.channels.UnresolvedAddressException
-import java.nio.file.Path
 import kotlin.coroutines.cancellation.CancellationException
 import kotlin.time.TimeSource
 import kotlinx.coroutines.NonCancellable
@@ -54,9 +53,6 @@ private val hopByHop =
         "upgrade",
     )
 
-/** Sent upstream, never kept: not on the Exchange, not in any log or file. */
-private val secretHeaders = setOf("authorization", "x-api-key")
-
 /**
  * Engine-owned or wrong-for-upstream request headers. accept-encoding goes so streams arrive
  * uncompressed.
@@ -65,8 +61,8 @@ private val notForwardedToUpstream =
     hopByHop + setOf("host", "content-length", "content-type", "accept-encoding")
 
 /**
- * Engine-owned response headers; content-type and content-length travel as the response's own
- * properties.
+ * Engine-owned response headers. content-type travels as the response's own property; the body is
+ * re-encoded frame text, so it goes out chunked rather than under the upstream's length.
  */
 private val notForwardedToClient = hopByHop + setOf("content-length", "content-type")
 
@@ -76,18 +72,15 @@ private fun Headers.without(excluded: Set<String>): Headers = Headers.build {
     }
 }
 
-private fun Headers.toMap(): Map<String, List<String>> = entries().associate { it.key to it.value }
-
 /**
  * One request through the chain. The first interceptor to respond is the source; otherwise the
  * upstream is, and a failure to reach it is a proxy error, never a provider one.
  */
 suspend fun relay(
     call: ApplicationCall,
-    upstreamBase: String,
+    config: ProxyConfig,
     upstream: HttpClient,
     interceptors: List<Interceptor>,
-    dumpFrames: Path?,
 ) {
     val body = call.receive<ByteArray>()
     val exchange =
@@ -95,39 +88,53 @@ suspend fun relay(
             Exchange.Request(
                 call.request.httpMethod.value,
                 call.request.uri,
-                call.request.headers.without(secretHeaders).toMap(),
+                call.request.headers.without(config.secretHeaders),
                 body,
             )
         )
-    val own = interceptors.firstNotNullOfOrNull {
-        (it.onRequest(exchange) as? Decision.Respond)?.source
-    }
-    if (own != null) {
-        respondFrom(call, exchange, own, interceptors)
+    // Every interceptor hears the request; the first source offered wins.
+    val offered =
+        interceptors
+            .map { it.onRequest(exchange) }
+            .firstNotNullOfOrNull { (it as? Decision.Respond)?.source }
+    if (offered != null) {
+        respondFrom(call, exchange, offered, interceptors)
         return
     }
 
     val requestContentType = call.request.header(HttpHeaders.ContentType)?.let(ContentType::parse)
     val statement =
-        upstream.prepareRequest(upstreamBase.trimEnd('/') + call.request.uri) {
+        upstream.prepareRequest(config.anthropicUpstream.trimEnd('/') + call.request.uri) {
             method = call.request.httpMethod
             headers.appendAll(call.request.headers.without(notForwardedToUpstream))
             if (body.isNotEmpty() || requestContentType != null)
                 setBody(ByteArrayContent(body, requestContentType))
         }
     var responding = false
-    try {
-        statement.execute { response ->
-            responding = true
-            val dump = dumpFrames?.let {
-                FrameDump(it, exchange.request.method, exchange.request.path, response.status.value)
+    val failure =
+        try {
+            statement.execute { response ->
+                responding = true
+                val dump =
+                    config.dumpFrames?.let {
+                        FrameDump(
+                            it,
+                            exchange.request.method,
+                            exchange.request.path,
+                            response.status.value,
+                        )
+                    }
+                respondFrom(call, exchange, UpstreamSource(response, dump), interceptors)
             }
-            respondFrom(call, exchange, UpstreamSource(response, dump), interceptors)
+            null
+        } catch (e: IOException) {
+            e
+        } catch (e: UnresolvedAddressException) {
+            e
         }
-    } catch (e: IOException) {
-        if (responding) throw e else respondProxyFailure(call, exchange, interceptors, e)
-    } catch (e: UnresolvedAddressException) {
-        if (responding) throw e else respondProxyFailure(call, exchange, interceptors, e)
+    if (failure != null) {
+        if (responding) throw failure
+        respondProxyFailure(call, exchange, interceptors, failure)
     }
 }
 
@@ -143,18 +150,12 @@ private suspend fun respondFrom(
         interceptors.fold(source.frames()) { acc, interceptor ->
             interceptor.onFrames(exchange, acc)
         }
-    val lower = source.headers.mapKeys { it.key.lowercase() }
     call.respond(
         object : OutgoingContent.WriteChannelContent() {
             override val status = HttpStatusCode.fromValue(source.status)
-            override val headers = Headers.build {
-                source.headers.forEach { (name, values) ->
-                    if (name.lowercase() !in notForwardedToClient)
-                        values.forEach { append(name, it) }
-                }
-            }
-            override val contentType = lower["content-type"]?.firstOrNull()?.let(ContentType::parse)
-            override val contentLength = lower["content-length"]?.firstOrNull()?.toLongOrNull()
+            override val headers = source.headers.without(notForwardedToClient)
+            override val contentType =
+                source.headers[HttpHeaders.ContentType]?.let(ContentType::parse)
 
             override suspend fun writeTo(channel: ByteWriteChannel) =
                 writeFrames(channel, exchange, frames, interceptors)
@@ -179,7 +180,16 @@ private suspend fun writeFrames(
         exchange.clientDisconnected = true
         withContext(NonCancellable) { interceptors.forEach { it.onClientGone(exchange) } }
         throw e
+    } catch (e: IOException) {
+        // The source failed mid-stream. The client's response ends here; the chain still hears
+        // the outcome, and the missing terminal frame says what happened.
+        complete(exchange, interceptors)
+        throw e
     }
+    complete(exchange, interceptors)
+}
+
+private suspend fun complete(exchange: Exchange, interceptors: List<Interceptor>) {
     val outcome = Outcome(checkNotNull(exchange.status))
     interceptors.forEach { it.onComplete(exchange, outcome) }
 }
@@ -200,22 +210,34 @@ private suspend fun respondProxyFailure(
         exchange.request.path,
         cause.toString(),
     )
-    val detail = cause.toString().replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n")
     exchange.status = HttpStatusCode.BadGateway.value
     call.respondText(
-        """{"type":"peashoot_error","error":"upstream_unreachable","detail":"$detail"}""",
+        """{"type":"peashoot_error","error":"upstream_unreachable","detail":${jsonString(cause.toString())}}""",
         ContentType.Application.Json,
         HttpStatusCode.BadGateway,
     )
-    val outcome = Outcome(HttpStatusCode.BadGateway.value)
-    interceptors.forEach { it.onComplete(exchange, outcome) }
+    complete(exchange, interceptors)
+}
+
+/** A JSON string literal, quotes included. */
+private fun jsonString(text: String): String = buildString {
+    append('"')
+    for (c in text) {
+        when {
+            c == '"' -> append("\\\"")
+            c == '\\' -> append("\\\\")
+            c < ' ' -> append("\\u%04x".format(c.code))
+            else -> append(c)
+        }
+    }
+    append('"')
 }
 
 /** The terminal source: the provider's response, parsed into frames as its bytes arrive. */
 private class UpstreamSource(private val response: HttpResponse, private val dump: FrameDump?) :
     FrameSource {
     override val status = response.status.value
-    override val headers = response.headers.toMap()
+    override val headers = response.headers
 
     override fun frames(): Flow<Frame> = flow {
         val streaming = response.contentType()?.match(ContentType.Text.EventStream) == true

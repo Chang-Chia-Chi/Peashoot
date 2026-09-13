@@ -27,6 +27,8 @@ data class ProxyConfig(
     val anthropicUpstream: String = "https://api.anthropic.com",
     /** Debug: append every raw upstream response to this file, for building fixtures. */
     val dumpFrames: Path? = null,
+    /** Sent upstream, never kept: not on the Exchange, not in any log or file. Lower case. */
+    val secretHeaders: Set<String> = setOf("authorization", "x-api-key"),
 )
 
 /**
@@ -82,14 +84,7 @@ fun Application.relayModule(
                             "Peashoot speaks plain HTTP; upgrade refused",
                             status = HttpStatusCode.UpgradeRequired,
                         )
-                    else ->
-                        relay(
-                            call,
-                            config.anthropicUpstream,
-                            upstream,
-                            interceptors,
-                            config.dumpFrames,
-                        )
+                    else -> relay(call, config, upstream, interceptors)
                 }
             }
         }

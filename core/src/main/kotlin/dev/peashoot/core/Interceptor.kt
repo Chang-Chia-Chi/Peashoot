@@ -1,5 +1,6 @@
 package dev.peashoot.core
 
+import io.ktor.http.Headers
 import kotlinx.coroutines.flow.Flow
 
 /**
@@ -27,7 +28,7 @@ sealed interface Decision {
 /** Where a response comes from: the upstream, a cassette, or a resume buffer. */
 interface FrameSource {
     val status: Int
-    val headers: Map<String, List<String>>
+    val headers: Headers
 
     fun frames(): Flow<Frame>
 }

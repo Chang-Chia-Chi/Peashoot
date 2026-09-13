@@ -16,7 +16,9 @@ import io.ktor.client.statement.bodyAsChannel
 import io.ktor.client.statement.bodyAsText
 import io.ktor.http.ContentType
 import io.ktor.http.contentType
+import io.ktor.http.headersOf
 import io.ktor.utils.io.readRemaining
+import java.io.IOException
 import java.net.ServerSocket
 import java.util.concurrent.CopyOnWriteArrayList
 import kotlin.test.Test
@@ -26,6 +28,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertNull
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.asFlow
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.runBlocking
 import kotlinx.io.readByteArray
@@ -69,12 +72,19 @@ class InterceptorChainTest {
                     )
                 }
                 val chain = listOf(object : Interceptor {}, observer)
-                ProxyServer(ProxyConfig(port = 0, anthropicUpstream = upstream.url), chain).use {
-                    proxy ->
+                val config =
+                    ProxyConfig(
+                        port = 0,
+                        anthropicUpstream = upstream.url,
+                        secretHeaders = setOf("authorization", "x-api-key", "x-custom-secret"),
+                    )
+                ProxyServer(config, chain).use { proxy ->
                     val body =
                         HttpClient(CIO)
                             .post("${proxy.url}/v1/messages") {
                                 header("x-api-key", "sk-ant-SECRET")
+                                header("x-custom-secret", "also-SECRET")
+                                header("anthropic-beta", "kept")
                                 setBody("{}")
                             }
                             .bodyAsChannel()
@@ -82,6 +92,13 @@ class InterceptorChainTest {
                             .readByteArray()
                     assertContentEquals(fixture, body)
                 }
+                val sent = upstream.received.single().headers.mapKeys { it.key.lowercase() }
+                assertEquals(
+                    listOf("sk-ant-SECRET"),
+                    sent["x-api-key"],
+                    "secrets still go upstream",
+                )
+                assertEquals(listOf("also-SECRET"), sent["x-custom-secret"])
             }
 
             val frames = FrameParser.parse(fixture).map { "frame ${it.event}" }
@@ -89,11 +106,12 @@ class InterceptorChainTest {
                 listOf("request POST /v1/messages") + frames + "complete 200",
                 observer.log,
             )
+            val kept = observer.exchange.request.headers
+            assertEquals("kept", kept["anthropic-beta"])
+            assertNull(kept["x-api-key"], "a secret header must never reach the exchange")
             assertNull(
-                observer.exchange.request.headers.keys.firstOrNull {
-                    it.equals("x-api-key", ignoreCase = true)
-                },
-                "a secret header must never reach the exchange",
+                kept["x-custom-secret"],
+                "a configured secret header must never reach the exchange",
             )
         }
 
@@ -108,7 +126,7 @@ class InterceptorChainTest {
                             object : FrameSource {
                                 override val status = 200
                                 override val headers =
-                                    mapOf(
+                                    headersOf(
                                         "content-type" to listOf("text/event-stream"),
                                         "x-peashoot-replay" to listOf("true"),
                                     )
@@ -133,9 +151,49 @@ class InterceptorChainTest {
                 }
                 assertEquals(0, upstream.received.size, "the upstream must not be called")
             }
-            // Later interceptors are not asked, but they still see the frames and the outcome.
+            // Later interceptors still hear the request, the frames, and the outcome.
             val frames = FrameParser.parse(fixture).map { "frame ${it.event}" }
-            assertEquals(frames + "complete 200", observer.log)
+            assertEquals(
+                listOf("request POST /v1/messages") + frames + "complete 200",
+                observer.log,
+            )
+        }
+
+    @Test
+    fun `a source that fails mid-stream ends the client's response and still completes the exchange`() =
+        runBlocking {
+            val fixture = fixture("stream-with-tool-use.sse")
+            val dropBeforeStop =
+                object : Interceptor {
+                    override fun onFrames(exchange: Exchange, frames: Flow<Frame>) = frames.map {
+                        if (it.event == "message_stop") throw IOException("upstream dropped")
+                        it
+                    }
+                }
+            val observer = Observer()
+            FakeUpstream().use { upstream ->
+                upstream.reply = {
+                    FakeUpstream.Reply(
+                        contentType = ContentType.Text.EventStream,
+                        frames = FrameParser.parse(fixture).map { it.raw },
+                    )
+                }
+                val chain = listOf(dropBeforeStop, observer)
+                ProxyServer(ProxyConfig(port = 0, anthropicUpstream = upstream.url), chain).use {
+                    proxy ->
+                    val body =
+                        HttpClient(CIO)
+                            .post("${proxy.url}/v1/messages") { setBody("{}") }
+                            .bodyAsText()
+                    val relayed = FrameParser.parse(fixture).dropLast(1)
+                    assertEquals(relayed.joinToString("") { it.raw }, body)
+                }
+            }
+            val relayed = FrameParser.parse(fixture).dropLast(1).map { "frame ${it.event}" }
+            assertEquals(
+                listOf("request POST /v1/messages") + relayed + "complete 200",
+                observer.log,
+            )
         }
 
     @Test
