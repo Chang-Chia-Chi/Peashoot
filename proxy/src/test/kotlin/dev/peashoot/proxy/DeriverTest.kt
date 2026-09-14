@@ -63,12 +63,14 @@ class DeriverTest {
         store: Store,
         home: Path,
         reply: FakeUpstream.Reply,
+        gource: GourceLog? = null,
         block: suspend (String) -> Unit,
     ) {
         FakeUpstream().use { upstream ->
             upstream.reply = { reply }
             val config = ProxyConfig(port = 0, anthropicUpstream = upstream.url)
-            val chain = listOf(Recorder(store), Deriver(store, home.resolve(EVENTS_FILE)))
+            val deriver = Deriver(store, home.resolve(EVENTS_FILE), gource = gource)
+            val chain = listOf(Recorder(store), deriver)
             ProxyServer(config, chain).use { proxy -> block(proxy.url) }
         }
     }
@@ -101,6 +103,7 @@ class DeriverTest {
                 assertEquals(started.text("exchangeId"), completed.text("exchangeId"))
                 assertEquals(lines, store.events(), "the event table mirrors the file")
                 assertSession(store.sessions().single())
+                assertTrue(Files.notExists(home.resolve(GOURCE_FILE)), "the flag was off")
             }
         }
 
@@ -309,6 +312,48 @@ class DeriverTest {
             )
         }
 
+    @Test
+    fun `with the Gource flag on, a completed turn appends one custom-format line per file tool`() =
+        runBlocking {
+            val home = home()
+            Store(home).use { store ->
+                val headers = CLAUDE_CODE_HEADERS + ("x-claude-code-session-id" to GOURCE_SESSION)
+                val gource = GourceLog(home.resolve(GOURCE_FILE))
+                val before = Instant.now().epochSecond
+                withProxy(store, home, streamReply("stream-with-file-tools.sse"), gource) { url ->
+                    assertEquals(200, post(url, CLAUDE_CODE_REQUEST, headers).first)
+                }
+                val after = Instant.now().epochSecond
+
+                val lines = home.resolve(GOURCE_FILE).readLines()
+                assertEquals(2, lines.size, "$lines")
+                assertEquals(GOURCE_READ_THEN_EDIT, lines.map { it.substringAfter('|') })
+                val stamps = lines.map { it.substringBefore('|').toLong() }
+                assertEquals(stamps[0], stamps[1], "both lines of one call share a timestamp")
+                assertTrue(stamps[0] in before..after, "${stamps[0]} not in $before..$after")
+                assertEquals(2, events(home).size, "the events file still holds its two lines")
+            }
+        }
+
+    @Test
+    fun `the Gource log maps every file tool, writes Windows paths with slashes, and skips tools without a file`() =
+        runBlocking {
+            val home = home()
+            Store(home).use { store ->
+                val gource = GourceLog(home.resolve(GOURCE_FILE))
+                val headers = mapOf("x-stainless-lang" to "python")
+                val reply = FakeUpstream.Reply(body = EVERY_TOOL_REPLY)
+                withProxy(store, home, reply, gource) { url ->
+                    assertEquals(200, post(url, HELLO_REQUEST, headers).first)
+                }
+
+                val lines = home.resolve(GOURCE_FILE).readLines()
+                assertEquals(GOURCE_EVERY_TOOL, lines.map { it.substringAfter('|') })
+                val stamps = lines.map { it.substringBefore('|') }.toSet()
+                assertEquals(1, stamps.size, "one timestamp for the whole call: $stamps")
+            }
+        }
+
     private companion object {
         /** Dollars, so anything this close is the same money. */
         const val TOLERANCE = 1e-12
@@ -367,5 +412,44 @@ class DeriverTest {
 
         const val OTHER_CONVERSATION =
             """{"model":"$MODEL","messages":[{"role":"user","content":"something else"}]}"""
+
+        /** A Claude Code session id; the Gource user is the first eight characters of it. */
+        const val GOURCE_SESSION = "0f8fad5b-d9cb-469f-a165-70867728950e"
+
+        /** The Read and the Edit of `stream-with-file-tools.sse`; its Bash has no file. */
+        val GOURCE_READ_THEN_EDIT =
+            listOf("0f8fad5b|A|src/Main.kt|4CAF50", "0f8fad5b|M|src/Main.kt|FF9800")
+
+        /** No session header, so the user is the first eight hex of SHA-256("hello"). */
+        const val HELLO_REQUEST =
+            """{"model":"$MODEL","messages":[{"role":"user","content":"hello"}]}"""
+
+        /** A non-streaming answer whose tool_use blocks cover every mapping the log makes. */
+        const val EVERY_TOOL_REPLY =
+            """{"type":"message","model":"$MODEL","content":[""" +
+                """{"type":"tool_use","id":"t1","name":"Grep","input":{"path":"src"}},""" +
+                """{"type":"tool_use","id":"t2","name":"Glob","input":{"path":"src/main"}},""" +
+                """{"type":"tool_use","id":"t3","name":"Write",""" +
+                """"input":{"file_path":"C:\\dev\\x\\A.kt"}},""" +
+                """{"type":"tool_use","id":"t4","name":"NotebookEdit",""" +
+                """"input":{"notebook_path":"nb.ipynb"}},""" +
+                """{"type":"tool_use","id":"t5","name":"MultiEdit",""" +
+                """"input":{"file_path":"b.kt"}},""" +
+                """{"type":"tool_use","id":"t6","name":"Bash","input":{"command":"ls"}},""" +
+                """{"type":"tool_use","id":"t7","name":"Fetch","input":{"path":"docs/x.md"}}],""" +
+                """"usage":{"input_tokens":1,"output_tokens":2,""" +
+                """"cache_read_input_tokens":3,"cache_creation_input_tokens":4},""" +
+                """"stop_reason":"tool_use"}"""
+
+        /** SHA-256("hello") is 2cf24dba5fb0a30e26e83b2ac5b9e29e…, so the user is `2cf24dba`. */
+        val GOURCE_EVERY_TOOL =
+            listOf(
+                "2cf24dba|A|src|26A69A",
+                "2cf24dba|A|src/main|26C6DA",
+                "2cf24dba|M|C:/dev/x/A.kt|F44336",
+                "2cf24dba|M|nb.ipynb|FF9800",
+                "2cf24dba|M|b.kt|FF9800",
+                "2cf24dba|A|docs/x.md|FFFFFF",
+            )
     }
 }

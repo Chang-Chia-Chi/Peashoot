@@ -33,6 +33,7 @@ class ConfigTest {
         val file = home.resolve("peashoot.toml")
         assertTrue(Files.isRegularFile(file), "$file")
         assertContains(file.readText(), "mode = \"record\"")
+        assertContains(file.readText(), "[gource]")
         assertEquals(
             config,
             loadConfig(home, env()),
@@ -55,12 +56,16 @@ class ConfigTest {
 
                 [routes.default]
                 mode = "passthrough"
+
+                [gource]
+                enabled = true
                 """
                     .trimIndent()
             )
 
         val fromFile = loadConfig(home, env())
         assertEquals(9999, fromFile.port)
+        assertTrue(fromFile.gourceEnabled)
         assertEquals("http://localhost:11434", fromFile.anthropicUpstream)
         assertEquals(setOf("authorization", "x-api-key", "x-goog-api-key"), fromFile.secretHeaders)
         assertEquals(mapOf("default" to Mode.PASSTHROUGH), fromFile.routes)

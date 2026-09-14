@@ -23,6 +23,8 @@ data class ProxyConfig(
     val routes: Map<String, Mode> = mapOf(DEFAULT_ROUTE to Mode.RECORD),
     /** The bundled price table, with any model-prefix override from the file on top of it. */
     val pricing: Map<String, Price> = DEFAULT_PRICES,
+    /** Whether a completed turn's file tools are also appended to [GOURCE_FILE]. */
+    val gourceEnabled: Boolean = false,
 ) {
     /** [secretHeaders] lower-cased once, since header names compare case-insensitively. */
     val lowercaseSecretHeaders: Set<String> = secretHeaders.map(String::lowercase).toSet()
@@ -65,6 +67,7 @@ fun loadConfig(home: Path, env: (String) -> String? = System::getenv): ProxyConf
                 ?.toSet() ?: defaults.secretHeaders,
         routes = defaults.routes + toml.getTable("routes")?.routes().orEmpty(),
         pricing = DEFAULT_PRICES + toml.getTable("pricing")?.prices().orEmpty(),
+        gourceEnabled = toml.getBoolean("gource.enabled") ?: defaults.gourceEnabled,
     )
 }
 
@@ -78,6 +81,10 @@ private fun ProxyConfig.toToml(): String = buildString {
     appendLine()
     appendLine("[surfaces.anthropic]")
     appendLine("upstream = \"$anthropicUpstream\"")
+    appendLine()
+    appendLine("# On, every turn's file tools also go to $GOURCE_FILE, for Gource to animate.")
+    appendLine("[gource]")
+    appendLine("enabled = $gourceEnabled")
     appendLine()
     // The price table is bundled, so no row is written here: an entry only ever overrides one.
     appendLine(

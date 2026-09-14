@@ -12,7 +12,16 @@ fun main(): Unit = runBlocking {
     val config = loadConfig(home)
     Store(home).use { store ->
         val chain =
-            listOf(Recorder(store), Deriver(store, home.resolve(EVENTS_FILE), config.pricing))
+            listOf(
+                Recorder(store),
+                Deriver(
+                    store,
+                    home.resolve(EVENTS_FILE),
+                    config.pricing,
+                    gource =
+                        if (config.gourceEnabled) GourceLog(home.resolve(GOURCE_FILE)) else null,
+                ),
+            )
         val server = ProxyServer(config, chain)
         // `use` unwinds only if the server fails to start. Ktor's own shutdown hook stops only the
         // engine, and awaitCancellation never returns, so on SIGINT/SIGTERM this hook is what

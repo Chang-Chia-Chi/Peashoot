@@ -53,6 +53,8 @@ class Deriver(
     private val store: Store,
     private val eventsFile: Path,
     private val prices: Map<String, Price> = DEFAULT_PRICES,
+    /** Only when `gource.enabled` is on: the file tools of every turn, for Gource to animate. */
+    private val gource: GourceLog? = null,
 ) : Interceptor {
     /**
      * What the frames have said so far, for an exchange whose response began. Only that exchange's
@@ -90,8 +92,11 @@ class Deriver(
     }
 
     /** An exchange whose response never started has nothing to report but its own ending. */
-    override suspend fun onComplete(exchange: Exchange, outcome: Outcome) =
-        emit(exchange, completedEvent(exchange, outcome, turns.remove(exchange.id) ?: Turn()))
+    override suspend fun onComplete(exchange: Exchange, outcome: Outcome) {
+        val turn = turns.remove(exchange.id) ?: Turn()
+        emit(exchange, completedEvent(exchange, outcome, turn))
+        gource?.append(exchange.client.session, turn.reader.tools)
+    }
 
     private fun startedEvent(exchange: Exchange): JsonObject = buildJsonObject {
         put("ts", exchange.receivedAt.toString())
