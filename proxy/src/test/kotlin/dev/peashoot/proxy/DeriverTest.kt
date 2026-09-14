@@ -315,12 +315,16 @@ class DeriverTest {
                 """{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1",""" +
                 """"content":"package dev"}]}]}"""
 
+        /** Turn one: the cache breakpoint sits on the first user message, because it is newest. */
         const val ONE_TURN =
-            """{"model":"$MODEL","messages":[{"role":"user","content":"hello peashoot"}]}"""
+            """{"model":"$MODEL","messages":[{"role":"user","content":[""" +
+                """{"type":"text","text":"hello peashoot",""" +
+                """"cache_control":{"type":"ephemeral"}}]}]}"""
 
+        /** Turn two: the breakpoint has moved on, and the first message is bare again. */
         const val TWO_TURNS =
             """{"model":"$MODEL","messages":[""" +
-                """{"role":"user","content":"hello peashoot"},""" +
+                """{"role":"user","content":[{"type":"text","text":"hello peashoot"}]},""" +
                 """{"role":"assistant","content":"hi"},""" +
                 """{"role":"user","content":"and again"}]}"""
 

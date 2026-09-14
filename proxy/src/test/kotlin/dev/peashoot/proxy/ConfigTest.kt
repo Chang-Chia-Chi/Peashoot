@@ -1,6 +1,8 @@
 package dev.peashoot.proxy
 
+import dev.peashoot.core.DEFAULT_PRICES
 import dev.peashoot.core.Mode
+import dev.peashoot.core.Price
 import java.nio.file.Files
 import java.nio.file.Path
 import kotlin.io.path.readText
@@ -100,6 +102,56 @@ class ConfigTest {
 
         val error = assertFailsWith<IllegalStateException> { loadConfig(home, env()) }
         assertContains(error.message.orEmpty(), "routing is not wired")
+    }
+
+    @Test
+    fun `a pricing entry overrides the rates it names and inherits the rest of a bundled model`() {
+        val home = Files.createTempDirectory("peashoot-home")
+        home
+            .resolve("peashoot.toml")
+            .writeText(
+                """
+                [pricing."claude-sonnet-4-5"]
+                input = 3
+
+                [pricing."my-local-model"]
+                input = 0.5
+                output = 1.5
+                cacheRead = 0.05
+                cacheWrite = 0.6
+                """
+                    .trimIndent()
+            )
+
+        val pricing = loadConfig(home, env()).pricing
+
+        assertEquals(
+            Price(input = 3.0, output = 15.0, cacheRead = 0.3, cacheWrite = 3.75),
+            pricing["claude-sonnet-4-5"],
+            "an integer rate is a rate, and the three it did not name stay bundled",
+        )
+        assertEquals(
+            Price(input = 0.5, output = 1.5, cacheRead = 0.05, cacheWrite = 0.6),
+            pricing["my-local-model"],
+        )
+        assertEquals(DEFAULT_PRICES["claude-opus-4-5"], pricing["claude-opus-4-5"])
+    }
+
+    @Test
+    fun `a partial pricing entry for a model the table does not know is refused`() {
+        val home = Files.createTempDirectory("peashoot-home")
+        home
+            .resolve("peashoot.toml")
+            .writeText(
+                """
+                [pricing."my-local-model"]
+                input = 1.0
+                """
+                    .trimIndent()
+            )
+
+        val error = assertFailsWith<IllegalStateException> { loadConfig(home, env()) }
+        assertContains(error.message.orEmpty(), """pricing."my-local-model".output""")
     }
 
     @Test

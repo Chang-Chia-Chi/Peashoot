@@ -83,7 +83,13 @@ class MessagesTest {
         assertEquals("claude-opus-4-5-20251101", reader.model)
         assertEquals(Usage(input = 7, output = 11, cacheRead = 3, cacheWrite = 2), reader.usage)
         assertEquals("tool_use", reader.stopReason)
-        assertEquals(listOf(ToolCall("Read", path = "src/Main.kt", command = null)), reader.tools)
+        assertEquals(
+            listOf(
+                ToolCall("Read", path = "src/Main.kt", command = null),
+                ToolCall("NotebookEdit", path = "notes/run.ipynb", command = null),
+            ),
+            reader.tools,
+        )
     }
 
     @Test
@@ -105,7 +111,7 @@ class MessagesTest {
         val request = json(TOOL_RESULT_REQUEST)
 
         assertEquals("claude-sonnet-4-5-20250929", Messages.model(request))
-        assertEquals("""[{"type":"text","text":"read it"}]""", Messages.firstUserMessage(request))
+        assertEquals("read it", Messages.firstUserMessage(request))
         assertNull(Messages.model(null))
         assertNull(Messages.firstUserMessage(null))
         assertNull(Messages.firstUserMessage(json("""{"messages":[]}""")))
@@ -169,7 +175,9 @@ class MessagesTest {
                 """"model":"claude-opus-4-5-20251101","stop_reason":"tool_use",""" +
                 """"content":[{"type":"text","text":"Reading."},""" +
                 """{"type":"tool_use","id":"toolu_REDACTED","name":"Read",""" +
-                """"input":{"file_path":"src/Main.kt"}}],""" +
+                """"input":{"file_path":"src/Main.kt"}},""" +
+                """{"type":"tool_use","id":"toolu_NOTEBOOK","name":"NotebookEdit",""" +
+                """"input":{"notebook_path":"notes/run.ipynb","new_source":"1 + 1"}}],""" +
                 """"usage":{"input_tokens":7,"cache_creation_input_tokens":2,""" +
                 """"cache_read_input_tokens":3,"output_tokens":11}}"""
 

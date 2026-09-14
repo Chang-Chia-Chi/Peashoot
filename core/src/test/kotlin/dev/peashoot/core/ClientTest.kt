@@ -112,7 +112,14 @@ class ClientTest {
         val later = Client.detect(headers, json(TWO_TURNS)).session
         val other = Client.detect(headers, json(OTHER_CONVERSATION)).session
 
+        val cached = Client.detect(headers, json(CACHED_FIRST_TURN)).session
+
         assertEquals(first, later, "the same conversation, one turn further on")
+        assertEquals(
+            first,
+            cached,
+            "the cache breakpoint moves off the first message between turns; the session must not",
+        )
         assertNotEquals(first, other, "another first user message is another conversation")
         assertTrue(first.startsWith("sdk-python:"), first)
         assertEquals("sdk-python:".length + 16, first.length, first)
@@ -130,6 +137,12 @@ class ClientTest {
                 """{"role":"user","content":"hello peashoot"},""" +
                 """{"role":"assistant","content":"hi"},""" +
                 """{"role":"user","content":"and again"}]}"""
+
+        /** The same first message as [ONE_TURN], carrying the turn's cache breakpoint. */
+        const val CACHED_FIRST_TURN =
+            """{"model":"claude-sonnet-4-5-20250929","messages":[{"role":"user","content":[""" +
+                """{"type":"text","text":"hello peashoot",""" +
+                """"cache_control":{"type":"ephemeral"}}]}]}"""
 
         const val OTHER_CONVERSATION =
             """{"model":"claude-sonnet-4-5-20250929",""" +

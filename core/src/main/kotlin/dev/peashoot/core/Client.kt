@@ -8,8 +8,9 @@ import kotlinx.serialization.json.JsonObject
 data class Client(
     val type: String,
     val session: String?,
-    val agent: String?,
-    val parentAgent: String?,
+    /** Only a sub-agent has either: a main-thread turn leaves both unset. */
+    val agent: String? = null,
+    val parentAgent: String? = null,
 ) {
     companion object {
         /**
@@ -30,17 +31,10 @@ data class Client(
                         )
                     // ponytail: thread-id and x-openai-subagent are mapped when the Responses
                     // surface arrives (#25); Codex sends no sub-agent headers on this one.
-                    headers[ORIGINATOR] == CODEX ->
-                        Client("codex", headers[SESSION_ID], agent = null, parentAgent = null)
+                    headers[ORIGINATOR] == CODEX -> Client("codex", headers[SESSION_ID])
                     headers.names().any { it.startsWith(STAINLESS, ignoreCase = true) } ->
-                        Client(sdkType(headers), session = null, agent = null, parentAgent = null)
-                    else ->
-                        Client(
-                            userAgentToken(headers),
-                            session = null,
-                            agent = null,
-                            parentAgent = null,
-                        )
+                        Client(sdkType(headers), session = null)
+                    else -> Client(userAgentToken(headers), session = null)
                 }
             val session = injected ?: detected.session ?: fallbackSession(detected.type, json)
             return detected.copy(session = session)

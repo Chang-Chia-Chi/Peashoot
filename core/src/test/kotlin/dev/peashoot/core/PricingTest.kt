@@ -24,6 +24,11 @@ class PricingTest {
 
         assertEquals(90.0, cost("claude-opus-4-1-20250805", million), TOLERANCE, "$15 in, $75 out")
         assertEquals(30.0, cost("claude-opus-4-5-20251101", million), TOLERANCE, "$5 in, $25 out")
+        assertEquals(90.0, cost("claude-opus-4-20250514", million), TOLERANCE, "$15 in, $75 out")
+        assertNull(
+            costUsd("claude-opus-4-10", million),
+            "a prefix ends at a dash, or Opus 4.10 would be priced as Opus 4.1",
+        )
     }
 
     @Test

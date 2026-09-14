@@ -24,6 +24,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.onEach
+import kotlinx.coroutines.flow.onStart
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -52,7 +53,10 @@ class Deriver(
     private val eventsFile: Path,
     private val prices: Map<String, Price> = DEFAULT_PRICES,
 ) : Interceptor {
-    /** What the frames have said so far. Only the exchange's drive coroutine touches its turn. */
+    /**
+     * What the frames have said so far, for an exchange whose response began. Only that exchange's
+     * drive coroutine touches its turn, and only completion removes it.
+     */
     private class Turn {
         val reader = Messages.Reader()
         var firstByteAt: Instant? = null
@@ -64,24 +68,26 @@ class Deriver(
     private val lock = Mutex()
 
     override suspend fun onRequest(exchange: Exchange): FrameSource? {
-        turns[exchange.id] = Turn()
         emit(exchange, startedEvent(exchange))
         // The deriver only watches; it never answers.
         return null
     }
 
     override fun onFrames(exchange: Exchange, frames: Flow<Frame>): Flow<Frame> {
-        val turn = turns[exchange.id] ?: return frames
-        return frames.onEach { frame ->
-            if (turn.firstByteAt == null) turn.firstByteAt = Instant.now()
-            turn.reader.read(frame)
-        }
+        val turn = Turn()
+        // Registered when collection starts, so a response that never began leaves no entry: the
+        // chain promises a completion only for an exchange the proxy answered.
+        return frames
+            .onStart { turns[exchange.id] = turn }
+            .onEach { frame ->
+                if (turn.firstByteAt == null) turn.firstByteAt = Instant.now()
+                turn.reader.read(frame)
+            }
     }
 
-    override suspend fun onComplete(exchange: Exchange, outcome: Outcome) {
-        val turn = turns.remove(exchange.id) ?: return
-        emit(exchange, completedEvent(exchange, outcome, turn))
-    }
+    /** An exchange whose response never started has nothing to report but its own ending. */
+    override suspend fun onComplete(exchange: Exchange, outcome: Outcome) =
+        emit(exchange, completedEvent(exchange, outcome, turns.remove(exchange.id) ?: Turn()))
 
     private fun startedEvent(exchange: Exchange): JsonObject = buildJsonObject {
         put("ts", exchange.receivedAt.toString())
@@ -90,8 +96,10 @@ class Deriver(
     }
 
     /**
-     * `replayHit` and `resumed` are not emitted: nothing sets them until replay (#12) and resume
-     * (#26) exist, and a field that is always false says less than an absent one.
+     * `model` is the model the response named when it named one, which resolves an alias the
+     * request asked for, and the request's otherwise. `replayHit` and `resumed` are not emitted:
+     * nothing sets them until replay (#12) and resume (#26) exist, and a field that is always false
+     * says less than an absent one.
      */
     private fun completedEvent(exchange: Exchange, outcome: Outcome, turn: Turn): JsonObject {
         val reader = turn.reader

@@ -111,7 +111,7 @@ Responses API state. Recorded response ids are served verbatim on replay, and `p
 JSONL, one object per event, written to `events.jsonl`, the `event` table, and the control API SSE feed.
 
 - `exchange.started`: `ts, event, exchangeId, session, agent, parentAgent, client, surface, model, route, mode, toolResults:[{name, bytes}]`.
-- `exchange.completed`: all of the above plus `tools:[{name, path?, command?}]` (from tool-use blocks in the response), `usage:{input, output, cacheRead, cacheWrite}`, `costUsd` (null for OAuth subscription traffic), `stopReason, status, firstByteMs, latencyMs, replayHit, resumed, clientDisconnected, rateLimit:{remainingTokens?, remainingRequests?, resetAt?}` from provider headers when present.
+- `exchange.completed`: all of the above plus `tools:[{name, path?, command?}]` (from tool-use blocks in the response), `usage:{input, output, cacheRead, cacheWrite}`, `costUsd` (null for OAuth subscription traffic), `stopReason, status, firstByteMs, latencyMs, replayHit, resumed, clientDisconnected, rateLimit:{remainingTokens?, remainingRequests?, resetAt?}` from provider headers when present. `replayHit` and `resumed` appear with replay (#12) and resume (#26); `model` on completed is the response's when it named one, resolving an alias in the request.
 - `exchange.client_gone`: `ts, event, exchangeId, session, bytesSoFar`.
 
 Cost comes from a bundled per-model price table (input, output, cache read, cache write per million tokens), overridable in config.

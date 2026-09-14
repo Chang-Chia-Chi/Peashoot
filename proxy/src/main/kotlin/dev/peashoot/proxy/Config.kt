@@ -91,19 +91,26 @@ private fun ProxyConfig.toToml(): String = buildString {
     }
 }
 
-/** `[pricing."<model prefix>"]`: all four rates, or the file is wrong and says which key. */
+/**
+ * `[pricing."<model prefix>"]`: the rates it names, over the bundled ones for that same key. A
+ * model the table does not know has nothing to inherit, so it must give all four or the file is
+ * wrong and says which key is missing.
+ */
 private fun TomlTable.prices(): Map<String, Price> =
     keySet().associateWith { model ->
         Price(
-            input = rate(model, "input"),
-            output = rate(model, "output"),
-            cacheRead = rate(model, "cacheRead"),
-            cacheWrite = rate(model, "cacheWrite"),
+            input = rate(model, "input", Price::input),
+            output = rate(model, "output", Price::output),
+            cacheRead = rate(model, "cacheRead", Price::cacheRead),
+            cacheWrite = rate(model, "cacheWrite", Price::cacheWrite),
         )
     }
 
-private fun TomlTable.rate(model: String, key: String): Double =
-    getDouble(listOf(model, key)) ?: error("pricing.\"$model\".$key is required")
+/** Any TOML number, so `input = 3` is the rate it plainly means and not a startup failure. */
+private fun TomlTable.rate(model: String, key: String, bundled: (Price) -> Double): Double =
+    (get(listOf(model, key)) as? Number)?.toDouble()
+        ?: DEFAULT_PRICES[model]?.let(bundled)
+        ?: error("pricing.\"$model\".$key is required")
 
 private fun TomlTable.routes(): Map<String, Mode> =
     keySet().associateWith { name ->

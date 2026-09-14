@@ -12,7 +12,10 @@ import kotlinx.serialization.json.intOrNull
 /** Token counts of one exchange, as the provider reports them. */
 data class Usage(val input: Int, val output: Int, val cacheRead: Int, val cacheWrite: Int)
 
-/** One tool_use block in the response; path from `file_path` or `path`, command from `command`. */
+/**
+ * One tool_use block in the response; path from `file_path`, `path`, or NotebookEdit's
+ * `notebook_path`, command from `command`.
+ */
 data class ToolCall(val name: String, val path: String?, val command: String?)
 
 /** One tool_result block in the request's last message; name from the tool_use it answers. */
@@ -28,13 +31,25 @@ object Messages {
     /** The request's `model`, or null. */
     fun model(json: JsonObject?): String? = json?.get("model").text()
 
-    /** The content of the first message whose role is user, as its JSON text, or null. */
+    /**
+     * The text of the first message whose role is user: a string content verbatim, an array content
+     * its text blocks joined by newlines. Null when there is no user message or it says nothing.
+     * The text and not the content tree, because a `cache_control` breakpoint moves off the first
+     * message as the conversation grows and would otherwise split it in two.
+     */
     fun firstUserMessage(json: JsonObject?): String? =
         messages(json)
             .mapNotNull { it as? JsonObject }
             .firstOrNull { it["role"].text() == "user" }
-            ?.get("content")
-            ?.toString()
+            ?.let { message -> message["content"].text() ?: textBlocks(blocks(message)) }
+            ?.takeIf { it.isNotEmpty() }
+
+    /** What a content array actually says: its text blocks, in order, and nothing else. */
+    private fun textBlocks(content: List<JsonObject>): String =
+        content
+            .filter { it["type"].text() == "text" }
+            .mapNotNull { it["text"].text() }
+            .joinToString("\n")
 
     /**
      * The tool_result blocks in the LAST message (the results this turn feeds back), named by the
@@ -183,7 +198,10 @@ internal fun jsonObjectOrNull(text: String): JsonObject? =
 private fun toolCall(name: String, input: JsonObject?): ToolCall =
     ToolCall(
         name,
-        path = input?.get("file_path").text() ?: input?.get("path").text(),
+        path =
+            input?.get("file_path").text()
+                ?: input?.get("path").text()
+                ?: input?.get("notebook_path").text(),
         command = input?.get("command").text(),
     )
 
