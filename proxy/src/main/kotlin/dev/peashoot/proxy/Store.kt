@@ -6,6 +6,7 @@ import dev.peashoot.core.Exchange
 import dev.peashoot.core.Frame
 import dev.peashoot.core.Mode
 import dev.peashoot.core.Usage
+import dev.peashoot.core.text
 import io.ktor.http.Headers
 import java.nio.file.Files
 import java.nio.file.Path
@@ -24,7 +25,6 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
-import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -130,8 +130,8 @@ class Store(home: Path) : AutoCloseable {
                 "ts" to Instant.parse(event.getValue("ts").jsonPrimitive.content).toEpochMilli(),
                 "event" to event.getValue("event").jsonPrimitive.content,
                 "exchange_id" to event.getValue("exchangeId").jsonPrimitive.content,
-                "session" to event.text("session"),
-                "agent" to event.text("agent"),
+                "session" to event["session"].text(),
+                "agent" to event["agent"].text(),
                 "body" to event.toString(),
             )
         handle.createUpdate(INSERT_EVENT).bindMap(columns).execute()
@@ -283,8 +283,6 @@ class Store(home: Path) : AutoCloseable {
         const val SELECT_SESSIONS = "SELECT * FROM session ORDER BY session, agent"
     }
 }
-
-private fun JsonObject.text(key: String): String? = this[key]?.jsonPrimitive?.contentOrNull
 
 private fun ResultSet.toSession(): Session =
     Session(

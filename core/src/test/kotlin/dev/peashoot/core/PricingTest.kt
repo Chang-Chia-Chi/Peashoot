@@ -2,12 +2,13 @@ package dev.peashoot.core
 
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 
 /** What a turn costs at the bundled price table, and what has no cost at all. */
 class PricingTest {
     private fun cost(model: String?, usage: Usage?, prices: Map<String, Price> = DEFAULT_PRICES) =
-        checkNotNull(costUsd(model, usage, prices)) { "$model has no price" }
+        assertNotNull(costUsd(model, usage, prices), "$model has no price")
 
     @Test
     fun `a turn costs its tokens at the model's price`() {

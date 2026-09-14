@@ -35,6 +35,7 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonObjectBuilder
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import org.jdbi.v3.core.JdbiException
 import org.slf4j.LoggerFactory
@@ -181,7 +182,12 @@ class Deriver(
         }
 
     private fun warn(event: JsonObject, exchange: Exchange, e: Exception) =
-        log.warn("{} for exchange {} not written: {}", event["event"], exchange.id, e.toString())
+        log.warn(
+            "{} for exchange {} not written: {}",
+            event.getValue("event").jsonPrimitive.content,
+            exchange.id,
+            e.toString(),
+        )
 }
 
 private fun millisSince(from: Instant, to: Instant): Long = Duration.between(from, to).toMillis()

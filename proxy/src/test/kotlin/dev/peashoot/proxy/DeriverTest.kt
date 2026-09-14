@@ -2,6 +2,7 @@ package dev.peashoot.proxy
 
 import dev.peashoot.core.FrameParser
 import dev.peashoot.core.Usage
+import dev.peashoot.core.text
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.cio.CIO
 import io.ktor.client.request.header
@@ -17,7 +18,9 @@ import kotlin.io.path.readLines
 import kotlin.test.Test
 import kotlin.test.assertContains
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNotEquals
+import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlinx.coroutines.runBlocking
@@ -26,7 +29,6 @@ import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.boolean
-import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.double
 import kotlinx.serialization.json.int
 import kotlinx.serialization.json.jsonObject
@@ -54,7 +56,7 @@ class DeriverTest {
 
     private fun json(text: String): JsonElement = Json.parseToJsonElement(text)
 
-    private fun JsonObject.text(key: String): String? = getValue(key).jsonPrimitive.contentOrNull
+    private fun JsonObject.text(key: String): String? = this[key].text()
 
     /** A recorder and a deriver over [store], relaying to a fake upstream that answers [reply]. */
     private suspend fun withProxy(
@@ -104,8 +106,8 @@ class DeriverTest {
 
     private fun assertStarted(started: JsonObject) {
         assertEquals("exchange.started", started.text("event"))
-        assertTrue(checkNotNull(started.text("exchangeId")).isNotEmpty())
-        Instant.parse(checkNotNull(started.text("ts"))) // ISO-8601, or this throws
+        assertNotEquals("", assertNotNull(started.text("exchangeId")))
+        Instant.parse(assertNotNull(started.text("ts"))) // ISO-8601, or this throws
         assertEquals("sess-1", started.text("session"))
         assertEquals("agent-1", started.text("agent"))
         assertEquals("parent-1", started.text("parentAgent"))
@@ -131,7 +133,7 @@ class DeriverTest {
         val firstByte = completed.getValue("firstByteMs").jsonPrimitive.long
         val latency = completed.getValue("latencyMs").jsonPrimitive.long
         assertTrue(firstByte in 0..latency, "firstByteMs $firstByte, latencyMs $latency")
-        assertEquals(false, completed.getValue("clientDisconnected").jsonPrimitive.boolean)
+        assertFalse(completed.getValue("clientDisconnected").jsonPrimitive.boolean)
         assertEquals(json(RATE_LIMIT), completed.getValue("rateLimit"))
     }
 
@@ -140,7 +142,7 @@ class DeriverTest {
         assertEquals("agent-1", row.agent)
         assertEquals(1, row.exchanges)
         assertEquals(FIXTURE_USAGE, row.usage)
-        assertEquals(0.00855, checkNotNull(row.costUsd), TOLERANCE)
+        assertEquals(0.00855, assertNotNull(row.costUsd), TOLERANCE)
     }
 
     @Test
@@ -206,8 +208,8 @@ class DeriverTest {
                 rows[0].usage,
             )
             assertEquals(FIXTURE_USAGE, rows[1].usage)
-            assertEquals(0.0171, checkNotNull(rows[0].costUsd), TOLERANCE)
-            assertEquals(0.00855, checkNotNull(rows[1].costUsd), TOLERANCE)
+            assertEquals(0.0171, assertNotNull(rows[0].costUsd), TOLERANCE)
+            assertEquals(0.00855, assertNotNull(rows[1].costUsd), TOLERANCE)
         }
     }
 

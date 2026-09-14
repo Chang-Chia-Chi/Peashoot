@@ -52,13 +52,13 @@ val DEFAULT_PRICES: Map<String, Price> =
 
 /** Null when the model is unknown to [prices] or there is no usage. */
 fun costUsd(model: String?, usage: Usage?, prices: Map<String, Price> = DEFAULT_PRICES): Double? {
-    val prefix = model?.let { id ->
-        prices.keys.filter { id.named(it) }.maxByOrNull(String::length)
-    }
-    if (prefix == null || usage == null) return null
+    val rate =
+        model
+            ?.let { id -> prices.entries.filter { id.named(it.key) }.maxByOrNull { it.key.length } }
+            ?.value
+    if (rate == null || usage == null) return null
     // ponytail: a 1-hour cache write costs 2x input, not 1.25x, and is billed here at the
     // 5-minute rate. Upgrade when the reader takes the `cache_creation` breakdown apart.
-    val rate = prices.getValue(prefix)
     val dollars =
         usage.input * rate.input +
             usage.output * rate.output +

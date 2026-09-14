@@ -28,6 +28,12 @@ data class RateLimit(val remainingTokens: Long?, val remainingRequests: Long?, v
 object Messages {
     const val SURFACE = "anthropic-messages"
 
+    private const val BETA = "anthropic-beta"
+    private const val TOKENS_REMAINING = "anthropic-ratelimit-tokens-remaining"
+    private const val REQUESTS_REMAINING = "anthropic-ratelimit-requests-remaining"
+    private const val TOKENS_RESET = "anthropic-ratelimit-tokens-reset"
+    private const val REQUESTS_RESET = "anthropic-ratelimit-requests-reset"
+
     /** The request's `model`, or null. */
     fun model(json: JsonObject?): String? = json?.get("model").text()
 
@@ -39,7 +45,7 @@ object Messages {
      */
     fun firstUserMessage(json: JsonObject?): String? =
         messages(json)
-            .mapNotNull { it as? JsonObject }
+            .filterIsInstance<JsonObject>()
             .firstOrNull { it["role"].text() == "user" }
             ?.let { message -> message["content"].text() ?: textBlocks(blocks(message)) }
             ?.takeIf { it.isNotEmpty() }
@@ -79,12 +85,6 @@ object Messages {
         if (tokens == null && requests == null && reset == null) return null
         return RateLimit(tokens?.toLongOrNull(), requests?.toLongOrNull(), reset)
     }
-
-    private const val BETA = "anthropic-beta"
-    private const val TOKENS_REMAINING = "anthropic-ratelimit-tokens-remaining"
-    private const val REQUESTS_REMAINING = "anthropic-ratelimit-requests-remaining"
-    private const val TOKENS_RESET = "anthropic-ratelimit-tokens-reset"
-    private const val REQUESTS_RESET = "anthropic-ratelimit-requests-reset"
 
     /**
      * Reads a response's frames as they arrive and accumulates what the event line reports. Never
@@ -131,9 +131,8 @@ object Messages {
             stopReason = json["stop_reason"].text() ?: stopReason
             blocks(json)
                 .filter { it["type"].text() == "tool_use" }
-                .forEach { block ->
-                    val name = block["name"].text()
-                    if (name != null) closed += toolCall(name, block["input"] as? JsonObject)
+                .mapNotNullTo(closed) { block ->
+                    block["name"].text()?.let { toolCall(it, block["input"] as? JsonObject) }
                 }
         }
 
@@ -153,22 +152,23 @@ object Messages {
             val index = json["index"].int()
             if (block == null || index == null || block["type"].text() != "tool_use") return
             val name = block["name"].text() ?: return
-            // A block that already carries its whole input streams no deltas after it.
-            val input = (block["input"] as? JsonObject)?.takeIf { it.isNotEmpty() }
-            open[index] = OpenTool(name, StringBuilder(input?.toString().orEmpty()))
+            // A block that already carries its whole input streams no deltas after it: keep the
+            // object as it came, rather than printing it to be parsed again at close.
+            val whole = (block["input"] as? JsonObject)?.takeIf { it.isNotEmpty() }
+            open[index] = OpenTool(name, whole)
         }
 
         private fun appendInput(json: JsonObject) {
             val delta = json["delta"] as? JsonObject
             val index = json["index"].int()
             if (delta == null || index == null || delta["type"].text() != "input_json_delta") return
-            open[index]?.input?.append(delta["partial_json"].text().orEmpty())
+            open[index]?.partial?.append(delta["partial_json"].text().orEmpty())
         }
 
         private fun closeTool(json: JsonObject) {
             val index = json["index"].int() ?: return
             val tool = open.remove(index) ?: return
-            closed += toolCall(tool.name, jsonObjectOrNull(tool.input.toString()))
+            closed += toolCall(tool.name, tool.whole ?: jsonObjectOrNull(tool.partial.toString()))
         }
 
         /** Each of the four keys the usage object carries overrides what we had; the rest stand. */
@@ -183,7 +183,11 @@ object Messages {
             )
         }
 
-        private class OpenTool(val name: String, val input: StringBuilder)
+        private class OpenTool(
+            val name: String,
+            val whole: JsonObject?,
+            val partial: StringBuilder = StringBuilder(),
+        )
     }
 }
 
@@ -212,10 +216,10 @@ private fun sseData(raw: String): String =
         .joinToString("\n") { it.removePrefix("data:").removePrefix(" ").trimEnd('\r') }
 
 private fun messages(json: JsonObject?): List<JsonElement> =
-    (json?.get("messages") as? JsonArray) ?: emptyList()
+    (json?.get("messages") as? JsonArray).orEmpty()
 
 private fun blocks(message: JsonObject?): List<JsonObject> =
-    ((message?.get("content") as? JsonArray) ?: emptyList()).mapNotNull { it as? JsonObject }
+    (message?.get("content") as? JsonArray).orEmpty().filterIsInstance<JsonObject>()
 
 /** Every tool_use the assistant asked for, by its id, so the results can be named. */
 private fun toolNames(message: JsonElement?): Map<String, String> =
@@ -229,16 +233,15 @@ private fun toolNames(message: JsonElement?): Map<String, String> =
         .toMap()
 
 /** A string content is its own bytes; anything else is the bytes of its JSON text. */
-private fun contentBytes(content: JsonElement?): Int =
-    when (content) {
-        null -> 0
-        is JsonPrimitive -> content.takeIf { it.isString }?.content?.utf8Length() ?: 0
-        else -> content.toString().utf8Length()
-    }
+private fun contentBytes(content: JsonElement?): Int {
+    if (content == null) return 0
+    val text = (content as? JsonPrimitive)?.takeIf { it.isString }?.content ?: content.toString()
+    return text.utf8Length()
+}
 
 private fun String.utf8Length(): Int = toByteArray().size
 
 /** A JSON string, or null for anything else: a number, a bool, JSON null, an object, an array. */
-private fun JsonElement?.text(): String? = (this as? JsonPrimitive)?.takeIf { it.isString }?.content
+fun JsonElement?.text(): String? = (this as? JsonPrimitive)?.takeIf { it.isString }?.content
 
 private fun JsonElement?.int(): Int? = (this as? JsonPrimitive)?.intOrNull

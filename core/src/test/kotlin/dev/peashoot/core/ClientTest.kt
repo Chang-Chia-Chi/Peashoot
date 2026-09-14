@@ -5,6 +5,7 @@ import io.ktor.http.headersOf
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotEquals
+import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlinx.serialization.json.Json
@@ -108,7 +109,7 @@ class ClientTest {
     fun `with no session header the first user message groups the conversation's turns`() {
         val headers = headersOf("x-stainless-lang", "python")
 
-        val first = checkNotNull(Client.detect(headers, json(ONE_TURN)).session)
+        val first = assertNotNull(Client.detect(headers, json(ONE_TURN)).session)
         val later = Client.detect(headers, json(TWO_TURNS)).session
         val other = Client.detect(headers, json(OTHER_CONVERSATION)).session
 
