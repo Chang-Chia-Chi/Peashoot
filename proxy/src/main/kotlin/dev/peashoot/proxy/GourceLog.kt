@@ -23,6 +23,12 @@ const val GOURCE_FILE = "gource.log"
  */
 private const val USER_LENGTH = 8
 
+/**
+ * Gource's action letters: a file added, a file modified. It also knows `D`, which no tool does.
+ */
+private const val ADDED = "A"
+private const val MODIFIED = "M"
+
 /** The tools that change a file. Everything else that names one only looked at it. */
 private val EDIT_TOOLS = setOf("Edit", "MultiEdit", "Write", "NotebookEdit")
 
@@ -89,7 +95,7 @@ class GourceLog(private val file: Path) {
  */
 private fun ToolCall.gourceFields(): String? =
     path?.takeUnless(FIELD_BREAKERS::containsMatchIn)?.let { file ->
-        val type = if (name in EDIT_TOOLS) "M" else "A"
+        val type = if (name in EDIT_TOOLS) MODIFIED else ADDED
         val colour = TOOL_COLOURS[name]?.let { "|$it" }.orEmpty()
         "$type|${file.replace('\\', '/')}$colour"
     }
