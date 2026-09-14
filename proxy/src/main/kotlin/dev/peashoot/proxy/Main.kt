@@ -11,7 +11,9 @@ fun main(): Unit = runBlocking {
     val home = homeDir()
     val config = loadConfig(home)
     Store(home).use { store ->
-        val server = ProxyServer(config, listOf(Recorder(store)))
+        val chain =
+            listOf(Recorder(store), Deriver(store, home.resolve(EVENTS_FILE), config.pricing))
+        val server = ProxyServer(config, chain)
         // `use` unwinds only if the server fails to start. Ktor's own shutdown hook stops only the
         // engine, and awaitCancellation never returns, so on SIGINT/SIGTERM this hook is what
         // closes the upstream client and then the connection pool.

@@ -1,6 +1,8 @@
 package dev.peashoot.proxy
 
+import dev.peashoot.core.DEFAULT_PRICES
 import dev.peashoot.core.Mode
+import dev.peashoot.core.Price
 import java.nio.file.Files
 import java.nio.file.Path
 import org.tomlj.Toml
@@ -19,6 +21,8 @@ data class ProxyConfig(
     val secretHeaders: Set<String> = setOf("authorization", "x-api-key"),
     /** What each route does; every request takes [DEFAULT_ROUTE] until routing arrives. */
     val routes: Map<String, Mode> = mapOf(DEFAULT_ROUTE to Mode.RECORD),
+    /** The bundled price table, with any model-prefix override from the file on top of it. */
+    val pricing: Map<String, Price> = DEFAULT_PRICES,
 ) {
     /** [secretHeaders] lower-cased once, since header names compare case-insensitively. */
     val lowercaseSecretHeaders: Set<String> = secretHeaders.map(String::lowercase).toSet()
@@ -60,6 +64,7 @@ fun loadConfig(home: Path, env: (String) -> String? = System::getenv): ProxyConf
                 ?.map { it as? String ?: error("secretHeaders must be a list of strings, not $it") }
                 ?.toSet() ?: defaults.secretHeaders,
         routes = defaults.routes + toml.getTable("routes")?.routes().orEmpty(),
+        pricing = DEFAULT_PRICES + toml.getTable("pricing")?.prices().orEmpty(),
     )
 }
 
@@ -73,12 +78,32 @@ private fun ProxyConfig.toToml(): String = buildString {
     appendLine()
     appendLine("[surfaces.anthropic]")
     appendLine("upstream = \"$anthropicUpstream\"")
+    appendLine()
+    // The price table is bundled, so no row is written here: an entry only ever overrides one.
+    appendLine(
+        "# Override a price: [pricing.\"claude-sonnet-4-5\"] with input, output, cacheRead, " +
+            "cacheWrite in USD per million tokens."
+    )
     routes.forEach { (name, mode) ->
         appendLine()
         appendLine("[routes.$name]")
         appendLine("mode = \"${mode.name.lowercase()}\"")
     }
 }
+
+/** `[pricing."<model prefix>"]`: all four rates, or the file is wrong and says which key. */
+private fun TomlTable.prices(): Map<String, Price> =
+    keySet().associateWith { model ->
+        Price(
+            input = rate(model, "input"),
+            output = rate(model, "output"),
+            cacheRead = rate(model, "cacheRead"),
+            cacheWrite = rate(model, "cacheWrite"),
+        )
+    }
+
+private fun TomlTable.rate(model: String, key: String): Double =
+    getDouble(listOf(model, key)) ?: error("pricing.\"$model\".$key is required")
 
 private fun TomlTable.routes(): Map<String, Mode> =
     keySet().associateWith { name ->

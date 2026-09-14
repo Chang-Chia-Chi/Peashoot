@@ -28,6 +28,18 @@ _Avoid_: endpoint, API, provider
 An upstream response body the frame path can carry: declared as text or JSON, in UTF-8 or with no charset declared. Any other body is a non-text body and is refused with a Peashoot error.
 _Avoid_: binary body, byte body, blob, non-text content
 
+**Event**:
+One line the proxy emits about an exchange for any tool to consume: `exchange.started` when the request is heard, `exchange.completed` when the response ends. Written to the events file and the event table by the deriver, the sink that reads every frame for it.
+_Avoid_: log line, record, notification
+
+**Client**:
+Who sent an exchange, detected from its headers in a fixed order: a type (claude-code, codex, an SDK, or unknown), a session, and for sub-agents an agent and a parent agent.
+_Avoid_: user, caller, consumer
+
+**Session**:
+The conversation an exchange belongs to: the client's own session header when it sends one, otherwise the client type plus a hash of the conversation's first user message, so a client with no header still groups its turns.
+_Avoid_: conversation id, thread
+
 **Peashoot error**:
 The proxy's own failure answer, typed so that no client can mistake it for a provider's error. Never imitates a provider's error shape.
 _Avoid_: proxy error, gateway error, 502

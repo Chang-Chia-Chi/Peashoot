@@ -52,7 +52,7 @@ interface FrameSource {
 }
 
 /**
- * What the chain learns when a response completes. Usage and stop reason arrive with the deriver
- * (#8); timings come from the frames' offsets.
+ * What the chain learns when a response completes: the status. Usage, stop reason, and timings are
+ * the deriver's, read from the frames it observed.
  */
 data class Outcome(val status: Int)
