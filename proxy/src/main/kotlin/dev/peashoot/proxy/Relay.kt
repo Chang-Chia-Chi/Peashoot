@@ -248,9 +248,12 @@ class Relay(
 
     /**
      * Never imitates a provider's error shape: a client's retry logic must not mistake us for one.
-     * The exchange still completes, with the 502, so nothing that started goes unfinished. Whether
-     * the upstream was unreachable or its body unusable, the exchange never had a source, so it
-     * never had a stream: this is the one completion the drive does not run.
+     * Whether the upstream was unreachable or its body unusable, the exchange never had a source,
+     * so it never had a stream: this is the one completion the drive does not run. It runs here
+     * instead, in a finally, so the once-per-exchange guarantee holds by construction. A 502 to a
+     * client that has already left does not throw on the Netty engine, which discards the write on
+     * a channel it has closed; the completion rests neither on that nor on the call surviving the
+     * write uncancelled.
      */
     private suspend fun respondProxyFailure(
         call: ApplicationCall,
@@ -265,9 +268,20 @@ class Relay(
             put("error", error)
             put("detail", detail)
         }
-        call.respondText(body.toString(), ContentType.Application.Json, HttpStatusCode.BadGateway)
-        val outcome = Outcome(HttpStatusCode.BadGateway.value)
-        interceptors.forEach { it.onComplete(exchange, outcome) }
+        try {
+            call.respondText(
+                body.toString(),
+                ContentType.Application.Json,
+                HttpStatusCode.BadGateway,
+            )
+        } finally {
+            // Whether or not the 502 reached the client, the chain hears the end once: the
+            // guarantee the drive's finally gives a stream.
+            withContext(NonCancellable) {
+                val outcome = Outcome(HttpStatusCode.BadGateway.value)
+                interceptors.forEach { it.onComplete(exchange, outcome) }
+            }
+        }
     }
 }
 
