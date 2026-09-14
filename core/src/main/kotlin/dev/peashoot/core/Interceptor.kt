@@ -25,8 +25,10 @@ interface Interceptor {
     fun onFrames(exchange: Exchange, frames: Flow<Frame>): Flow<Frame> = frames
 
     /**
-     * Must not throw: this runs where a stream ended, so a throw here would replace the exception
-     * that ended it. Catch your own failures, as the Recorder catches the store's.
+     * Runs exactly once for every exchange that had [onRequest], whether the response came from a
+     * source or was a proxy failure, and whether or not the client stayed. Must not throw: this
+     * runs where a stream ended, so a throw here would replace the exception that ended it. Catch
+     * your own failures, as the Recorder catches the store's.
      */
     suspend fun onComplete(exchange: Exchange, outcome: Outcome) = Unit
 
