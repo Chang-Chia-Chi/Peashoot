@@ -59,7 +59,7 @@ Claude Code needs exactly `ANTHROPIC_BASE_URL=http://localhost:8787`. Its saved 
 4. Stream. The source yields frames. Non-streaming responses are a single frame holding the whole body. `onFrames` wraps the Flow in chain order. Three sinks consume the shared Flow: the client writer (writes each frame's bytes as it arrives, never buffers a whole response, forwards ping and error events unchanged, forwards response headers verbatim), the recorder (appends frames to the exchange buffer, persists on completion), and the deriver (parses frames incrementally and emits `exchange.completed` when the terminal frame arrives).
 5. Client gone. If the client disconnects mid-stream in `record` or `passthrough` mode, the client sink detaches; the recorder and deriver keep consuming to completion. The exchange is flagged `clientDisconnected`, `exchange.client_gone` is emitted, and the exchange stays eligible for Resume until the window expires.
 6. Complete. `onComplete` runs down the chain with the outcome (status, usage, stop reason, timings).
-7. Upstream errors. Status and body are forwarded verbatim and recorded like any exchange, so a cassette can replay a 429. Proxy-side failures (upstream unreachable, TLS error) return 502 with a JSON body whose `type` is `peashoot_error`, never imitating a provider's error shape, because Claude Code's retry logic matches on provider wording.
+7. Upstream errors. Status and body are forwarded verbatim and recorded like any exchange, so a cassette can replay a 429. Proxy-side failures (upstream unreachable, TLS error) return 502 with a JSON body whose `type` is `peashoot_error`, never imitating a provider's error shape, because Claude Code's retry logic matches on provider wording. An upstream body the frame path cannot carry is refused the same way, before the response starts: a non-text body (anything but `text/*`, `application/json`, or `application/*+json`, in UTF-8 or with no charset declared) returns 502 `unsupported_content_type` from the declared content-type alone, never truncated into a 200. See ADR 0001, `docs/adr/0001-text-frames.md`.
 
 ## 5. Interceptor contract
 
@@ -138,7 +138,7 @@ Errors are JSON problem objects `{type, title, detail, status}`. The app never o
 ## 9. Surfaces, headers, client detection
 
 Surfaces (each a `Surface` adapter: request shape, frame grammar, extraction into the event line, resume story):
-- Anthropic Messages: `POST /v1/messages`; passthrough for `POST /v1/messages/count_tokens`, `GET /v1/models`, and `HEAD /api/hello` (answered 200 locally). Frame grammar: SSE events `message_start, content_block_start, content_block_delta, content_block_stop, message_delta, message_stop, ping, error`. Resume: buffered completion (section 4, step 5), matched by fingerprint within the window.
+- Anthropic Messages: `POST /v1/messages`; passthrough for `POST /v1/messages/count_tokens`, `GET /v1/models`, and `HEAD /api/hello` (answered 200 locally). Frame grammar: SSE events `message_start, content_block_start, content_block_delta, content_block_stop, message_delta, message_stop, ping, error`. Resume: buffered completion (section 4, step 5), matched by fingerprint within the window. The Files API is not a v1 surface: its content download is a non-text body, so `GET /v1/files/{id}/content` is refused with 502 `unsupported_content_type` (ADR 0001, `docs/adr/0001-text-frames.md`).
 - OpenAI Responses: `POST /v1/responses`; `GET /v1/responses/{id}` including `?stream=true&starting_after=N`; `POST /v1/responses/{id}/cancel`. Frame grammar: SSE events carrying `sequence_number`. Resume: the API's own sequence numbers; background mode passes through; the proxy also serves `starting_after` from its own buffer when the upstream response was not created in background mode.
 - OpenAI Chat Completions: `POST /v1/chat/completions`; `data:` chunks terminated by `data: [DONE]`. Resume: buffered completion.
 - `GET /v1/models` on the OpenAI surfaces passes through.
@@ -196,7 +196,7 @@ Resume always matches on the normalized fingerprint. Spike 1 decides whether a r
 ## 14. Rules with no exceptions
 
 - Secret headers are never stored, not even locally.
-- Bodies and error bodies are forwarded unmodified; the proxy inspects, never rewrites.
+- Bodies and error bodies are forwarded unmodified; the proxy inspects, never rewrites. A body the proxy cannot carry is refused, never truncated.
 - Whole responses are never buffered before relaying; pings are forwarded; silent upstreams get SSE comment pings so Claude Code's 300-second watchdog is not tripped by the proxy.
 - Body redaction runs at cassette export with a preview.
 - Farm labels are off by default; the "show paths" toggle draws a visible badge.

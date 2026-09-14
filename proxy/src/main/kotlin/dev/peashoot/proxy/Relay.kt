@@ -15,6 +15,7 @@ import io.ktor.http.ContentType
 import io.ktor.http.Headers
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
+import io.ktor.http.charset
 import io.ktor.http.content.ByteArrayContent
 import io.ktor.http.content.OutgoingContent
 import io.ktor.http.contentType
@@ -82,6 +83,20 @@ private fun Headers.without(excluded: Set<String>): Headers = Headers.build {
 }
 
 /**
+ * Whether the frame path can carry this body, from the declared content-type alone: a frame is
+ * text, so only text or JSON in UTF-8 passes (ADR 0001). A missing content-type passes; the frame
+ * decode stays the backstop for a body that lies about itself.
+ */
+private fun HttpResponse.hasTextBody(): Boolean {
+    val type = contentType() ?: return true
+    val carried =
+        type.match(ContentType.Text.Any) ||
+            type.match(ContentType.Application.Json) ||
+            (type.match(ContentType.Application.Any) && type.contentSubtype.endsWith("+json"))
+    return carried && type.charset().let { it == null || it == Charsets.UTF_8 }
+}
+
+/**
  * Every request through the chain. The first interceptor to respond is the source; otherwise the
  * upstream is, and a failure to reach it is a proxy error, never a provider one.
  */
@@ -128,13 +143,7 @@ class Relay(
             }
         val failure =
             try {
-                statement.execute { response ->
-                    respondFrom(
-                        call,
-                        exchange,
-                        UpstreamSource(response, exchange, config.dumpFrames),
-                    )
-                }
+                statement.execute { response -> relayUpstream(call, exchange, response) }
                 null
             } catch (e: IOException) {
                 e
@@ -144,8 +153,38 @@ class Relay(
         if (failure != null) {
             // Once the headers are out the client already sees the break; before them, we name it.
             if (call.response.isCommitted) throw failure
-            respondProxyFailure(call, exchange, failure)
+            log.warn(
+                "upstream unreachable for {} {}: {}",
+                exchange.request.method,
+                exchange.request.path,
+                failure.toString(),
+            )
+            respondProxyFailure(call, exchange, "upstream_unreachable", failure.toString())
         }
+    }
+
+    /**
+     * The upstream answered. A body the frame path cannot carry is refused here, before the
+     * response starts, rather than truncated into a 200: the declared content-type decides, and the
+     * body is never read for it.
+     */
+    private suspend fun relayUpstream(
+        call: ApplicationCall,
+        exchange: Exchange,
+        response: HttpResponse,
+    ) {
+        if (response.hasTextBody()) {
+            respondFrom(call, exchange, UpstreamSource(response, exchange, config.dumpFrames))
+            return
+        }
+        val declared = response.headers[HttpHeaders.ContentType].orEmpty()
+        log.warn(
+            "unsupported upstream content-type for {} {}: {}",
+            exchange.request.method,
+            exchange.request.path,
+            declared,
+        )
+        respondProxyFailure(call, exchange, "unsupported_content_type", declared)
     }
 
     /**
@@ -205,25 +244,21 @@ class Relay(
 
     /**
      * Never imitates a provider's error shape: a client's retry logic must not mistake us for one.
-     * The exchange still completes, with the 502, so nothing that started goes unfinished. It never
-     * had a source, so it never had a stream: this is the one completion the drive does not run.
+     * The exchange still completes, with the 502, so nothing that started goes unfinished. Whether
+     * the upstream was unreachable or its body unusable, the exchange never had a source, so it
+     * never had a stream: this is the one completion the drive does not run. The caller logs why.
      */
     private suspend fun respondProxyFailure(
         call: ApplicationCall,
         exchange: Exchange,
-        cause: Exception,
+        error: String,
+        detail: String,
     ) {
-        log.warn(
-            "upstream unreachable for {} {}: {}",
-            exchange.request.method,
-            exchange.request.path,
-            cause.toString(),
-        )
         exchange.response = Exchange.Response(HttpStatusCode.BadGateway.value, Headers.Empty)
         val body = buildJsonObject {
             put("type", "peashoot_error")
-            put("error", "upstream_unreachable")
-            put("detail", cause.toString())
+            put("error", error)
+            put("detail", detail)
         }
         call.respondText(body.toString(), ContentType.Application.Json, HttpStatusCode.BadGateway)
         val outcome = Outcome(HttpStatusCode.BadGateway.value)
