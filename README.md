@@ -42,6 +42,8 @@ The data directory holds `peashoot.db` (the store), `bodies/` (request bodies an
 
 ![Agents moving through a repository](docs/gource.gif)
 
+One Claude Code session reading and editing this repository through the proxy, played back by Gource from the log below.
+
 Turn the Gource formatter on in `peashoot.toml`:
 
 ```
@@ -54,6 +56,12 @@ The proxy then appends one line to `gource.log` for every file tool a turn used.
 ```
 gource --log-format custom ~/.peashoot/gource.log
 tail -f ~/.peashoot/gource.log | gource --log-format custom --realtime -
+```
+
+Claude Code names files by their absolute path, so the tree starts at the drive root. Trim the repository's prefix to start it at the repository instead:
+
+```
+sed 's#/home/me/myrepo/##' ~/.peashoot/gource.log | gource --log-format custom -
 ```
 
 ## Hooks
