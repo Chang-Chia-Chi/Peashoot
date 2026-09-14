@@ -255,6 +255,8 @@ class InterceptorChainTest {
                     ContentType.Image.PNG,
                     ContentType.Application.Pdf,
                     ContentType.Text.Plain.withCharset(Charsets.ISO_8859_1),
+                    // Goes out as `png/`, a declaration the proxy cannot parse.
+                    ContentType("png", ""),
                 )
             val observer = Observer()
             Store(Files.createTempDirectory("peashoot-home")).use { store ->
