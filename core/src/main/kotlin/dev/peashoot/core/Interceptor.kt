@@ -6,8 +6,8 @@ import kotlinx.coroutines.flow.Flow
 /**
  * One link of the chain every exchange passes through, in order (Resume, Replay, Recorder, Deriver
  * in v1). Every hook defaults to doing nothing, so an interceptor overrides only what it needs. All
- * interceptors wrap the one flow the client writer collects, so a recorder and a deriver see every
- * frame once, with no second parse and no second read of the upstream.
+ * interceptors wrap the one flow the exchange's drive collects, so a recorder and a deriver see
+ * every frame once, with no second parse and no second read of the upstream.
  */
 interface Interceptor {
     /**
@@ -18,8 +18,9 @@ interface Interceptor {
 
     /**
      * Observe or transform the frames on their way to the sinks. The returned flow must collect
-     * [frames] exactly once and stay unbuffered: the source is cold and single-use, and the
-     * client's pace is the upstream's pace.
+     * [frames] exactly once and stay unbuffered: the source is cold and single-use. It is collected
+     * once, on the exchange's drive coroutine, and it keeps being collected after the client
+     * leaves; [onComplete] runs once, last.
      */
     fun onFrames(exchange: Exchange, frames: Flow<Frame>): Flow<Frame> = frames
 
@@ -29,6 +30,12 @@ interface Interceptor {
      */
     suspend fun onComplete(exchange: Exchange, outcome: Outcome) = Unit
 
+    /**
+     * The client left mid-stream. Fires at most once, and before [onComplete]; the frames keep
+     * flowing to the other sinks. Must not throw, for the same reason [onComplete] must not: this
+     * runs where the client's write failed, so a throw here would replace the exception that ended
+     * it.
+     */
     suspend fun onClientGone(exchange: Exchange) = Unit
 }
 

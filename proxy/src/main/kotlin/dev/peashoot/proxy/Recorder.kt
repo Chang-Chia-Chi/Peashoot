@@ -23,7 +23,7 @@ private val log = LoggerFactory.getLogger("dev.peashoot.proxy")
  */
 class Recorder(private val store: Store) : Interceptor {
     /**
-     * Frames so far, per exchange with a source. Only the exchange's own coroutine touches its
+     * Frames so far, per exchange with a source. Only the exchange's drive coroutine touches its
      * list.
      */
     private val buffers = ConcurrentHashMap<String, MutableList<Frame>>()
@@ -36,9 +36,6 @@ class Recorder(private val store: Store) : Interceptor {
     }
 
     override suspend fun onComplete(exchange: Exchange, outcome: Outcome) = persist(exchange)
-
-    /** What arrived before the client left is kept, flagged. #10 keeps consuming and completes. */
-    override suspend fun onClientGone(exchange: Exchange) = persist(exchange)
 
     /**
      * A persist that started finishes, and a store that cannot write costs this recording only:
