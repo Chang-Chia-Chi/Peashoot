@@ -12,7 +12,9 @@ Status: pre-v1. The spec is `docs/spec.md`, the design `docs/design.md`, the pla
 
 JDK 21+. The build treats every compiler warning as an error, checks formatting with ktfmt (Kotlin language style, no options), runs detekt's default rules and an ArchUnit boundary test, and runs the tests under `check`. `./gradlew koverHtmlReport` writes a coverage report to `build/kover/html`.
 
-## Run the proxy
+## Quickstart
+
+Build the proxy and start it:
 
 ```
 ./gradlew :proxy:installDist
@@ -25,7 +27,9 @@ Then point a client at it. Claude Code needs one variable and keeps its saved lo
 ANTHROPIC_BASE_URL=http://localhost:8787 claude
 ```
 
-The data directory holds `peashoot.db` (the store), `bodies/` (request bodies and frame lists over 64 KB, named by SHA-256), and `peashoot.toml`, written with defaults on first start: port, upstream, secret headers, and the mode of each route (`record`, `replay`, or `passthrough`). Environment variables override the file:
+## Configuration
+
+The data directory holds `peashoot.db` (the store), `bodies/` (request bodies and frame lists over 64 KB, named by SHA-256), `gource.log` (written only when the Gource formatter is on), and `peashoot.toml`, written with defaults on first start: port, upstream, secret headers, the Gource flag, and the mode of each route (`record`, `replay`, or `passthrough`). Environment variables override the file:
 
 | Variable | Default | Meaning |
 |---|---|---|
@@ -33,6 +37,32 @@ The data directory holds `peashoot.db` (the store), `bodies/` (request bodies an
 | `PEASHOOT_PORT` | `8787` | Listen port, loopback only |
 | `PEASHOOT_ANTHROPIC_UPSTREAM` | `https://api.anthropic.com` | Where Messages requests go |
 | `PEASHOOT_DUMP_FRAMES` | unset | Append every raw upstream response to this file, for capturing fixtures |
+
+## Watch agents move through the repository
+
+![Agents moving through a repository](docs/gource.gif)
+
+One Claude Code session reading and editing this repository through the proxy, played back by Gource from the log below.
+
+Turn the Gource formatter on in `peashoot.toml`:
+
+```
+[gource]
+enabled = true
+```
+
+The proxy then appends one line to `gource.log` for every file tool a turn used. A line carries the timestamp, the session short id as the user, `A` for a read and `M` for an edit, the file, and a colour per tool. A tool that names no file, like `Bash`, is skipped. Play the log back, or watch a run live:
+
+```
+gource --log-format custom ~/.peashoot/gource.log
+tail -f ~/.peashoot/gource.log | gource --log-format custom --realtime -
+```
+
+Claude Code names files by their absolute path, so the tree starts at the drive root. Trim the repository's prefix to start it at the repository instead:
+
+```
+sed 's#/home/me/myrepo/##' ~/.peashoot/gource.log | gource --log-format custom -
+```
 
 ## Hooks
 
