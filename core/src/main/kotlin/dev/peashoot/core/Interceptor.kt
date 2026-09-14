@@ -20,15 +20,17 @@ interface Interceptor {
      * Observe or transform the frames on their way to the sinks. The returned flow must collect
      * [frames] exactly once and stay unbuffered: the source is cold and single-use. It is collected
      * once, on the exchange's drive coroutine, and it keeps being collected after the client
-     * leaves; [onComplete] runs once, last.
+     * leaves; [onComplete] runs once, last. Must not throw while wrapping: this runs before the
+     * stream starts, so a throw here means no stream and no completion. A failure inside the
+     * returned flow is caught, and the exchange still completes.
      */
     fun onFrames(exchange: Exchange, frames: Flow<Frame>): Flow<Frame> = frames
 
     /**
-     * Runs exactly once for every exchange that had [onRequest], whether the response came from a
-     * source or was a proxy failure, and whether or not the client stayed. Must not throw: this
-     * runs where a stream ended, so a throw here would replace the exception that ended it. Catch
-     * your own failures, as the Recorder catches the store's.
+     * Runs exactly once for every exchange the proxy answered, from a source or with a proxy
+     * failure, whether or not the client stayed to hear it. Must not throw: this runs where a
+     * stream ended, so a throw here would replace the exception that ended it. Catch your own
+     * failures, as the Recorder catches the store's.
      */
     suspend fun onComplete(exchange: Exchange, outcome: Outcome) = Unit
 
