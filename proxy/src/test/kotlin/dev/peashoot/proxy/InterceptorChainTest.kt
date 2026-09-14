@@ -265,7 +265,6 @@ class InterceptorChainTest {
                     ProxyServer(config, listOf(Recorder(store), observer)).use { proxy ->
                         HttpClient(CIO).use { client ->
                             types.forEachIndexed { index, type ->
-                                observer.log.clear()
                                 upstream.reply = { FakeUpstream.Reply(contentType = type) }
 
                                 val response = client.get("${proxy.url}/v1/files/f1/content")
@@ -287,11 +286,6 @@ class InterceptorChainTest {
                                 // The request did reach the upstream; the refusal is not a
                                 // short-circuit before it.
                                 assertEquals(index + 1, upstream.received.size)
-                                assertEquals(
-                                    listOf("request GET /v1/files/f1/content", "complete 502"),
-                                    observer.log,
-                                    "$type",
-                                )
                             }
                         }
                     }
@@ -299,5 +293,11 @@ class InterceptorChainTest {
                 // The exchange never had a source, so the recorder never had a buffer.
                 assertTrue(store.list().isEmpty(), "a refused body is never recorded")
             }
+            // Read after the server stops: the 502 is written before the chain completes, so a
+            // client can see it before onComplete has run.
+            assertEquals(
+                types.flatMap { listOf("request GET /v1/files/f1/content", "complete 502") },
+                observer.log,
+            )
         }
 }
