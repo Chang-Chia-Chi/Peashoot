@@ -5,6 +5,8 @@ import com.zaxxer.hikari.HikariDataSource
 import dev.peashoot.core.Exchange
 import dev.peashoot.core.Frame
 import dev.peashoot.core.Mode
+import dev.peashoot.core.Usage
+import dev.peashoot.core.text
 import io.ktor.http.Headers
 import java.nio.file.Files
 import java.nio.file.Path
@@ -19,6 +21,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
@@ -32,6 +35,16 @@ import org.jdbi.v3.core.Jdbi
 
 /** A stored exchange: the context object rebuilt from its row, plus the frames it produced. */
 data class Recorded(val exchange: Exchange, val frames: List<Frame>)
+
+/** One row of the session view: what one session and agent have spent. */
+data class Session(
+    val session: String,
+    val agent: String?,
+    val exchanges: Int,
+    val usage: Usage,
+    val costUsd: Double?,
+    val lastSeen: Instant,
+)
 
 /**
  * The store of record: `peashoot.db` in the data directory, plus `bodies/` for request bodies and
@@ -58,8 +71,12 @@ class Store(home: Path) : AutoCloseable {
     private val jdbi: Jdbi =
         Jdbi.create(pool).also { db ->
             db.useHandle<Exception> {
+                // One statement per execute: sqlite-jdbc runs no more than that.
                 it.execute(SCHEMA)
                 it.execute(INDEX)
+                it.execute(EVENT_SCHEMA)
+                it.execute(EVENT_INDEX)
+                it.execute(SESSION_VIEW)
             }
         }
 
@@ -104,6 +121,32 @@ class Store(home: Path) : AutoCloseable {
             .bind("limit", limit)
             .map { rows, _ -> rows.toRecorded() }
             .list()
+    }
+
+    /** One event line, as the deriver built it: the object is the row's body, verbatim. */
+    suspend fun putEvent(event: JsonObject): Unit = io { handle ->
+        val columns =
+            linkedMapOf(
+                "ts" to Instant.parse(event.getValue("ts").jsonPrimitive.content).toEpochMilli(),
+                "event" to event.getValue("event").jsonPrimitive.content,
+                "exchange_id" to event.getValue("exchangeId").jsonPrimitive.content,
+                "session" to event["session"].text(),
+                "agent" to event["agent"].text(),
+                "body" to event.toString(),
+            )
+        handle.createUpdate(INSERT_EVENT).bindMap(columns).execute()
+    }
+
+    /** Every event line the store holds, oldest first. */
+    suspend fun events(): List<JsonObject> = io { handle ->
+        handle
+            .createQuery(SELECT_EVENTS)
+            .map { rows, _ -> Json.parseToJsonElement(rows.getString("body")).jsonObject }
+            .list()
+    }
+
+    suspend fun sessions(): List<Session> = io { handle ->
+        handle.createQuery(SELECT_SESSIONS).map { rows, _ -> rows.toSession() }.list()
     }
 
     override fun close() = pool.close()
@@ -198,8 +241,65 @@ class Store(home: Path) : AutoCloseable {
             """CREATE INDEX IF NOT EXISTS exchange_received_at_id
                 ON exchange (received_at DESC, id DESC)"""
         const val SELECT = "SELECT * FROM exchange"
+
+        /** The event line, kept whole in [body] so any tool reads the same JSON the file has. */
+        const val EVENT_SCHEMA =
+            """CREATE TABLE IF NOT EXISTS event (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ts INTEGER NOT NULL,
+                event TEXT NOT NULL,
+                exchange_id TEXT NOT NULL,
+                session TEXT,
+                agent TEXT,
+                body TEXT NOT NULL
+            )"""
+        /** What the session view groups by. */
+        const val EVENT_INDEX = "CREATE INDEX IF NOT EXISTS event_session ON event (session, agent)"
+        /**
+         * What one session and agent have spent, read back out of the stored event lines.
+         *
+         * ponytail: a scan of every completed event per query, which a local tool's event count can
+         * afford. Upgrade: materialise this into a table the deriver upserts, if `/sessions` ever
+         * feels slow.
+         */
+        const val SESSION_VIEW =
+            """CREATE VIEW IF NOT EXISTS session AS
+                SELECT session, agent, count(*) AS exchanges,
+                    sum(coalesce(json_extract(body, '$.usage.input'), 0)) AS input_tokens,
+                    sum(coalesce(json_extract(body, '$.usage.output'), 0)) AS output_tokens,
+                    sum(coalesce(json_extract(body, '$.usage.cacheRead'), 0)) AS cache_read_tokens,
+                    sum(coalesce(json_extract(body, '$.usage.cacheWrite'), 0))
+                        AS cache_write_tokens,
+                    sum(json_extract(body, '$.costUsd')) AS cost_usd,
+                    max(ts) AS last_seen
+                FROM event
+                WHERE event = 'exchange.completed' AND session IS NOT NULL
+                GROUP BY session, agent"""
+        const val INSERT_EVENT =
+            """INSERT INTO event (ts, event, exchange_id, session, agent, body)
+                VALUES (:ts, :event, :exchange_id, :session, :agent, :body)"""
+        /** The insertion order, which is arrival order: the id is the only monotonic column. */
+        const val SELECT_EVENTS = "SELECT body FROM event ORDER BY id"
+        const val SELECT_SESSIONS = "SELECT * FROM session ORDER BY session, agent"
     }
 }
+
+private fun ResultSet.toSession(): Session =
+    Session(
+        session = getString("session"),
+        agent = getString("agent"),
+        exchanges = getInt("exchanges"),
+        usage =
+            Usage(
+                input = getInt("input_tokens"),
+                output = getInt("output_tokens"),
+                cacheRead = getInt("cache_read_tokens"),
+                cacheWrite = getInt("cache_write_tokens"),
+            ),
+        // SQL sum skips nulls, so a session whose every exchange was unpriced has no cost at all.
+        costUsd = getDouble("cost_usd").takeUnless { wasNull() },
+        lastSeen = Instant.ofEpochMilli(getLong("last_seen")),
+    )
 
 private fun sha256(bytes: ByteArray): String =
     MessageDigest.getInstance("SHA-256").digest(bytes).toHexString()

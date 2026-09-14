@@ -3,6 +3,7 @@ package dev.peashoot.core
 import com.github.f4b6a3.ulid.UlidCreator
 import io.ktor.http.Headers
 import java.time.Instant
+import kotlinx.serialization.json.JsonObject
 
 /** What a route does with its exchanges. */
 enum class Mode {
@@ -18,7 +19,8 @@ enum class Mode {
  * side, at receipt, and [response], before the stream starts, are both written on the call
  * coroutine; [clientDisconnected] is set at detach, under the stream's mutex, which keeps
  * client-gone and completion apart. Nothing else is written while the stream runs. The store
- * rebuilds one from a row, which is why id and receivedAt are parameters.
+ * rebuilds one from a row, which is why id and receivedAt are parameters. [client] is derived from
+ * the request, once, on first use.
  */
 class Exchange(
     val request: Request,
@@ -28,9 +30,15 @@ class Exchange(
     val id: String = UlidCreator.getMonotonicUlid().toString(),
     val receivedAt: Instant = Instant.now(),
 ) {
-    class Request(val method: String, val path: String, val headers: Headers, val body: ByteArray)
+    class Request(val method: String, val path: String, val headers: Headers, val body: ByteArray) {
+        /** The body as a JSON object: null when it is empty, not JSON, or not an object. */
+        val json: JsonObject? by lazy { jsonObjectOrNull(body.decodeToString()) }
+    }
 
     class Response(val status: Int, val headers: Headers)
+
+    /** Who sent this: the headers decide, and the first user message when they say no session. */
+    val client: Client by lazy { Client.detect(request.headers, request.json) }
 
     /**
      * Set once, by the source before its first frame or by the proxy-failure path; null only
