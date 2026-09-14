@@ -3,12 +3,14 @@ package dev.peashoot.proxy
 import dev.peashoot.core.FrameParser
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.cio.CIO
+import io.ktor.client.request.get
 import io.ktor.client.request.post
 import io.ktor.client.request.preparePost
 import io.ktor.client.request.setBody
 import io.ktor.client.statement.bodyAsChannel
 import io.ktor.client.statement.bodyAsText
 import io.ktor.http.ContentType
+import io.ktor.http.withCharset
 import io.ktor.utils.io.readLine
 import io.ktor.utils.io.readRemaining
 import java.net.Socket
@@ -150,6 +152,25 @@ class FakeUpstreamTest {
                 wire.trimEnd().endsWith("\r\n0"),
                 "the final chunk must never be sent: $wire",
             )
+        }
+    }
+
+    @Test
+    fun `a UTF-8 JSON body is a text body and still arrives whole`() = runBlocking {
+        val body = """{"ok":true}"""
+        FakeUpstream().use { upstream ->
+            upstream.reply = {
+                FakeUpstream.Reply(
+                    contentType = ContentType.Application.Json.withCharset(Charsets.UTF_8),
+                    body = body,
+                )
+            }
+            ProxyServer(ProxyConfig(port = 0, anthropicUpstream = upstream.url)).use { proxy ->
+                val response = HttpClient(CIO).use { it.get("${proxy.url}/v1/messages") }
+
+                assertEquals(200, response.status.value)
+                assertEquals(body, response.bodyAsText())
+            }
         }
     }
 }
