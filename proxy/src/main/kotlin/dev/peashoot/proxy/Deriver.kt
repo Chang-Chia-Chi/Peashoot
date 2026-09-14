@@ -46,8 +46,9 @@ const val EVENTS_FILE = "events.jsonl"
 
 /**
  * The event line: one `exchange.started` when the request is heard and one `exchange.completed`
- * when the response ends, to the events file and the event table. Never throws: an event that
- * cannot be written is one WARN line, never a failed request.
+ * when the response ends, to the events file and the event table, and the file tools of every turn
+ * to the Gource log when that flag is on. Never throws: an event that cannot be written is one WARN
+ * line, never a failed request.
  */
 class Deriver(
     private val store: Store,

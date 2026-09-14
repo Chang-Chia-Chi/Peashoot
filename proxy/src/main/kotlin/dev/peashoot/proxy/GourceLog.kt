@@ -18,9 +18,6 @@ private val log = LoggerFactory.getLogger("dev.peashoot.proxy")
 
 const val GOURCE_FILE = "gource.log"
 
-/** Gource's own default, for a file tool the palette below does not name. */
-private const val DEFAULT_COLOUR = "FFFFFF"
-
 /**
  * A UUID's first eight hex characters are its conventional short form, and fit on a Gource node.
  */
@@ -29,7 +26,10 @@ private const val USER_LENGTH = 8
 /** The tools that change a file. Everything else that names one only looked at it. */
 private val EDIT_TOOLS = setOf("Edit", "MultiEdit", "Write", "NotebookEdit")
 
-/** Far enough apart to read in motion: green looks, teal searches, orange edits, red creates. */
+/**
+ * Far enough apart to read in motion: green looks, teal searches, orange edits, red creates. A tool
+ * not named here leaves the colour to Gource, which hashes the file's extension.
+ */
 private val TOOL_COLOURS =
     mapOf(
         "Read" to "4CAF50",
@@ -42,6 +42,11 @@ private val TOOL_COLOURS =
     )
 
 /**
+ * A pipe or a line break inside a path would forge a field or a whole line: Gource cannot escape.
+ */
+private val FIELD_BREAKERS = Regex("[|\r\n]")
+
+/**
  * The Gource custom-format log, so a repository can be watched as its agents move through it: one
  * line per file tool of a completed turn, the session as the committer. Never throws: a line that
  * cannot be written is one WARN, never a failed request.
@@ -51,20 +56,21 @@ class GourceLog(private val file: Path) {
     private val lock = Mutex()
 
     /**
-     * The timestamp is read inside the lock, so a turn's lines share one second and the file stays
-     * in the order Gource plays it back. A turn that touched no file leaves the log untouched.
+     * The timestamp is read once, under the lock: a turn's lines share one second, and the file
+     * stays in timestamp order, which is the order Gource plays it back in. A turn that touched no
+     * file leaves the log untouched.
      */
     suspend fun append(session: String?, tools: List<ToolCall>) {
         val user = session?.substringAfterLast(':')?.take(USER_LENGTH) ?: "unknown"
-        val entries = tools.mapNotNull { it.entry(user) }
-        if (entries.isEmpty()) return
+        val fields = tools.mapNotNull { it.gourceFields() }
+        if (fields.isEmpty()) return
         withContext(Dispatchers.IO + NonCancellable) {
             try {
                 lock.withLock {
                     val at = Instant.now().epochSecond
                     Files.writeString(
                         file,
-                        entries.joinToString("") { "$at|$it\n" },
+                        fields.joinToString("\n", postfix = "\n") { "$at|$user|$it" },
                         CREATE,
                         APPEND,
                     )
@@ -77,10 +83,13 @@ class GourceLog(private val file: Path) {
 }
 
 /**
- * Everything of a line but its timestamp, or null for a tool that named no file. Gource splits the
- * path on `/` to build its tree, so a Windows path written as it came renders as one flat leaf.
+ * The type, file, and colour fields of a line, or null for a tool that named no file the line can
+ * carry. Gource splits the path on `/` to build its tree, so a Windows path written as it came
+ * renders as one flat leaf.
  */
-private fun ToolCall.entry(user: String): String? = path?.let { file ->
-    val type = if (name in EDIT_TOOLS) "M" else "A"
-    "$user|$type|${file.replace('\\', '/')}|${TOOL_COLOURS[name] ?: DEFAULT_COLOUR}"
-}
+private fun ToolCall.gourceFields(): String? =
+    path?.takeUnless(FIELD_BREAKERS::containsMatchIn)?.let { file ->
+        val type = if (name in EDIT_TOOLS) "M" else "A"
+        val colour = TOOL_COLOURS[name]?.let { "|$it" }.orEmpty()
+        "$type|${file.replace('\\', '/')}$colour"
+    }

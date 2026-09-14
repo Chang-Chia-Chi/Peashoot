@@ -11,16 +11,11 @@ fun main(): Unit = runBlocking {
     val home = homeDir()
     val config = loadConfig(home)
     Store(home).use { store ->
+        val gource = if (config.gourceEnabled) GourceLog(home.resolve(GOURCE_FILE)) else null
         val chain =
             listOf(
                 Recorder(store),
-                Deriver(
-                    store,
-                    home.resolve(EVENTS_FILE),
-                    config.pricing,
-                    gource =
-                        if (config.gourceEnabled) GourceLog(home.resolve(GOURCE_FILE)) else null,
-                ),
+                Deriver(store, home.resolve(EVENTS_FILE), config.pricing, gource),
             )
         val server = ProxyServer(config, chain)
         // `use` unwinds only if the server fails to start. Ktor's own shutdown hook stops only the

@@ -221,7 +221,8 @@ class DeriverTest {
         val home = home()
         val body = """{"type":"error","error":{"type":"overloaded_error"}}"""
         Store(home).use { store ->
-            withProxy(store, home, FakeUpstream.Reply(status = 529, body = body)) { url ->
+            val gource = GourceLog(home.resolve(GOURCE_FILE))
+            withProxy(store, home, FakeUpstream.Reply(status = 529, body = body), gource) { url ->
                 assertEquals(529, post(url, CLAUDE_CODE_REQUEST, CLAUDE_CODE_HEADERS).first)
             }
 
@@ -231,6 +232,7 @@ class DeriverTest {
             assertEquals(JsonNull, completed.getValue("costUsd"))
             assertEquals(JsonNull, completed.getValue("stopReason"))
             assertEquals(json("[]"), completed.getValue("tools"))
+            assertTrue(Files.notExists(home.resolve(GOURCE_FILE)), "no file tool, no Gource line")
             val row = store.sessions().single()
             assertEquals(Usage(input = 0, output = 0, cacheRead = 0, cacheWrite = 0), row.usage)
             assertNull(row.costUsd, "a session whose every exchange was unpriced has no cost")
@@ -328,15 +330,14 @@ class DeriverTest {
                 val lines = home.resolve(GOURCE_FILE).readLines()
                 assertEquals(2, lines.size, "$lines")
                 assertEquals(GOURCE_READ_THEN_EDIT, lines.map { it.substringAfter('|') })
-                val stamps = lines.map { it.substringBefore('|').toLong() }
-                assertEquals(stamps[0], stamps[1], "both lines of one call share a timestamp")
-                assertTrue(stamps[0] in before..after, "${stamps[0]} not in $before..$after")
+                val stamp = lines.first().substringBefore('|').toLong()
+                assertTrue(stamp in before..after, "$stamp not in $before..$after")
                 assertEquals(2, events(home).size, "the events file still holds its two lines")
             }
         }
 
     @Test
-    fun `the Gource log maps every file tool, writes Windows paths with slashes, and skips tools without a file`() =
+    fun `the Gource log maps every file tool, slashes Windows paths, and skips a tool with no file it can carry`() =
         runBlocking {
             val home = home()
             Store(home).use { store ->
@@ -350,7 +351,7 @@ class DeriverTest {
                 val lines = home.resolve(GOURCE_FILE).readLines()
                 assertEquals(GOURCE_EVERY_TOOL, lines.map { it.substringAfter('|') })
                 val stamps = lines.map { it.substringBefore('|') }.toSet()
-                assertEquals(1, stamps.size, "one timestamp for the whole call: $stamps")
+                assertEquals(1, stamps.size, "one timestamp for the whole turn: $stamps")
             }
         }
 
@@ -424,7 +425,10 @@ class DeriverTest {
         const val HELLO_REQUEST =
             """{"model":"$MODEL","messages":[{"role":"user","content":"hello"}]}"""
 
-        /** A non-streaming answer whose tool_use blocks cover every mapping the log makes. */
+        /**
+         * A non-streaming answer whose tool_use blocks cover every mapping the log makes, plus a
+         * path with a pipe in it, which no line can carry.
+         */
         const val EVERY_TOOL_REPLY =
             """{"type":"message","model":"$MODEL","content":[""" +
                 """{"type":"tool_use","id":"t1","name":"Grep","input":{"path":"src"}},""" +
@@ -436,12 +440,17 @@ class DeriverTest {
                 """{"type":"tool_use","id":"t5","name":"MultiEdit",""" +
                 """"input":{"file_path":"b.kt"}},""" +
                 """{"type":"tool_use","id":"t6","name":"Bash","input":{"command":"ls"}},""" +
-                """{"type":"tool_use","id":"t7","name":"Fetch","input":{"path":"docs/x.md"}}],""" +
+                """{"type":"tool_use","id":"t7","name":"Fetch","input":{"path":"docs/x.md"}},""" +
+                """{"type":"tool_use","id":"t8","name":"Read","input":{"file_path":"a|b.kt"}}],""" +
                 """"usage":{"input_tokens":1,"output_tokens":2,""" +
                 """"cache_read_input_tokens":3,"cache_creation_input_tokens":4},""" +
                 """"stop_reason":"tool_use"}"""
 
-        /** SHA-256("hello") is 2cf24dba5fb0a30e26e83b2ac5b9e29e…, so the user is `2cf24dba`. */
+        /**
+         * SHA-256("hello") is 2cf24dba5fb0a30e26e83b2ac5b9e29e…, so the user is `2cf24dba`. Fetch
+         * is not in the palette, so its line has no colour field and Gource colours it by
+         * extension.
+         */
         val GOURCE_EVERY_TOOL =
             listOf(
                 "2cf24dba|A|src|26A69A",
@@ -449,7 +458,7 @@ class DeriverTest {
                 "2cf24dba|M|C:/dev/x/A.kt|F44336",
                 "2cf24dba|M|nb.ipynb|FF9800",
                 "2cf24dba|M|b.kt|FF9800",
-                "2cf24dba|A|docs/x.md|FFFFFF",
+                "2cf24dba|A|docs/x.md",
             )
     }
 }
