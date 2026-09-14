@@ -67,6 +67,9 @@ class Deriver(
     /** One events file per deriver, so one lock keeps concurrent exchanges from interleaving. */
     private val lock = Mutex()
 
+    /** Model ids seen without a price: the ledger's silence is explained once, not every turn. */
+    private val unpriced = ConcurrentHashMap.newKeySet<String>()
+
     override suspend fun onRequest(exchange: Exchange): FrameSource? {
         emit(exchange, startedEvent(exchange))
         // The deriver only watches; it never answers.
@@ -107,8 +110,7 @@ class Deriver(
         val model = reader.model ?: Messages.model(exchange.request.json)
         // Subscription traffic is billed by the plan, not by the token: it has no cost here.
         val cost =
-            if (Messages.isOAuth(exchange.request.headers)) null
-            else costUsd(model, reader.usage, prices)
+            if (Messages.isOAuth(exchange.request.headers)) null else priced(model, reader.usage)
         return buildJsonObject {
             put("ts", now.toString())
             put("event", "exchange.completed")
@@ -123,6 +125,24 @@ class Deriver(
             put("clientDisconnected", exchange.clientDisconnected)
             put("rateLimit", rateLimitJson(exchange.response?.headers))
         }
+    }
+
+    /**
+     * A null cost with a model and usage in hand means the table does not know the model: a new
+     * family rolled out, or a local one. Said once per model, with the config key that fixes it.
+     */
+    private fun priced(model: String?, usage: Usage?): Double? {
+        if (model == null || usage == null) return null
+        val cost = costUsd(model, usage, prices)
+        if (cost == null && unpriced.add(model)) {
+            log.warn(
+                "no price for {}: costUsd is null; add [pricing.\"{}\"] to {}",
+                model,
+                model,
+                CONFIG_FILE,
+            )
+        }
+        return cost
     }
 
     /** The fields both lines carry, in the order both lines carry them. */

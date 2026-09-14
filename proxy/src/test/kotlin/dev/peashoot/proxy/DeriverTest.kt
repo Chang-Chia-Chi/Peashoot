@@ -15,6 +15,7 @@ import java.nio.file.Path
 import java.time.Instant
 import kotlin.io.path.readLines
 import kotlin.test.Test
+import kotlin.test.assertContains
 import kotlin.test.assertEquals
 import kotlin.test.assertNotEquals
 import kotlin.test.assertNull
@@ -253,6 +254,40 @@ class DeriverTest {
             assertEquals(JsonNull, completed.getValue("rateLimit"))
         }
     }
+
+    @Test
+    fun `a model the price table does not know is warned about once, and its cost is null`() =
+        runBlocking {
+            val appLog = Path.of(System.getProperty("peashoot.test.appLog"))
+            val home = home()
+            val model = "claude-unreleased-9"
+            val frames =
+                FrameParser.parse(fixture("stream-with-file-tools.sse")).map {
+                    it.raw.replace(MODEL, model)
+                }
+            Store(home).use { store ->
+                val reply =
+                    FakeUpstream.Reply(contentType = ContentType.Text.EventStream, frames = frames)
+                withProxy(store, home, reply) { url ->
+                    repeat(2) {
+                        assertEquals(200, post(url, CLAUDE_CODE_REQUEST, CLAUDE_CODE_HEADERS).first)
+                    }
+                }
+
+                val completed = events(home).filter { it.text("event") == "exchange.completed" }
+                assertEquals(List(2) { model }, completed.map { it.text("model") })
+                assertEquals(List(2) { JsonNull }, completed.map { it.getValue("costUsd") })
+                assertEquals(
+                    json(USAGE),
+                    completed.first().getValue("usage"),
+                    "usage still reported",
+                )
+            }
+            // Written inside onComplete, which the server's close waits for.
+            val warnings = Files.readAllLines(appLog).filter { "no price for $model" in it }
+            assertEquals(1, warnings.size, "one warning per unknown model, however many turns")
+            assertContains(warnings.single(), "[pricing.\"$model\"]")
+        }
 
     @Test
     fun `a store that cannot write costs the event table only, never the file or the client`() =
