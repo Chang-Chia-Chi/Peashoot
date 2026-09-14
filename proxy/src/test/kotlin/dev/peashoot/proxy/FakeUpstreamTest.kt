@@ -14,7 +14,6 @@ import io.ktor.http.withCharset
 import io.ktor.utils.io.readLine
 import io.ktor.utils.io.readRemaining
 import java.net.Socket
-import java.nio.file.Files
 import kotlin.test.Test
 import kotlin.test.assertContains
 import kotlin.test.assertContentEquals
@@ -26,9 +25,6 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.io.readByteArray
 import kotlinx.io.readString
-import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.jsonObject
-import kotlinx.serialization.json.jsonPrimitive
 
 /** What a client sees through the proxy under each condition the fake upstream can produce. */
 class FakeUpstreamTest {
@@ -158,52 +154,6 @@ class FakeUpstreamTest {
             )
         }
     }
-
-    @Test
-    fun `a non-text upstream body is refused with a typed 502 before the response starts`() =
-        runBlocking {
-            val types =
-                listOf(
-                    ContentType.Image.PNG,
-                    ContentType.Application.Pdf,
-                    ContentType.Text.Plain.withCharset(Charsets.ISO_8859_1),
-                )
-            Store(Files.createTempDirectory("peashoot-home")).use { store ->
-                FakeUpstream().use { upstream ->
-                    val config = ProxyConfig(port = 0, anthropicUpstream = upstream.url)
-                    ProxyServer(config, listOf(Recorder(store))).use { proxy ->
-                        HttpClient(CIO).use { client ->
-                            types.forEachIndexed { index, type ->
-                                upstream.reply = {
-                                    FakeUpstream.Reply(contentType = type, body = "PNG")
-                                }
-
-                                val response = client.get("${proxy.url}/v1/files/f1/content")
-
-                                val body = Json.parseToJsonElement(response.bodyAsText()).jsonObject
-                                assertEquals(502, response.status.value, "$type")
-                                assertEquals(
-                                    "peashoot_error",
-                                    body.getValue("type").jsonPrimitive.content,
-                                )
-                                assertEquals(
-                                    "unsupported_content_type",
-                                    body.getValue("error").jsonPrimitive.content,
-                                )
-                                assertContains(
-                                    body.getValue("detail").jsonPrimitive.content,
-                                    "${type.contentType}/${type.contentSubtype}",
-                                )
-                                // The upstream was asked; the refusal came from its headers alone.
-                                assertEquals(index + 1, upstream.received.size)
-                            }
-                        }
-                    }
-                }
-                // The exchange never had a source, so the recorder never had a buffer.
-                assertTrue(store.list().isEmpty(), "a refused body is never recorded")
-            }
-        }
 
     @Test
     fun `a UTF-8 JSON body is a text body and still arrives whole`() = runBlocking {

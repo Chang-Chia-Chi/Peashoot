@@ -11,6 +11,7 @@ import io.ktor.client.request.prepareRequest
 import io.ktor.client.request.setBody
 import io.ktor.client.statement.HttpResponse
 import io.ktor.client.statement.bodyAsChannel
+import io.ktor.http.BadContentTypeFormatException
 import io.ktor.http.ContentType
 import io.ktor.http.Headers
 import io.ktor.http.HttpHeaders
@@ -83,17 +84,32 @@ private fun Headers.without(excluded: Set<String>): Headers = Headers.build {
 }
 
 /**
- * Whether the frame path can carry this body, from the declared content-type alone: a frame is
- * text, so only text or JSON in UTF-8 passes (ADR 0001). A missing content-type passes; the frame
- * decode stays the backstop for a body that lies about itself.
+ * Whether the frame path can carry this body, from the declared content-type alone. A missing
+ * content-type passes; the frame decode stays the backstop for a body that lies about itself. A
+ * declaration we cannot parse does not pass, because we cannot claim it is text.
  */
 private fun HttpResponse.hasTextBody(): Boolean {
-    val type = contentType() ?: return true
+    val declared = headers[HttpHeaders.ContentType] ?: return true
+    return try {
+        ContentType.parse(declared).isTextBody()
+    } catch (_: BadContentTypeFormatException) {
+        false
+    }
+}
+
+/**
+ * A frame is text, so only text or JSON in UTF-8 is a text body (ADR 0001). Ktor's own `isTextType`
+ * is the wrong allowlist here: it admits xml, svg, and form-urlencoded, and misses a generic
+ * `+json` subtype. A charset naming no known encoding is not UTF-8 either, so the parameter's
+ * presence is what we test, not whether Ktor could resolve it.
+ */
+private fun ContentType.isTextBody(): Boolean {
     val carried =
-        type.match(ContentType.Text.Any) ||
-            type.match(ContentType.Application.Json) ||
-            (type.match(ContentType.Application.Any) && type.contentSubtype.endsWith("+json"))
-    return carried && type.charset().let { it == null || it == Charsets.UTF_8 }
+        match(ContentType.Text.Any) ||
+            match(ContentType.Application.Json) ||
+            (match(ContentType.Application.Any) &&
+                contentSubtype.endsWith("+json", ignoreCase = true))
+    return carried && (parameter("charset") == null || charset() == Charsets.UTF_8)
 }
 
 /**
@@ -153,12 +169,6 @@ class Relay(
         if (failure != null) {
             // Once the headers are out the client already sees the break; before them, we name it.
             if (call.response.isCommitted) throw failure
-            log.warn(
-                "upstream unreachable for {} {}: {}",
-                exchange.request.method,
-                exchange.request.path,
-                failure.toString(),
-            )
             respondProxyFailure(call, exchange, "upstream_unreachable", failure.toString())
         }
     }
@@ -178,12 +188,6 @@ class Relay(
             return
         }
         val declared = response.headers[HttpHeaders.ContentType].orEmpty()
-        log.warn(
-            "unsupported upstream content-type for {} {}: {}",
-            exchange.request.method,
-            exchange.request.path,
-            declared,
-        )
         respondProxyFailure(call, exchange, "unsupported_content_type", declared)
     }
 
@@ -246,7 +250,7 @@ class Relay(
      * Never imitates a provider's error shape: a client's retry logic must not mistake us for one.
      * The exchange still completes, with the 502, so nothing that started goes unfinished. Whether
      * the upstream was unreachable or its body unusable, the exchange never had a source, so it
-     * never had a stream: this is the one completion the drive does not run. The caller logs why.
+     * never had a stream: this is the one completion the drive does not run.
      */
     private suspend fun respondProxyFailure(
         call: ApplicationCall,
@@ -254,6 +258,7 @@ class Relay(
         error: String,
         detail: String,
     ) {
+        log.warn("{} for {} {}: {}", error, exchange.request.method, exchange.request.path, detail)
         exchange.response = Exchange.Response(HttpStatusCode.BadGateway.value, Headers.Empty)
         val body = buildJsonObject {
             put("type", "peashoot_error")

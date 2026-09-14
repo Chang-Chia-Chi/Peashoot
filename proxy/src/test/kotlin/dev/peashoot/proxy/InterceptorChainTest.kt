@@ -8,6 +8,7 @@ import dev.peashoot.core.Interceptor
 import dev.peashoot.core.Outcome
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.cio.CIO
+import io.ktor.client.request.get
 import io.ktor.client.request.header
 import io.ktor.client.request.post
 import io.ktor.client.request.setBody
@@ -16,21 +17,27 @@ import io.ktor.client.statement.bodyAsText
 import io.ktor.http.ContentType
 import io.ktor.http.contentType
 import io.ktor.http.headersOf
+import io.ktor.http.withCharset
 import io.ktor.utils.io.readRemaining
 import java.io.IOException
 import java.net.ServerSocket
+import java.nio.file.Files
 import java.util.concurrent.CopyOnWriteArrayList
 import kotlin.test.Test
 import kotlin.test.assertContains
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
+import kotlin.test.assertTrue
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.asFlow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.runBlocking
 import kotlinx.io.readByteArray
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 
 /** The chain, seen from a client: what reaches it, and what the hooks see on the way. */
 class InterceptorChainTest {
@@ -238,5 +245,57 @@ class InterceptorChainTest {
                 assertContains(response.bodyAsText(), "\"type\":\"peashoot_error\"")
             }
             assertEquals(listOf("request POST /v1/messages", "complete 502"), observer.log)
+        }
+
+    @Test
+    fun `a non-text upstream body is refused with a typed 502 and completes the exchange`() =
+        runBlocking {
+            val types =
+                listOf(
+                    ContentType.Image.PNG,
+                    ContentType.Application.Pdf,
+                    ContentType.Text.Plain.withCharset(Charsets.ISO_8859_1),
+                )
+            val observer = Observer()
+            Store(Files.createTempDirectory("peashoot-home")).use { store ->
+                FakeUpstream().use { upstream ->
+                    val config = ProxyConfig(port = 0, anthropicUpstream = upstream.url)
+                    ProxyServer(config, listOf(Recorder(store), observer)).use { proxy ->
+                        HttpClient(CIO).use { client ->
+                            types.forEachIndexed { index, type ->
+                                observer.log.clear()
+                                upstream.reply = { FakeUpstream.Reply(contentType = type) }
+
+                                val response = client.get("${proxy.url}/v1/files/f1/content")
+
+                                val body = Json.parseToJsonElement(response.bodyAsText()).jsonObject
+                                assertEquals(502, response.status.value, "$type")
+                                assertEquals(
+                                    "peashoot_error",
+                                    body.getValue("type").jsonPrimitive.content,
+                                )
+                                assertEquals(
+                                    "unsupported_content_type",
+                                    body.getValue("error").jsonPrimitive.content,
+                                )
+                                assertContains(
+                                    body.getValue("detail").jsonPrimitive.content,
+                                    "${type.contentType}/${type.contentSubtype}",
+                                )
+                                // The request did reach the upstream; the refusal is not a
+                                // short-circuit before it.
+                                assertEquals(index + 1, upstream.received.size)
+                                assertEquals(
+                                    listOf("request GET /v1/files/f1/content", "complete 502"),
+                                    observer.log,
+                                    "$type",
+                                )
+                            }
+                        }
+                    }
+                }
+                // The exchange never had a source, so the recorder never had a buffer.
+                assertTrue(store.list().isEmpty(), "a refused body is never recorded")
+            }
         }
 }
