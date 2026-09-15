@@ -74,7 +74,7 @@ interface FrameSource { val status: Int; val headers: Headers; fun frames(): Flo
 data class Frame(val raw: String, val offsetMillis: Long)
 ```
 
-`Exchange` carries: id (ULID), receivedAt, surface, client (type, sessionId, agentId, parentAgentId), route, mode, request (method, path, headers, rawBody, json, normalizedJson, fingerprint), response (status, headers, set by the source), flags (replayHit, resumed, clientDisconnected), and timings (firstByteAt, completedAt).
+`Exchange` carries: id (ULID), receivedAt, surface, client (type, sessionId, agentId, parentAgentId), route, mode, request (method, path, headers, rawBody, json, normalizedJson, fingerprint), response (status, headers, set by the source), flags (replayHit, resumed, clientDisconnected), clientBytes (the response bytes the client had taken when it left, keep-alive comments excluded), and timings (firstByteAt, completedAt).
 
 v1 chain order: Resume, Replay, Recorder, Deriver. v2's Chaos goes between Replay and Recorder so injected faults are recorded like real ones. No fifth hook until v2 needs one.
 

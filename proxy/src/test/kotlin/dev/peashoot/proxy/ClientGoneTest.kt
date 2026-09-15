@@ -167,12 +167,16 @@ class ClientGoneTest {
             gone.keys.toList(),
         )
         val bytes = gone.getValue("bytesSoFar").jsonPrimitive.long
-        val read = frames.take(readBeforeLeaving).joinToString("").toByteArray().size
-        // The first write after a closed socket can still succeed, so a frame or two beyond what
-        // the client acknowledged may be counted; never all of them.
-        assertTrue(bytes >= read, "the frames the client read are counted: $bytes < $read")
-        val whole = frames.joinToString("").toByteArray().size
-        assertTrue(bytes < whole, "the client left before the end: $bytes of $whole")
+        val taken = frames.take(readBeforeLeaving).joinToString("").toByteArray().size.toLong()
+        // The write after a close still succeeds, and the reset it provokes fails the next one,
+        // so a frame or two past what the client read may be counted. The 50 ms spacing after the
+        // departure leaves three frames of slack before the count would say the client stayed.
+        val ceiling =
+            frames.take(readBeforeLeaving + 3).joinToString("").toByteArray().size.toLong()
+        assertTrue(
+            bytes in taken..ceiling,
+            "bytesSoFar $bytes, client read $taken, at most $ceiling",
+        )
     }
 
     @Test

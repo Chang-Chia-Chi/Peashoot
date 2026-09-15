@@ -19,7 +19,6 @@ import io.ktor.http.HttpStatusCode
 import io.ktor.http.charset
 import io.ktor.http.content.ByteArrayContent
 import io.ktor.http.content.OutgoingContent
-import io.ktor.http.contentType
 import io.ktor.server.application.ApplicationCall
 import io.ktor.server.request.header
 import io.ktor.server.request.httpMethod
@@ -30,7 +29,6 @@ import io.ktor.server.response.respondText
 import io.ktor.utils.io.ByteWriteChannel
 import io.ktor.utils.io.readAvailable
 import io.ktor.utils.io.writeFully
-import io.ktor.utils.io.writeStringUtf8
 import java.io.IOException
 import java.nio.channels.UnresolvedAddressException
 import java.nio.file.Path
@@ -116,6 +114,20 @@ private fun ContentType.isTextBody(): Boolean {
                 contentSubtype.endsWith("+json", ignoreCase = true))
     return carried && (parameter("charset") == null || charset() == Charsets.UTF_8)
 }
+
+/**
+ * Whether the declared content-type is an event stream. Only a stream splits at blank lines, and
+ * only a stream is ever sent a keep-alive comment; a declaration we cannot parse is neither, so a
+ * source that lies about itself still gets its completion.
+ */
+private fun Headers.declaresEventStream(): Boolean =
+    try {
+        this[HttpHeaders.ContentType]
+            ?.let(ContentType::parse)
+            ?.match(ContentType.Text.EventStream) == true
+    } catch (_: BadContentTypeFormatException) {
+        false
+    }
 
 /**
  * Every request through the chain. The first interceptor to respond is the source; otherwise the
@@ -307,14 +319,8 @@ private class ExchangeStream(
 ) {
     private val status = source.status
 
-    /**
-     * Only a stream is ever sent a comment: one inside a JSON body would corrupt it. A declaration
-     * we cannot parse never reaches here, and a missing one is not a stream.
-     */
-    private val streaming =
-        source.headers[HttpHeaders.ContentType]?.let {
-            ContentType.parse(it).match(ContentType.Text.EventStream)
-        } == true
+    /** Only a stream is ever sent a comment: one inside a JSON body would corrupt it. */
+    private val streaming = source.headers.declaresEventStream()
 
     private val frames =
         interceptors.fold(source.frames()) { acc, interceptor ->
@@ -389,23 +395,17 @@ private class ExchangeStream(
                     // withTimeoutOrNull around receive could be cancelled after the drive had
                     // handed one over and lose it, and select's own onTimeout needs an opt-in.
                     val silence = launch { delay(pingInterval) }
-                    val taken = select {
+                    val next = select {
                         handoff.onReceiveCatching { it }
                         silence.onJoin { null }
                     }
                     // A live delay would hold this scope open after the last frame.
                     silence.cancel()
-                    val frame = taken?.getOrNull()
-                    if (frame != null) {
-                        val bytes = frame.raw.toByteArray()
-                        channel.writeFully(bytes)
-                        channel.flush()
-                        sent += bytes.size
-                    } else if (taken != null) {
-                        drained = true
-                    } else if (streaming) {
-                        channel.writeStringUtf8(KEEP_ALIVE)
-                        channel.flush()
+                    when {
+                        // The interval passed with nothing to send.
+                        next == null -> if (streaming) channel.deliver(KEEP_ALIVE)
+                        next.isClosed -> drained = true
+                        else -> sent += channel.deliver(next.getOrThrow().raw)
                     }
                 }
             }
@@ -415,6 +415,14 @@ private class ExchangeStream(
             // client-gone still go under the same lock, before any completion can take it.
             if (!drained) withContext(NonCancellable) { detach() }
         }
+    }
+
+    /** One write and its flush; the count is what the client took. */
+    private suspend fun ByteWriteChannel.deliver(text: String): Int {
+        val bytes = text.toByteArray()
+        writeFully(bytes)
+        flush()
+        return bytes.size
     }
 
     /**
@@ -456,7 +464,7 @@ private class UpstreamSource(
         val dump = dumpPath?.let {
             FrameDump(it, exchange.request.method, exchange.request.path, status)
         }
-        val streaming = response.contentType()?.match(ContentType.Text.EventStream) == true
+        val streaming = response.headers.declaresEventStream()
         val parser = FrameParser(streaming)
         val start = TimeSource.Monotonic.markNow()
         val body = response.bodyAsChannel()

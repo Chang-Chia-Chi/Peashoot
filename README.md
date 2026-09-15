@@ -44,7 +44,7 @@ While a streaming response is silent, the proxy writes the SSE comment line `: k
 
 If a client disconnects mid-stream, the proxy keeps reading the upstream to the end, records the exchange complete with `clientDisconnected` set, and appends an `exchange.client_gone` line to `events.jsonl`. `exchange.completed` still follows, with `clientDisconnected: true`.
 
-Manual check, with a real key: set `pingIntervalSeconds = 1`, start the proxy, then send a streaming Messages request through it with a prompt that makes the model think for a long time:
+Manual check, with a real key. The seam test stalls a fake upstream for several intervals; the real API cannot be made to stall on demand, because it sends `event: ping` frames of its own, so what a human checks here is that Claude Code and its SDK take the proxy's lines in their stride. Set `pingIntervalSeconds = 0.2`, start the proxy, then send a streaming Messages request through it with a prompt that makes the model think for a while:
 
 ```
 $ curl -N http://localhost:8787/v1/messages \
@@ -52,7 +52,7 @@ $ curl -N http://localhost:8787/v1/messages \
   -d '{"model":"claude-sonnet-4-5","max_tokens":20000,"stream":true,"thinking":{"type":"enabled","budget_tokens":16000},"messages":[{"role":"user","content":"Solve a hard logic puzzle, showing your reasoning."}]}'
 ```
 
-Watch `: keep-alive` lines appear between the provider's own frames during the pause. The provider sends its own `event: ping` frames too; the proxy forwards those unchanged, so the lines it generates are the ones starting with a colon. Then run Claude Code against the proxy with the same kind of prompt: the turn completes, and `events.jsonl` ends with an `exchange.completed` line for it, no `exchange.client_gone`.
+The pauses in a thinking stream are longer than that interval, so `: keep-alive` lines appear between the provider's frames. The provider's own `event: ping` frames are forwarded, not generated, so the proxy's lines are the ones that start with a colon. Then run Claude Code against the proxy with the same kind of prompt: the turn completes, and `events.jsonl` ends with an `exchange.completed` line for it, no `exchange.client_gone`.
 
 ## Watch agents move through the repository
 
