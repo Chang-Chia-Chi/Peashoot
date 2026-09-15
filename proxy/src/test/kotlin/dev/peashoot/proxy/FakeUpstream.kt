@@ -52,7 +52,8 @@ class FakeUpstream : AutoCloseable {
 
     /** Handlers append from Netty threads while the test thread reads. */
     val received = CopyOnWriteArrayList<Received>()
-    @Volatile var reply: (Received) -> Reply = { Reply() }
+    /** Suspending, so a test can hold the upstream before its headers, not only between frames. */
+    @Volatile var reply: suspend (Received) -> Reply = { Reply() }
 
     // The engine call is intercepted directly, not through routing, so a cut can reach the socket.
     private val server: EmbeddedServer<*, *> =

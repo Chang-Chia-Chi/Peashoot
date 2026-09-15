@@ -211,7 +211,7 @@ class RecorderTest {
             val closed = Store(home()).also { it.close() } // every write fails from here on
             val after =
                 object : Interceptor {
-                    val completed = CompletableDeferred<Int>()
+                    val completed = CompletableDeferred<Int?>()
 
                     override suspend fun onComplete(exchange: Exchange, outcome: Outcome) {
                         completed.complete(outcome.status)
