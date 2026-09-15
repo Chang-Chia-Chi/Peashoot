@@ -45,10 +45,10 @@ private val log = LoggerFactory.getLogger("dev.peashoot.proxy")
 const val EVENTS_FILE = "events.jsonl"
 
 /**
- * The event line: one `exchange.started` when the request is heard and one `exchange.completed`
- * when the response ends, to the events file and the event table, and the file tools of every turn
- * to the Gource log when that flag is on. Never throws: an event that cannot be written is one WARN
- * line, never a failed request.
+ * The event line: one `exchange.started` when the request is heard, one `exchange.client_gone` when
+ * the client leaves mid-stream, and one `exchange.completed` when the response ends, to the events
+ * file and the event table, and the file tools of every turn to the Gource log when that flag is
+ * on. Never throws: an event that cannot be written is one WARN line, never a failed request.
  */
 class Deriver(
     private val store: Store,
@@ -91,6 +91,19 @@ class Deriver(
                 turn.reader.read(frame)
             }
     }
+
+    /** The departure is its own line: the completed one still follows, once the stream ends. */
+    override suspend fun onClientGone(exchange: Exchange) =
+        emit(
+            exchange,
+            buildJsonObject {
+                put("ts", Instant.now().toString())
+                put("event", "exchange.client_gone")
+                put("exchangeId", exchange.id)
+                put("session", exchange.client.session)
+                put("bytesSoFar", exchange.clientBytes)
+            },
+        )
 
     /** An exchange whose response never started has nothing to report but its own ending. */
     override suspend fun onComplete(exchange: Exchange, outcome: Outcome) {

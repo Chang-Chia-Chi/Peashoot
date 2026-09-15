@@ -14,6 +14,7 @@ import java.net.Socket
 import java.nio.file.Files
 import java.nio.file.Path
 import java.util.concurrent.CopyOnWriteArrayList
+import kotlin.io.path.readLines
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -22,6 +23,12 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.boolean
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.long
 
 /** What the chain and the store see when the client leaves before the stream ends. */
 class ClientGoneTest {
@@ -30,6 +37,10 @@ class ClientGoneTest {
             .readBytes()
 
     private fun home(): Path = Files.createTempDirectory("peashoot-home")
+
+    /** The lines the deriver wrote, parsed. Read once the server has stopped. */
+    private fun events(home: Path): List<JsonObject> =
+        home.resolve(EVENTS_FILE).readLines().map { Json.parseToJsonElement(it).jsonObject }
 
     /** Records what the chain tells it about the client leaving, and changes nothing. */
     private class Observer : Interceptor {
@@ -103,7 +114,8 @@ class ClientGoneTest {
         val reached = CopyOnWriteArrayList<Int>()
         val clientGone = CompletableDeferred<Unit>()
         val observer = Observer()
-        Store(home()).use { store ->
+        val home = home()
+        Store(home).use { store ->
             FakeUpstream().use { upstream ->
                 upstream.reply = {
                     FakeUpstream.Reply(
@@ -119,7 +131,9 @@ class ClientGoneTest {
                     )
                 }
                 val config = ProxyConfig(port = 0, anthropicUpstream = upstream.url)
-                ProxyServer(config, listOf(Recorder(store), observer)).use { proxy ->
+                val chain =
+                    listOf(Recorder(store), Deriver(store, home.resolve(EVENTS_FILE)), observer)
+                ProxyServer(config, chain).use { proxy ->
                     leaveAfterFrames(proxy, untilFrames = readBeforeLeaving, reset = reset)
                     clientGone.complete(Unit)
                     withTimeout(5_000) { observer.completed.await() }
@@ -132,6 +146,37 @@ class ClientGoneTest {
             assertTrue(recorded.exchange.clientDisconnected, "the client left mid-stream")
         }
         assertEquals(listOf("client-gone", "complete 200"), observer.log)
+        assertEvents(home, frames, readBeforeLeaving)
+    }
+
+    /**
+     * The three lines of an exchange the client left: the departure is its own line, between the
+     * start and the completion, and it names the bytes the client had taken.
+     */
+    private fun assertEvents(home: Path, frames: List<String>, readBeforeLeaving: Int) {
+        val lines = events(home)
+        assertEquals(
+            listOf("exchange.started", "exchange.client_gone", "exchange.completed"),
+            lines.map { it.getValue("event").jsonPrimitive.content },
+        )
+        assertEquals(1, lines.mapTo(mutableSetOf()) { it.getValue("exchangeId") }.size, "one id")
+        assertTrue(lines.last().getValue("clientDisconnected").jsonPrimitive.boolean)
+        val gone = lines[1]
+        assertEquals(
+            listOf("ts", "event", "exchangeId", "session", "bytesSoFar"),
+            gone.keys.toList(),
+        )
+        val bytes = gone.getValue("bytesSoFar").jsonPrimitive.long
+        val taken = frames.take(readBeforeLeaving).joinToString("").toByteArray().size.toLong()
+        // The write after a close still succeeds, and the reset it provokes fails the next one,
+        // so a frame or two past what the client read may be counted. The 50 ms spacing after the
+        // departure leaves three frames of slack before the count would say the client stayed.
+        val ceiling =
+            frames.take(readBeforeLeaving + 3).joinToString("").toByteArray().size.toLong()
+        assertTrue(
+            bytes in taken..ceiling,
+            "bytesSoFar $bytes, client read $taken, at most $ceiling",
+        )
     }
 
     @Test

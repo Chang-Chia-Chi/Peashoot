@@ -12,6 +12,7 @@ import kotlin.test.assertContains
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.milliseconds
 
 /** The data directory and its config file, from a first start to an edited file. */
 class ConfigTest {
@@ -34,6 +35,7 @@ class ConfigTest {
         assertTrue(Files.isRegularFile(file), "$file")
         assertContains(file.readText(), "mode = \"record\"")
         assertContains(file.readText(), "[gource]")
+        assertContains(file.readText(), "[resume]")
         assertEquals(
             config,
             loadConfig(home, env()),
@@ -59,6 +61,9 @@ class ConfigTest {
 
                 [gource]
                 enabled = true
+
+                [resume]
+                pingIntervalSeconds = 0.5
                 """
                     .trimIndent()
             )
@@ -69,6 +74,7 @@ class ConfigTest {
         assertEquals("http://localhost:11434", fromFile.anthropicUpstream)
         assertEquals(setOf("authorization", "x-api-key", "x-goog-api-key"), fromFile.secretHeaders)
         assertEquals(mapOf("default" to Mode.PASSTHROUGH), fromFile.routes)
+        assertEquals(500.milliseconds, fromFile.pingInterval)
 
         val fromEnv =
             loadConfig(
@@ -166,5 +172,22 @@ class ConfigTest {
 
         val error = assertFailsWith<IllegalStateException> { loadConfig(home, env()) }
         assertContains(error.message.orEmpty(), "secretHeaders must be a list of strings")
+    }
+
+    @Test
+    fun `a non-positive pingIntervalSeconds is refused`() {
+        val home = Files.createTempDirectory("peashoot-home")
+        home
+            .resolve("peashoot.toml")
+            .writeText(
+                """
+                [resume]
+                pingIntervalSeconds = 0
+                """
+                    .trimIndent()
+            )
+
+        val error = assertFailsWith<IllegalStateException> { loadConfig(home, env()) }
+        assertContains(error.message.orEmpty(), "must be positive")
     }
 }
