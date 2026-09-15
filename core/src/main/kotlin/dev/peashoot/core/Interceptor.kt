@@ -27,10 +27,11 @@ interface Interceptor {
     fun onFrames(exchange: Exchange, frames: Flow<Frame>): Flow<Frame> = frames
 
     /**
-     * Runs exactly once for every exchange the proxy answered, from a source or with a proxy
-     * failure, whether or not the client stayed to hear it. Must not throw: this runs where a
-     * stream ended, so a throw here would replace the exception that ended it. Catch your own
-     * failures, as the Recorder catches the store's.
+     * Runs exactly once for every exchange that heard [onRequest], last: from a source, with a
+     * proxy failure, or with no answer at all, when the status is null because the proxy stopped
+     * before one existed or 500 because the relay failed. Must not throw: this runs where a stream
+     * ended, so a throw here would replace the exception that ended it. Catch your own failures, as
+     * the Recorder catches the store's.
      */
     suspend fun onComplete(exchange: Exchange, outcome: Outcome) = Unit
 
@@ -52,7 +53,7 @@ interface FrameSource {
 }
 
 /**
- * What the chain learns when a response completes: the status. Usage, stop reason, and timings are
- * the deriver's, read from the frames it observed.
+ * What the chain learns when a response completes: the status, null when the proxy stopped before
+ * one existed. Usage, stop reason, and timings are the deriver's, read from the frames it observed.
  */
-data class Outcome(val status: Int)
+data class Outcome(val status: Int?)

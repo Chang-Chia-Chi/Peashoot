@@ -34,6 +34,7 @@ import java.nio.channels.UnresolvedAddressException
 import java.nio.file.Path
 import kotlin.time.Duration
 import kotlin.time.TimeSource
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.NonCancellable
@@ -159,13 +160,40 @@ class Relay(
         // Every interceptor hears the request; the first source offered wins. mapNotNull is eager
         // on purpose: firstNotNullOfOrNull would stop asking at the first answer.
         val offered = interceptors.mapNotNull { it.onRequest(exchange) }.firstOrNull()
-        if (offered != null) {
-            respondFrom(call, exchange, offered)
-            return
+        var cancelled = false
+        try {
+            if (offered != null) respondFrom(call, exchange, offered)
+            else askUpstream(call, exchange, body)
+        } catch (e: CancellationException) {
+            cancelled = true
+            throw e
+        } finally {
+            // No response means no stream, so no drive will end this one. The chain heard the
+            // request, so it hears the end.
+            if (exchange.response == null) completeUnanswered(exchange, cancelled)
         }
+    }
 
+    /**
+     * Nothing was offered, so the upstream is asked. A request content-type we cannot parse is
+     * refused rather than forwarded: parsing it any earlier would keep the request from ever
+     * becoming an exchange, and forwarding it throws past the chain.
+     */
+    private suspend fun askUpstream(call: ApplicationCall, exchange: Exchange, body: ByteArray) {
+        val declared = call.request.header(HttpHeaders.ContentType)
         val requestContentType =
-            call.request.header(HttpHeaders.ContentType)?.let(ContentType::parse)
+            try {
+                declared?.let(ContentType::parse)
+            } catch (_: BadContentTypeFormatException) {
+                respondProxyFailure(
+                    call,
+                    exchange,
+                    HttpStatusCode.BadRequest,
+                    "bad_content_type",
+                    declared.orEmpty(),
+                )
+                return
+            }
         // The target starts with `/` (relayModule refuses others), so it can only extend the path.
         val statement =
             upstream.prepareRequest(config.upstreamBase + call.request.uri) {
@@ -186,9 +214,28 @@ class Relay(
         if (failure != null) {
             // Once the headers are out the client already sees the break; before them, we name it.
             if (call.response.isCommitted) throw failure
-            respondProxyFailure(call, exchange, "upstream_unreachable", failure.toString())
+            respondProxyFailure(
+                call,
+                exchange,
+                HttpStatusCode.BadGateway,
+                "upstream_unreachable",
+                failure.toString(),
+            )
         }
     }
+
+    /**
+     * The one ending nothing else can give: neither a source nor a refusal took the exchange, so
+     * the completion runs here. A cancelled call is the proxy stopping before a status existed, not
+     * a client leaving: the engine does not report a departure this early (#51). Anything else is a
+     * failure Ktor turns into a 500 for a client that is still there. The response stays null
+     * either way: the status says what happened.
+     */
+    private suspend fun completeUnanswered(exchange: Exchange, cancelled: Boolean) =
+        withContext(NonCancellable) {
+            val status = if (cancelled) null else HttpStatusCode.InternalServerError.value
+            interceptors.forEach { it.onComplete(exchange, Outcome(status)) }
+        }
 
     /**
      * The upstream answered. A body the frame path cannot carry is refused here, before the
@@ -205,7 +252,13 @@ class Relay(
             return
         }
         val declared = response.headers[HttpHeaders.ContentType].orEmpty()
-        respondProxyFailure(call, exchange, "unsupported_content_type", declared)
+        respondProxyFailure(
+            call,
+            exchange,
+            HttpStatusCode.BadGateway,
+            "unsupported_content_type",
+            declared,
+        )
     }
 
     /**
@@ -265,37 +318,34 @@ class Relay(
 
     /**
      * Never imitates a provider's error shape: a client's retry logic must not mistake us for one.
-     * Whether the upstream was unreachable or its body unusable, the exchange never had a source,
-     * so it never had a stream: this is the one completion the drive does not run. It runs here
-     * instead, in a finally, so the once-per-exchange guarantee holds by construction. A 502 to a
-     * client that has already left does not throw on the Netty engine, which discards the write on
-     * a channel it has closed; the completion rests neither on that nor on the call surviving the
-     * write uncancelled.
+     * Whether we refused to forward the request, the upstream was unreachable, or its body was
+     * unusable, the exchange never had a source, so it never had a stream: this is the one
+     * completion the drive does not run. It runs here instead, in a finally, so the once-per-
+     * exchange guarantee holds by construction. A refusal to a client that has already left does
+     * not throw on the Netty engine, which discards the write on a channel it has closed; the
+     * completion rests neither on that nor on the call surviving the write uncancelled.
      */
     private suspend fun respondProxyFailure(
         call: ApplicationCall,
         exchange: Exchange,
+        status: HttpStatusCode,
         error: String,
         detail: String,
     ) {
         log.warn("{} for {} {}: {}", error, exchange.request.method, exchange.request.path, detail)
-        exchange.response = Exchange.Response(HttpStatusCode.BadGateway.value, Headers.Empty)
+        exchange.response = Exchange.Response(status.value, Headers.Empty)
         val body = buildJsonObject {
             put("type", "peashoot_error")
             put("error", error)
             put("detail", detail)
         }
         try {
-            call.respondText(
-                body.toString(),
-                ContentType.Application.Json,
-                HttpStatusCode.BadGateway,
-            )
+            call.respondText(body.toString(), ContentType.Application.Json, status)
         } finally {
-            // Whether or not the 502 reached the client, the chain hears the end once: the
+            // Whether or not the refusal reached the client, the chain hears the end once: the
             // guarantee the drive's finally gives a stream.
             withContext(NonCancellable) {
-                val outcome = Outcome(HttpStatusCode.BadGateway.value)
+                val outcome = Outcome(status.value)
                 interceptors.forEach { it.onComplete(exchange, outcome) }
             }
         }
