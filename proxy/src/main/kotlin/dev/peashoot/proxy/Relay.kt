@@ -94,12 +94,16 @@ private fun Headers.without(excluded: Set<String>): Headers = Headers.build {
  */
 private fun HttpResponse.hasTextBody(): Boolean {
     val declared = headers[HttpHeaders.ContentType] ?: return true
-    return try {
-        ContentType.parse(declared).isTextBody()
-    } catch (_: BadContentTypeFormatException) {
-        false
-    }
+    return declared.toContentTypeOrNull()?.isTextBody() == true
 }
+
+/** The declared content-type as Ktor reads it, or null for one it cannot parse. */
+private fun String.toContentTypeOrNull(): ContentType? =
+    try {
+        ContentType.parse(this)
+    } catch (_: BadContentTypeFormatException) {
+        null
+    }
 
 /**
  * A frame is text, so only text or JSON in UTF-8 is a text body (ADR 0001). Ktor's own `isTextType`
@@ -122,13 +126,15 @@ private fun ContentType.isTextBody(): Boolean {
  * source that lies about itself still gets its completion.
  */
 private fun Headers.declaresEventStream(): Boolean =
-    try {
-        this[HttpHeaders.ContentType]
-            ?.let(ContentType::parse)
-            ?.match(ContentType.Text.EventStream) == true
-    } catch (_: BadContentTypeFormatException) {
-        false
-    }
+    this[HttpHeaders.ContentType]?.toContentTypeOrNull()?.match(ContentType.Text.EventStream) ==
+        true
+
+/**
+ * The end, heard once by every interceptor and never cut short: it runs where a stream, a call, or
+ * a refusal ended, cancelled or not.
+ */
+private suspend fun List<Interceptor>.complete(exchange: Exchange, status: Int?) =
+    withContext(NonCancellable) { forEach { it.onComplete(exchange, Outcome(status)) } }
 
 /**
  * Every request through the chain. The first interceptor to respond is the source; otherwise the
@@ -157,20 +163,26 @@ class Relay(
                 route = DEFAULT_ROUTE,
                 mode = config.routes.getValue(DEFAULT_ROUTE),
             )
-        // Every interceptor hears the request; the first source offered wins. mapNotNull is eager
-        // on purpose: firstNotNullOfOrNull would stop asking at the first answer.
-        val offered = interceptors.mapNotNull { it.onRequest(exchange) }.firstOrNull()
         var cancelled = false
         try {
+            // Every interceptor hears the request; the first source offered wins. mapNotNull is
+            // eager on purpose: firstNotNullOfOrNull would stop asking at the first answer.
+            val offered = interceptors.mapNotNull { it.onRequest(exchange) }.firstOrNull()
             if (offered != null) respondFrom(call, exchange, offered)
             else askUpstream(call, exchange, body)
         } catch (e: CancellationException) {
             cancelled = true
             throw e
         } finally {
-            // No response means no stream, so no drive will end this one. The chain heard the
-            // request, so it hears the end.
-            if (exchange.response == null) completeUnanswered(exchange, cancelled)
+            // A source or a refusal sets the response before its own completion runs, and nothing
+            // else sets it, so a null one here is an exchange nobody ended. The chain heard the
+            // request, so it hears the end: with no status when the call was cancelled, which is
+            // the proxy stopping, since the engine reports no departure this early (#51), and
+            // otherwise with 500, Ktor's answer to an unhandled throw with no status pages on.
+            if (exchange.response == null) {
+                val status = if (cancelled) null else HttpStatusCode.InternalServerError.value
+                interceptors.complete(exchange, status)
+            }
         }
     }
 
@@ -181,19 +193,17 @@ class Relay(
      */
     private suspend fun askUpstream(call: ApplicationCall, exchange: Exchange, body: ByteArray) {
         val declared = call.request.header(HttpHeaders.ContentType)
-        val requestContentType =
-            try {
-                declared?.let(ContentType::parse)
-            } catch (_: BadContentTypeFormatException) {
-                respondProxyFailure(
-                    call,
-                    exchange,
-                    HttpStatusCode.BadRequest,
-                    "bad_content_type",
-                    declared.orEmpty(),
-                )
-                return
-            }
+        val requestContentType = declared?.toContentTypeOrNull()
+        if (declared != null && requestContentType == null) {
+            respondProxyFailure(
+                call,
+                exchange,
+                HttpStatusCode.BadRequest,
+                "bad_content_type",
+                declared,
+            )
+            return
+        }
         // The target starts with `/` (relayModule refuses others), so it can only extend the path.
         val statement =
             upstream.prepareRequest(config.upstreamBase + call.request.uri) {
@@ -212,8 +222,9 @@ class Relay(
                 e
             }
         if (failure != null) {
-            // Once the headers are out the client already sees the break; before them, we name it.
-            if (call.response.isCommitted) throw failure
+            // Once the headers are out the client already sees the break, and once a source took
+            // the exchange its completion has run; before either, we name it.
+            if (call.response.isCommitted || exchange.response != null) throw failure
             respondProxyFailure(
                 call,
                 exchange,
@@ -223,19 +234,6 @@ class Relay(
             )
         }
     }
-
-    /**
-     * The one ending nothing else can give: neither a source nor a refusal took the exchange, so
-     * the completion runs here. A cancelled call is the proxy stopping before a status existed, not
-     * a client leaving: the engine does not report a departure this early (#51). Anything else is a
-     * failure Ktor turns into a 500 for a client that is still there. The response stays null
-     * either way: the status says what happened.
-     */
-    private suspend fun completeUnanswered(exchange: Exchange, cancelled: Boolean) =
-        withContext(NonCancellable) {
-            val status = if (cancelled) null else HttpStatusCode.InternalServerError.value
-            interceptors.forEach { it.onComplete(exchange, Outcome(status)) }
-        }
 
     /**
      * The upstream answered. A body the frame path cannot carry is refused here, before the
@@ -270,8 +268,10 @@ class Relay(
         exchange: Exchange,
         source: FrameSource,
     ) {
-        exchange.response = Exchange.Response(source.status, source.headers)
+        // Wrapping runs every onFrames first: a wrapper that throws leaves the response unset, so
+        // the call's finally ends the exchange as the failure it is.
         val stream = ExchangeStream(exchange, source, interceptors, config.pingInterval)
+        exchange.response = Exchange.Response(source.status, source.headers)
         val drive = streams.launch(brokenInterceptor(exchange)) { stream.drive() }
         var delivered = false
         try {
@@ -298,6 +298,9 @@ class Relay(
                 // what keeps the drive from wedging on its very first send.
                 if (!delivered) stream.detach()
                 drive.join()
+                // A drive launched into a scope already stopping never ran, so it never ended the
+                // exchange; the stream's completion is idempotent for exactly this.
+                stream.complete()
             }
         }
     }
@@ -319,11 +322,11 @@ class Relay(
     /**
      * Never imitates a provider's error shape: a client's retry logic must not mistake us for one.
      * Whether we refused to forward the request, the upstream was unreachable, or its body was
-     * unusable, the exchange never had a source, so it never had a stream: this is the one
-     * completion the drive does not run. It runs here instead, in a finally, so the once-per-
-     * exchange guarantee holds by construction. A refusal to a client that has already left does
-     * not throw on the Netty engine, which discards the write on a channel it has closed; the
-     * completion rests neither on that nor on the call surviving the write uncancelled.
+     * unusable, the exchange never had a source, so it never had a stream: the completion runs here
+     * instead, in a finally, so the once-per-exchange guarantee holds for a refusal as the drive's
+     * finally holds it for a stream. A refusal to a client that has already left does not throw on
+     * the Netty engine, which discards the write on a channel it has closed; the completion rests
+     * neither on that nor on the call surviving the write uncancelled.
      */
     private suspend fun respondProxyFailure(
         call: ApplicationCall,
@@ -344,10 +347,7 @@ class Relay(
         } finally {
             // Whether or not the refusal reached the client, the chain hears the end once: the
             // guarantee the drive's finally gives a stream.
-            withContext(NonCancellable) {
-                val outcome = Outcome(status.value)
-                interceptors.forEach { it.onComplete(exchange, outcome) }
-            }
+            interceptors.complete(exchange, status.value)
         }
     }
 }
@@ -422,14 +422,24 @@ private class ExchangeStream(
         } finally {
             // Ends the client's response as soon as the last frame is out, before the sinks work.
             handoff.close()
-            withContext(NonCancellable) {
-                lock.withLock {
+            complete()
+        }
+    }
+
+    /**
+     * The end, once: from the drive's own finally when it ran, or from the call when the drive was
+     * launched into a scope already stopping and never did. Under the lock, so it never overlaps a
+     * detach; never cancelled, so a cancelled drive still ends what it began.
+     */
+    suspend fun complete() =
+        withContext(NonCancellable) {
+            lock.withLock {
+                if (!completed) {
                     completed = true
-                    interceptors.forEach { it.onComplete(exchange, Outcome(status)) }
+                    interceptors.complete(exchange, status)
                 }
             }
         }
-    }
 
     /**
      * The client sink: each frame goes out as soon as it exists, in the call's own coroutine, and a

@@ -12,7 +12,8 @@ import kotlinx.coroutines.flow.Flow
 interface Interceptor {
     /**
      * Answer from a source of your own and skip the upstream, or null to offer nothing and let the
-     * chain continue.
+     * chain continue. Must not throw: the exchange then ends as a relay failure, and the
+     * interceptors after the throw hear the end of a request they never heard.
      */
     suspend fun onRequest(exchange: Exchange): FrameSource? = null
 
@@ -21,17 +22,17 @@ interface Interceptor {
      * [frames] exactly once and stay unbuffered: the source is cold and single-use. It is collected
      * once, on the exchange's drive coroutine, and it keeps being collected after the client
      * leaves; [onComplete] runs once, last. Must not throw while wrapping: this runs before the
-     * stream starts, so a throw here means no stream and no completion. A failure inside the
-     * returned flow is caught, and the exchange still completes.
+     * stream starts, so a throw here means no stream, and the exchange ends as a relay failure. A
+     * failure inside the returned flow is caught, and the exchange still completes.
      */
     fun onFrames(exchange: Exchange, frames: Flow<Frame>): Flow<Frame> = frames
 
     /**
      * Runs exactly once for every exchange that heard [onRequest], last: from a source, with a
-     * proxy failure, or with no answer at all, when the status is null because the proxy stopped
-     * before one existed or 500 because the relay failed. Must not throw: this runs where a stream
-     * ended, so a throw here would replace the exception that ended it. Catch your own failures, as
-     * the Recorder catches the store's.
+     * proxy failure, or with no answer at all, when the status is null because the call was
+     * cancelled before a response existed and 500 because the relay failed for a client still
+     * there. Must not throw: this runs where a stream ended, so a throw here would replace the
+     * exception that ended it. Catch your own failures, as the Recorder catches the store's.
      */
     suspend fun onComplete(exchange: Exchange, outcome: Outcome) = Unit
 

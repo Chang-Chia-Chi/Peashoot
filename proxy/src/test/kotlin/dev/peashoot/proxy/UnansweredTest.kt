@@ -1,6 +1,7 @@
 package dev.peashoot.proxy
 
 import dev.peashoot.core.Exchange
+import dev.peashoot.core.Frame
 import dev.peashoot.core.Interceptor
 import dev.peashoot.core.Outcome
 import java.net.Socket
@@ -15,6 +16,7 @@ import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.Json
@@ -58,6 +60,12 @@ class UnansweredTest {
      * to send a content-type it cannot parse, and never holds a connection open on command. The
      * socket is the caller's, and stays open until it closes it.
      */
+    /** Breaks the contract on purpose: the relay must still end the exchange it began. */
+    private class Broken : Interceptor {
+        override fun onFrames(exchange: Exchange, frames: Flow<Frame>): Flow<Frame> =
+            error("broken on purpose")
+    }
+
     private fun openPost(proxy: ProxyServer, extraHeaders: String = ""): Socket {
         val (host, port) = proxy.url.removePrefix("http://").split(":")
         val body = """{"model":"claude"}"""
@@ -160,4 +168,34 @@ class UnansweredTest {
         assertEquals(JsonNull, completed.getValue("status"), "no status ever existed")
         assertFalse(completed.getValue("clientDisconnected").jsonPrimitive.boolean)
     }
+
+    @Test
+    fun `an interceptor that throws while wrapping the frames ends the exchange as a 500`() =
+        runBlocking {
+            val observer = Observer()
+            val home = home()
+            Store(home).use { store ->
+                FakeUpstream().use { upstream ->
+                    val config = ProxyConfig(port = 0, anthropicUpstream = upstream.url)
+                    val deriver = Deriver(store, home.resolve(EVENTS_FILE))
+                    val chain = listOf(Recorder(store), deriver, Broken(), observer)
+                    ProxyServer(config, chain).use { proxy ->
+                        // Ktor's own answer to an unhandled throw; only its status line matters.
+                        val statusLine =
+                            openPost(proxy).use { it.getInputStream().bufferedReader().readLine() }
+                        assertEquals("HTTP/1.1 500 Internal Server Error", statusLine)
+                        withTimeout(5_000) { observer.completed.await() }
+                    }
+                }
+                assertTrue(store.list().isEmpty(), "no stream ran, so nothing is stored")
+            }
+
+            assertEquals(listOf("complete 500"), observer.log)
+            val lines = events(home)
+            assertEquals(
+                listOf("exchange.started", "exchange.completed"),
+                lines.map { it.getValue("event").jsonPrimitive.content },
+            )
+            assertEquals(500, lines.last().getValue("status").jsonPrimitive.int)
+        }
 }
