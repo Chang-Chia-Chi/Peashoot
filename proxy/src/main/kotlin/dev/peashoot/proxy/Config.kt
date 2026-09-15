@@ -5,6 +5,8 @@ import dev.peashoot.core.Mode
 import dev.peashoot.core.Price
 import java.nio.file.Files
 import java.nio.file.Path
+import kotlin.time.Duration
+import kotlin.time.Duration.Companion.seconds
 import org.tomlj.Toml
 import org.tomlj.TomlTable
 
@@ -25,6 +27,11 @@ data class ProxyConfig(
     val pricing: Map<String, Price> = DEFAULT_PRICES,
     /** Whether a completed turn's file tools are also appended to [GOURCE_FILE]. */
     val gourceEnabled: Boolean = false,
+    /**
+     * While a streaming upstream is silent this long, the proxy writes an SSE comment line to the
+     * client so byte-counting watchdogs stay alive. `resume.pingIntervalSeconds` in the file.
+     */
+    val pingInterval: Duration = 15.seconds,
 ) {
     /** [secretHeaders] lower-cased once, since header names compare case-insensitively. */
     val lowercaseSecretHeaders: Set<String> = secretHeaders.map(String::lowercase).toSet()
@@ -68,6 +75,17 @@ fun loadConfig(home: Path, env: (String) -> String? = System::getenv): ProxyConf
         routes = defaults.routes + toml.getTable("routes")?.routes().orEmpty(),
         pricing = DEFAULT_PRICES + toml.getTable("pricing")?.prices().orEmpty(),
         gourceEnabled = toml.getBoolean("gource.enabled") ?: defaults.gourceEnabled,
+        pingInterval =
+            when (val raw = toml.get("resume.pingIntervalSeconds")) {
+                null -> defaults.pingInterval
+                is Number -> {
+                    check(raw.toDouble() > 0) {
+                        "resume.pingIntervalSeconds must be positive, not $raw"
+                    }
+                    raw.toDouble().seconds
+                }
+                else -> error("resume.pingIntervalSeconds must be a number, not $raw")
+            },
     )
 }
 
@@ -85,6 +103,10 @@ private fun ProxyConfig.toToml(): String = buildString {
     appendLine("# On, every turn's file tools also go to $GOURCE_FILE, for Gource to animate.")
     appendLine("[gource]")
     appendLine("enabled = $gourceEnabled")
+    appendLine()
+    appendLine("# While a stream is silent this long, an SSE comment line keeps the client alive.")
+    appendLine("[resume]")
+    appendLine("pingIntervalSeconds = ${pingInterval.inWholeSeconds}")
     appendLine()
     // The price table is bundled, so no row is written here: an entry only ever overrides one.
     appendLine(

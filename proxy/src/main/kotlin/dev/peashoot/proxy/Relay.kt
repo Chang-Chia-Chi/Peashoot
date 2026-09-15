@@ -29,20 +29,25 @@ import io.ktor.server.response.respond
 import io.ktor.server.response.respondText
 import io.ktor.utils.io.ByteWriteChannel
 import io.ktor.utils.io.readAvailable
+import io.ktor.utils.io.writeFully
 import io.ktor.utils.io.writeStringUtf8
 import java.io.IOException
 import java.nio.channels.UnresolvedAddressException
 import java.nio.file.Path
+import kotlin.time.Duration
 import kotlin.time.TimeSource
 import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.channels.ClosedSendChannelException
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.selects.select
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -201,7 +206,7 @@ class Relay(
         source: FrameSource,
     ) {
         exchange.response = Exchange.Response(source.status, source.headers)
-        val stream = ExchangeStream(exchange, source, interceptors)
+        val stream = ExchangeStream(exchange, source, interceptors, config.pingInterval)
         val drive = streams.launch(brokenInterceptor(exchange)) { stream.drive() }
         var delivered = false
         try {
@@ -285,6 +290,9 @@ class Relay(
     }
 }
 
+/** What a silent stream sends the client, so a byte-counting watchdog is not tripped by us. */
+private const val KEEP_ALIVE = ": keep-alive\n\n"
+
 /**
  * One exchange's frames on their way to the sinks. The drive is the only collector, so the client
  * is a sink and not the pump: it takes frames through a rendezvous while it is there, and the drive
@@ -295,8 +303,19 @@ private class ExchangeStream(
     private val exchange: Exchange,
     source: FrameSource,
     private val interceptors: List<Interceptor>,
+    private val pingInterval: Duration,
 ) {
     private val status = source.status
+
+    /**
+     * Only a stream is ever sent a comment: one inside a JSON body would corrupt it. A declaration
+     * we cannot parse never reaches here, and a missing one is not a stream.
+     */
+    private val streaming =
+        source.headers[HttpHeaders.ContentType]?.let {
+            ContentType.parse(it).match(ContentType.Text.EventStream)
+        } == true
+
     private val frames =
         interceptors.fold(source.frames()) { acc, interceptor ->
             interceptor.onFrames(exchange, acc)
@@ -310,6 +329,12 @@ private class ExchangeStream(
 
     private var completed = false
     private var detached = false
+
+    /**
+     * Frame bytes the client has taken, comments never among them. Written by the writer and read
+     * by [detach] on that same call coroutine, so a plain field is enough.
+     */
+    private var sent = 0L
 
     /**
      * The one collector: the source is cold and single-use. A source or interceptor that fails
@@ -350,17 +375,40 @@ private class ExchangeStream(
         }
     }
 
-    /** The client sink: each frame goes out as soon as it exists, in the call's own coroutine. */
+    /**
+     * The client sink: each frame goes out as soon as it exists, in the call's own coroutine, and a
+     * stream that has said nothing for the interval gets a comment instead. A write that fails is
+     * still how a departed client is heard.
+     */
     suspend fun writeTo(channel: ByteWriteChannel) {
-        // Keep-alive pings (#10) are a timeout on this receive, not a clause here: a write that
-        // fails is how a clean close is heard.
         var drained = false
         try {
-            for (frame in handoff) {
-                channel.writeStringUtf8(frame.raw)
-                channel.flush()
+            coroutineScope {
+                while (!drained) {
+                    // The wait is a select clause, which takes the frame atomically: a
+                    // withTimeoutOrNull around receive could be cancelled after the drive had
+                    // handed one over and lose it, and select's own onTimeout needs an opt-in.
+                    val silence = launch { delay(pingInterval) }
+                    val taken = select {
+                        handoff.onReceiveCatching { it }
+                        silence.onJoin { null }
+                    }
+                    // A live delay would hold this scope open after the last frame.
+                    silence.cancel()
+                    val frame = taken?.getOrNull()
+                    if (frame != null) {
+                        val bytes = frame.raw.toByteArray()
+                        channel.writeFully(bytes)
+                        channel.flush()
+                        sent += bytes.size
+                    } else if (taken != null) {
+                        drained = true
+                    } else if (streaming) {
+                        channel.writeStringUtf8(KEEP_ALIVE)
+                        channel.flush()
+                    }
+                }
             }
-            drained = true
         } finally {
             // The writer is the hand-off's only receiver, so a writer that stopped early is a
             // client that left. Detaching here frees the drive at once, and the flag and
@@ -383,8 +431,8 @@ private class ExchangeStream(
             // Closed, never cancelled: the drive's pending send then fails on its own instead of
             // taking the collection down with it.
             handoff.close()
-            // #10's client-gone event wants the bytes sent so far: this is where it would set
-            // that field on the exchange.
+            // Both under this lock, so the chain never reads a flag without its byte count.
+            exchange.clientBytes = sent
             exchange.clientDisconnected = true
             interceptors.forEach { it.onClientGone(exchange) }
         }
