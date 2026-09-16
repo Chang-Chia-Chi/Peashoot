@@ -258,6 +258,41 @@ class ClientGoneTest {
             assertEquals(0L, lines[1].getValue("bytesSoFar").jsonPrimitive.long, "nothing went out")
         }
 
+    /**
+     * The issue's other trigger: nothing streams, so the whole answer is one burst of writes into a
+     * channel Netty has already closed, every one of them discarded without an error. The departure
+     * is known before the first of them, so no write ever had to fail for it (#51).
+     */
+    @Test
+    fun `a client that left is flagged for a response written in one burst`() = runBlocking {
+        val received = CompletableDeferred<Unit>()
+        val release = CompletableDeferred<Unit>()
+        val observer = Observer()
+        val home = home()
+        val answer = """{"id":"msg_1","content":[{"type":"text","text":"hi"}]}"""
+        Store(home).use { store ->
+            FakeUpstream().use { upstream ->
+                upstream.reply = {
+                    received.complete(Unit)
+                    release.await()
+                    FakeUpstream.Reply(body = answer)
+                }
+                val config = ProxyConfig(port = 0, anthropicUpstream = upstream.url)
+                val chain =
+                    listOf(Recorder(store), Deriver(store, home.resolve(EVENTS_FILE)), observer)
+                ProxyServer(config, chain).use { proxy ->
+                    leaveOnceReceived(proxy, received)
+                    release.complete(Unit)
+                    withTimeout(5_000) { observer.completed.await() }
+                }
+            }
+            val recorded = store.list().single()
+            assertEquals(listOf(answer), recorded.frames.map { it.raw }, "the answer was recorded")
+            assertTrue(recorded.exchange.clientDisconnected, "no write failed, and it still knew")
+        }
+        assertEquals(listOf("client-gone", "complete 200"), observer.log)
+    }
+
     @Test
     fun `a client that stays to the end is stored with the flag unset`() = runBlocking {
         val frames = FrameParser.parse(fixture()).map { it.raw }
