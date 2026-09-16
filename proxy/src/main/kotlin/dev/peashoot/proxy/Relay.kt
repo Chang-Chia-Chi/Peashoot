@@ -20,21 +20,26 @@ import io.ktor.http.charset
 import io.ktor.http.content.ByteArrayContent
 import io.ktor.http.content.OutgoingContent
 import io.ktor.server.application.ApplicationCall
+import io.ktor.server.netty.NettyApplicationCall
 import io.ktor.server.request.header
 import io.ktor.server.request.httpMethod
 import io.ktor.server.request.receive
 import io.ktor.server.request.uri
 import io.ktor.server.response.respond
 import io.ktor.server.response.respondText
+import io.ktor.server.routing.RoutingCall
+import io.ktor.server.routing.RoutingPipelineCall
 import io.ktor.utils.io.ByteWriteChannel
 import io.ktor.utils.io.readAvailable
 import io.ktor.utils.io.writeFully
+import io.netty.channel.ChannelFutureListener
 import java.io.IOException
 import java.nio.channels.UnresolvedAddressException
 import java.nio.file.Path
 import kotlin.time.Duration
 import kotlin.time.TimeSource
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.NonCancellable
@@ -163,22 +168,27 @@ class Relay(
                 route = DEFAULT_ROUTE,
                 mode = config.routes.getValue(DEFAULT_ROUTE),
             )
+        // Registered before the first suspension that can outlast the client, so a departure while
+        // we wait for the upstream's headers is already being listened for.
+        val departure = Departure(call, streams, brokenInterceptor(exchange))
         var cancelled = false
         try {
             // Every interceptor hears the request; the first source offered wins. mapNotNull is
             // eager on purpose: firstNotNullOfOrNull would stop asking at the first answer.
             val offered = interceptors.mapNotNull { it.onRequest(exchange) }.firstOrNull()
-            if (offered != null) respondFrom(call, exchange, offered)
-            else askUpstream(call, exchange, body)
+            if (offered != null) respondFrom(call, exchange, offered, departure)
+            else askUpstream(call, exchange, body, departure)
         } catch (e: CancellationException) {
             cancelled = true
             throw e
         } finally {
+            departure.close()
             // A source or a refusal sets the response before its own completion runs, and nothing
             // else sets it, so a null one here is an exchange nobody ended. The chain heard the
             // request, so it hears the end: with no status when the call was cancelled, which is
-            // the proxy stopping, since the engine reports no departure this early (#51), and
-            // otherwise with 500, Ktor's answer to an unhandled throw with no status pages on.
+            // the proxy stopping, never the client, whose departure is heard on the channel and
+            // never cancels the call, and otherwise with 500, Ktor's answer to an unhandled throw
+            // with no status pages on.
             if (exchange.response == null) {
                 val status = if (cancelled) null else HttpStatusCode.InternalServerError.value
                 interceptors.complete(exchange, status)
@@ -191,7 +201,12 @@ class Relay(
      * refused rather than forwarded: parsing it any earlier would keep the request from ever
      * becoming an exchange, and forwarding it throws past the chain.
      */
-    private suspend fun askUpstream(call: ApplicationCall, exchange: Exchange, body: ByteArray) {
+    private suspend fun askUpstream(
+        call: ApplicationCall,
+        exchange: Exchange,
+        body: ByteArray,
+        departure: Departure,
+    ) {
         val declared = call.request.header(HttpHeaders.ContentType)
         val requestContentType = declared?.toContentTypeOrNull()
         if (declared != null && requestContentType == null) {
@@ -214,7 +229,7 @@ class Relay(
             }
         val failure =
             try {
-                statement.execute { response -> relayUpstream(call, exchange, response) }
+                statement.execute { response -> relayUpstream(call, exchange, response, departure) }
                 null
             } catch (e: IOException) {
                 e
@@ -244,9 +259,15 @@ class Relay(
         call: ApplicationCall,
         exchange: Exchange,
         response: HttpResponse,
+        departure: Departure,
     ) {
         if (response.hasTextBody()) {
-            respondFrom(call, exchange, UpstreamSource(response, exchange, config.dumpFrames))
+            respondFrom(
+                call,
+                exchange,
+                UpstreamSource(response, exchange, config.dumpFrames),
+                departure,
+            )
             return
         }
         val declared = response.headers[HttpHeaders.ContentType].orEmpty()
@@ -267,11 +288,15 @@ class Relay(
         call: ApplicationCall,
         exchange: Exchange,
         source: FrameSource,
+        departure: Departure,
     ) {
         // Wrapping runs every onFrames first: a wrapper that throws leaves the response unset, so
         // the call's finally ends the exchange as the failure it is.
         val stream = ExchangeStream(exchange, source, interceptors, config.pingInterval)
         exchange.response = Exchange.Response(source.status, source.headers)
+        // A client that left while we waited for this has been holding its departure; it is taken
+        // here, on this coroutine and before the drive exists, so no completion can get in first.
+        departure.streamStarted(stream)
         val drive = streams.launch(brokenInterceptor(exchange)) { stream.drive() }
         var delivered = false
         try {
@@ -352,6 +377,83 @@ class Relay(
     }
 }
 
+/**
+ * The Netty call under the routing wrappers, or null for another engine. The relay runs inside a
+ * route handler, so the call it is given is a [RoutingCall] over the engine's own; unwrapping is
+ * the only way to the channel. A null here would silently cost every departure the write path
+ * cannot hear, so the seam test that leaves before the first byte is what holds this honest.
+ */
+private tailrec fun ApplicationCall.engineCall(): NettyApplicationCall? =
+    when (this) {
+        is NettyApplicationCall -> this
+        is RoutingCall -> pipelineCall.engineCall()
+        is RoutingPipelineCall -> engineCall.engineCall()
+        else -> null
+    }
+
+/**
+ * The client's departure as the engine hears it, rather than as a write that failed. Netty closes
+ * the channel the moment the client goes, and discards every later write to it without an error, so
+ * for a call still parked waiting for the upstream's headers, or a response that went out in one
+ * burst, the channel is the only signal there is (#51). Engine-specific by necessity: Ktor's own
+ * API exposes nothing for it, and the proxy picks Netty itself. Another engine leaves the channel
+ * null and falls back to hearing the departure from the failing write, as before.
+ *
+ * Observation only: the departure marks the exchange and never stops the consuming, because the
+ * recording must stay complete for resume (#26).
+ */
+private class Departure(
+    call: ApplicationCall,
+    scope: CoroutineScope,
+    brokenInterceptor: CoroutineExceptionHandler,
+) : AutoCloseable {
+    /** The stream once one exists, or null when the call ended without ever starting one. */
+    private val stream = CompletableDeferred<ExchangeStream?>()
+
+    private val channel = call.engineCall()?.context?.channel()
+
+    /**
+     * The departure outlives the wait for it: a client that leaves before the upstream has answered
+     * is heard here and detaches the stream that answer starts. This runs on a Netty IO thread and
+     * [ExchangeStream.detach] suspends on the stream's lock, so the work goes to the stream scope,
+     * under the same handler the drive uses: an interceptor that throws in `onClientGone` belongs
+     * in the log, not on the JVM's default handler, where this scope's SupervisorJob would send it.
+     */
+    private val listener = ChannelFutureListener {
+        scope.launch(brokenInterceptor) { stream.await()?.detach() }
+    }
+
+    init {
+        // A channel already closed runs the listener at once, which is the point: by here the
+        // client may have left while the request body was being read.
+        channel?.closeFuture()?.addListener(listener)
+    }
+
+    /**
+     * From here a departure has somewhere to go. A client already gone is detached right here, on
+     * the call's own coroutine and before the drive is launched, rather than left to the listener:
+     * resolving the deferred only queues that coroutine, and the drive it races could reach
+     * [ExchangeStream.complete] first and turn the departure into a no-op. That race is the whole
+     * of #51 coming back, nondeterministically. Detach is idempotent, so the listener's own is then
+     * harmless, and a close arriving after this check is the ordinary mid-stream departure.
+     */
+    suspend fun streamStarted(started: ExchangeStream) {
+        stream.complete(started)
+        if (channel?.isOpen == false) started.detach()
+    }
+
+    /**
+     * One channel carries every call of a keep-alive connection, so the listener goes when the call
+     * does, or it would fire for calls long finished. Resolving the stream to null frees a listener
+     * already waiting on one: a call that ended without a stream, a proxy failure or a refusal, has
+     * nowhere to put the departure and drops it, which is the one gap left.
+     */
+    override fun close() {
+        channel?.closeFuture()?.removeListener(listener)
+        stream.complete(null)
+    }
+}
+
 /** What a silent stream sends the client, so a byte-counting watchdog is not tripped by us. */
 private const val KEEP_ALIVE = ": keep-alive\n\n"
 
@@ -387,10 +489,12 @@ private class ExchangeStream(
     private var detached = false
 
     /**
-     * Frame bytes the client has taken, comments never among them. Written by the writer and read
-     * by [detach] on that same call coroutine, so a plain field is enough.
+     * Frame bytes the client has taken, comments never among them. Written by the writer, and read
+     * by [detach] from whichever coroutine heard the departure: the writer's own, or the one the
+     * engine's channel close launches, which never takes the lock the writer would publish through.
+     * Volatile is what carries the count across that edge, and keeps a long from tearing.
      */
-    private var sent = 0L
+    @Volatile private var sent = 0L
 
     /**
      * The one collector: the source is cold and single-use. A source or interceptor that fails
@@ -473,7 +577,7 @@ private class ExchangeStream(
             // The writer is the hand-off's only receiver, so a writer that stopped early is a
             // client that left. Detaching here frees the drive at once, and the flag and
             // client-gone still go under the same lock, before any completion can take it.
-            if (!drained) withContext(NonCancellable) { detach() }
+            if (!drained) detach()
         }
     }
 
@@ -489,22 +593,32 @@ private class ExchangeStream(
      * The client left before the response ended, however it left. Idempotent, and never after
      * completion: a client that leaves once the stream is over is not a mid-stream disconnect, and
      * completion never waits to hear, or a client that vanished quietly would wedge the exchange.
-     * That leaves one accepted window: a write of the final frame that fails after the drive has
-     * finished collecting is stored as a clean completion, with the flag unset.
+     * That leaves two accepted windows, one either side. A write of the final frame that fails
+     * after the drive has finished collecting is stored as a clean completion, with the flag unset.
+     * And now that the engine's channel close is heard without a write, a client that leaves on the
+     * response's last frame, while the drive still waits for the upstream body to end, is flagged
+     * as gone: mid-stream is the drive's end, not the last frame's, and nothing here can tell the
+     * two departures apart.
+     *
+     * Never cancelled, for the reason [complete] is not: this runs from the call, from the writer,
+     * or from the stream scope when the engine reported the close, and a cancellation landing
+     * between two interceptors would leave half the chain never hearing the departure at all.
      */
-    suspend fun detach() {
-        lock.withLock {
-            if (detached || completed) return
-            detached = true
-            // Closed, never cancelled: the drive's pending send then fails on its own instead of
-            // taking the collection down with it.
-            handoff.close()
-            // Both under this lock, so the chain never reads a flag without its byte count.
-            exchange.clientBytes = sent
-            exchange.clientDisconnected = true
-            interceptors.forEach { it.onClientGone(exchange) }
+    suspend fun detach() =
+        withContext(NonCancellable) {
+            lock.withLock {
+                if (!detached && !completed) {
+                    detached = true
+                    // Closed, never cancelled: the drive's pending send then fails on its own
+                    // instead of taking the collection down with it.
+                    handoff.close()
+                    // Both under this lock, so the chain never reads a flag without its bytes.
+                    exchange.clientBytes = sent
+                    exchange.clientDisconnected = true
+                    interceptors.forEach { it.onClientGone(exchange) }
+                }
+            }
         }
-    }
 }
 
 /** The terminal source: the provider's response, parsed into frames as its bytes arrive. */
