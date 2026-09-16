@@ -101,12 +101,34 @@ class ClientGoneTest {
     }
 
     /**
+     * Posts over a raw socket and leaves as soon as the upstream has the request, while the relay
+     * is still parked waiting for its headers: no byte of the answer exists yet, so no write can
+     * fail, and the departure is heard from the engine or not at all (#51).
+     */
+    private suspend fun leaveOnceReceived(proxy: ProxyServer, received: CompletableDeferred<Unit>) {
+        val (host, port) = proxy.url.removePrefix("http://").split(":")
+        Socket(host, port.toInt()).use { socket ->
+            val body = """{"model":"claude"}"""
+            socket.getOutputStream().apply {
+                write(
+                    ("POST /v1/messages HTTP/1.1\r\nHost: $host:$port\r\n" +
+                            "Content-Length: ${body.length}\r\n\r\n$body")
+                        .toByteArray()
+                )
+                flush()
+            }
+            // A regression that never reaches the upstream fails here, not by hanging forever.
+            withTimeout(5_000) { received.await() }
+        }
+    }
+
+    /**
      * The upstream is held until the client has left, and the frames after it are spaced out. The
-     * engine hears a clean close only when a write to the departed client provokes its reset, and
-     * that takes a round trip to come back, so those frames must not all go out in one burst. The
-     * spacing buys detection, nothing else: client-gone comes before completion because the drive
-     * stays parked on the rendezvous until detach closes the hand-off, with the stream's lock
-     * serialising the two, so a shorter gap would only make the departure go unheard.
+     * spacing buys time, not detection: the engine now reports the close on its own channel, but
+     * the departure still has to arrive before the drive runs out of frames, or it lands on an
+     * exchange already completed and is dropped as a departure after the end. Client-gone comes
+     * before completion because the stream's lock serialises the two and completion refuses to
+     * wait, so a shorter gap would only make a real departure go unheard.
      */
     private fun clientLeavesMidStream(reset: Boolean) = runBlocking {
         val frames = FrameParser.parse(fixture()).map { it.raw }
@@ -168,9 +190,10 @@ class ClientGoneTest {
         )
         val bytes = gone.getValue("bytesSoFar").jsonPrimitive.long
         val taken = frames.take(readBeforeLeaving).joinToString("").toByteArray().size.toLong()
-        // The write after a close still succeeds, and the reset it provokes fails the next one,
-        // so a frame or two past what the client read may be counted. The 50 ms spacing after the
-        // departure leaves three frames of slack before the count would say the client stayed.
+        // The count is what the writer put on the wire, which runs ahead of what the client read:
+        // a write to a closed channel still succeeds, so a frame or two past it may be counted,
+        // whether the close is heard from the channel or from the reset a later write provokes.
+        // The 50 ms spacing leaves three frames of slack before the count would say it stayed.
         val ceiling =
             frames.take(readBeforeLeaving + 3).joinToString("").toByteArray().size.toLong()
         assertTrue(
@@ -186,6 +209,54 @@ class ClientGoneTest {
     @Test
     fun `a client that resets mid-stream is stored complete and flagged, gone then complete`() =
         clientLeavesMidStream(reset = true)
+
+    /**
+     * The departure no write can report: the client leaves while the relay is parked in the
+     * connect, so the whole response is written to a channel Netty has already closed and discards
+     * silently. Nothing had gone out, so the byte count is zero, and the exchange is still recorded
+     * whole: the departure is observed, never a reason to stop consuming (#51).
+     */
+    @Test
+    fun `a client that leaves before the first byte is flagged, gone then complete`() =
+        runBlocking {
+            val frames = FrameParser.parse(fixture()).map { it.raw }
+            val received = CompletableDeferred<Unit>()
+            val release = CompletableDeferred<Unit>()
+            val observer = Observer()
+            val home = home()
+            Store(home).use { store ->
+                FakeUpstream().use { upstream ->
+                    upstream.reply = {
+                        received.complete(Unit)
+                        // Held before its headers, so the relay has nothing to write yet.
+                        release.await()
+                        FakeUpstream.Reply(
+                            contentType = ContentType.Text.EventStream,
+                            frames = frames,
+                        )
+                    }
+                    val config = ProxyConfig(port = 0, anthropicUpstream = upstream.url)
+                    val chain =
+                        listOf(Recorder(store), Deriver(store, home.resolve(EVENTS_FILE)), observer)
+                    ProxyServer(config, chain).use { proxy ->
+                        leaveOnceReceived(proxy, received)
+                        release.complete(Unit)
+                        withTimeout(5_000) { observer.completed.await() }
+                    }
+                }
+                val recorded = store.list().single()
+                assertEquals(frames, recorded.frames.map { it.raw }, "every frame was consumed")
+                assertEquals(200, recorded.exchange.response?.status)
+                assertTrue(recorded.exchange.clientDisconnected, "the client left before a byte")
+            }
+            assertEquals(listOf("client-gone", "complete 200"), observer.log)
+            val lines = events(home)
+            assertEquals(
+                listOf("exchange.started", "exchange.client_gone", "exchange.completed"),
+                lines.map { it.getValue("event").jsonPrimitive.content },
+            )
+            assertEquals(0L, lines[1].getValue("bytesSoFar").jsonPrimitive.long, "nothing went out")
+        }
 
     @Test
     fun `a client that stays to the end is stored with the flag unset`() = runBlocking {
