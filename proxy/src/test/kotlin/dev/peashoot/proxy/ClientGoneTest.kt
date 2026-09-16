@@ -124,11 +124,11 @@ class ClientGoneTest {
 
     /**
      * The upstream is held until the client has left, and the frames after it are spaced out. The
-     * spacing buys time, not detection: the engine now reports the close on its own channel, but
-     * the departure still has to arrive before the drive runs out of frames, or it lands on an
-     * exchange already completed and is dropped as a departure after the end. Client-gone comes
-     * before completion because the stream's lock serialises the two and completion refuses to
-     * wait, so a shorter gap would only make a real departure go unheard.
+     * spacing buys time, not detection: the sink asks the channel before every frame, but the close
+     * still has to reach the engine before the drive runs out of frames, or it lands on an exchange
+     * already completed and is dropped as a departure after the end. Client-gone comes before
+     * completion because the stream's lock serialises the two and completion refuses to wait, so a
+     * shorter gap would only make a real departure go unheard. The burst case is its own test.
      */
     private fun clientLeavesMidStream(reset: Boolean) = runBlocking {
         val frames = FrameParser.parse(fixture()).map { it.raw }
@@ -289,6 +289,86 @@ class ClientGoneTest {
             val recorded = store.list().single()
             assertEquals(listOf(answer), recorded.frames.map { it.raw }, "the answer was recorded")
             assertTrue(recorded.exchange.clientDisconnected, "no write failed, and it still knew")
+        }
+        assertEquals(listOf("client-gone", "complete 200"), observer.log)
+    }
+
+    /**
+     * The departure the old write-failure path could not hear and nothing covered (#54): the client
+     * leaves mid-stream and every remaining frame goes out in one burst, so no write is ever spaced
+     * far enough from the close to fail. One settling pause after the departure, then no spacing at
+     * all; the writer asks the channel before each frame, so one look is all it takes.
+     */
+    @Test
+    fun `a client that leaves is flagged though the rest of the stream never fails a write`() =
+        runBlocking {
+            val frames = FrameParser.parse(fixture()).map { it.raw }
+            val readBeforeLeaving = 6
+            val clientGone = CompletableDeferred<Unit>()
+            val observer = Observer()
+            val home = home()
+            Store(home).use { store ->
+                FakeUpstream().use { upstream ->
+                    upstream.reply = {
+                        FakeUpstream.Reply(
+                            contentType = ContentType.Text.EventStream,
+                            frames = frames,
+                            beforeFrame = { index ->
+                                if (index == readBeforeLeaving) {
+                                    clientGone.await()
+                                    // The one pause: the FIN has to reach the engine before the
+                                    // burst. Nothing after it is spaced, which is the point.
+                                    delay(100)
+                                }
+                            },
+                        )
+                    }
+                    val config = ProxyConfig(port = 0, anthropicUpstream = upstream.url)
+                    val chain =
+                        listOf(Recorder(store), Deriver(store, home.resolve(EVENTS_FILE)), observer)
+                    ProxyServer(config, chain).use { proxy ->
+                        leaveAfterFrames(proxy, untilFrames = readBeforeLeaving, reset = false)
+                        clientGone.complete(Unit)
+                        withTimeout(5_000) { observer.completed.await() }
+                    }
+                }
+                val recorded = store.list().single()
+                assertEquals(frames, recorded.frames.map { it.raw }, "every frame was consumed")
+                assertTrue(recorded.exchange.clientDisconnected, "no write had to fail for it")
+            }
+            assertEquals(listOf("client-gone", "complete 200"), observer.log)
+        }
+
+    /**
+     * A body with nothing in it yields no frames, so the drive never sends and runs to its end
+     * without the sink ever waiting on one. Nothing but the look taken before the drive starts can
+     * hear a client that left, and an exchange completed first would keep the departure for ever.
+     */
+    @Test
+    fun `a client that left is flagged for a response with no frames at all`() = runBlocking {
+        val received = CompletableDeferred<Unit>()
+        val release = CompletableDeferred<Unit>()
+        val observer = Observer()
+        val home = home()
+        Store(home).use { store ->
+            FakeUpstream().use { upstream ->
+                upstream.reply = {
+                    received.complete(Unit)
+                    release.await()
+                    FakeUpstream.Reply(body = "")
+                }
+                val config = ProxyConfig(port = 0, anthropicUpstream = upstream.url)
+                val chain =
+                    listOf(Recorder(store), Deriver(store, home.resolve(EVENTS_FILE)), observer)
+                ProxyServer(config, chain).use { proxy ->
+                    leaveOnceReceived(proxy, received)
+                    release.complete(Unit)
+                    withTimeout(5_000) { observer.completed.await() }
+                }
+            }
+            val recorded = store.list().single()
+            assertEquals(emptyList(), recorded.frames.map { it.raw }, "an empty body has no frames")
+            assertTrue(recorded.exchange.clientDisconnected, "heard before the drive could end it")
         }
         assertEquals(listOf("client-gone", "complete 200"), observer.log)
     }
