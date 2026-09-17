@@ -53,6 +53,12 @@ class Exchange(
      */
     var fingerprint: String? = null
 
+    /**
+     * Replay answered from a recording, set by it before the stream exists: nothing was billed, and
+     * nothing is recorded again.
+     */
+    var replayHit: Boolean = false
+
     /** The client went away mid-stream. */
     var clientDisconnected: Boolean = false
 

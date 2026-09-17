@@ -47,6 +47,7 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.catch
+import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.selects.select
@@ -164,7 +165,7 @@ class Relay(
                     body,
                 ),
                 route = DEFAULT_ROUTE,
-                mode = config.routes.getValue(DEFAULT_ROUTE),
+                mode = config.routes.getValue(DEFAULT_ROUTE).mode,
             )
         // Classify: what this request is, before anyone is asked to answer it. Every interceptor
         // sees it, so it is set before the chain rather than by whoever needs it first.
@@ -180,9 +181,18 @@ class Relay(
         try {
             // Every interceptor hears the request; the first source offered wins. mapNotNull is
             // eager on purpose: firstNotNullOfOrNull would stop asking at the first answer.
-            val offered = interceptors.mapNotNull { it.onRequest(exchange) }.firstOrNull()
-            if (offered != null) respondFrom(call, exchange, offered)
-            else askUpstream(call, exchange, body)
+            when (val offered = interceptors.mapNotNull { it.onRequest(exchange) }.firstOrNull()) {
+                null -> askUpstream(call, exchange, body)
+                is Refusal ->
+                    respondProxyFailure(
+                        call,
+                        exchange,
+                        HttpStatusCode.fromValue(offered.status),
+                        offered.error,
+                        offered.fields,
+                    )
+                else -> respondFrom(call, exchange, offered)
+            }
         } catch (e: CancellationException) {
             cancelled = true
             throw e
@@ -214,7 +224,7 @@ class Relay(
                 exchange,
                 HttpStatusCode.BadRequest,
                 "bad_content_type",
-                declared,
+                mapOf("detail" to declared),
             )
             return
         }
@@ -244,7 +254,7 @@ class Relay(
                 exchange,
                 HttpStatusCode.BadGateway,
                 "upstream_unreachable",
-                failure.toString(),
+                mapOf("detail" to failure.toString()),
             )
         }
     }
@@ -269,7 +279,7 @@ class Relay(
             exchange,
             HttpStatusCode.BadGateway,
             "unsupported_content_type",
-            declared,
+            mapOf("detail" to declared),
         )
     }
 
@@ -346,21 +356,22 @@ class Relay(
      * instead, in a finally, so the once-per-exchange guarantee holds for a refusal as the drive's
      * finally holds it for a stream. A refusal to a client that has already left does not throw on
      * the Netty engine, which discards the write on a channel it has closed; the completion rests
-     * neither on that nor on the call surviving the write uncancelled.
+     * neither on that nor on the call surviving the write uncancelled. [fields] follow `type` and
+     * `error` in the body, in their own order.
      */
     private suspend fun respondProxyFailure(
         call: ApplicationCall,
         exchange: Exchange,
         status: HttpStatusCode,
         error: String,
-        detail: String,
+        fields: Map<String, String>,
     ) {
-        log.warn("{} for {} {}: {}", error, exchange.request.method, exchange.request.path, detail)
+        log.warn("{} for {} {}: {}", error, exchange.request.method, exchange.request.path, fields)
         exchange.response = Exchange.Response(status.value, Headers.Empty)
         val body = buildJsonObject {
             put("type", "peashoot_error")
             put("error", error)
-            put("detail", detail)
+            fields.forEach { (name, value) -> put(name, value) }
         }
         try {
             call.respondText(body.toString(), ContentType.Application.Json, status)
@@ -370,6 +381,19 @@ class Relay(
             interceptors.complete(exchange, status.value)
         }
     }
+}
+
+/**
+ * An interceptor's refusal to let the request through: the relay answers it as a proxy failure,
+ * `peashoot_error` body and all, so it has no stream, no frames, and nothing to record. Replay's
+ * strict miss is the one v1 refusal.
+ */
+class Refusal(override val status: Int, val error: String, val fields: Map<String, String>) :
+    FrameSource {
+    override val headers: Headers = Headers.Empty
+
+    /** Never collected: the relay writes the body itself. */
+    override fun frames(): Flow<Frame> = emptyFlow()
 }
 
 /**

@@ -288,7 +288,7 @@ class RecorderTest {
                     ProxyConfig(
                         port = 0,
                         anthropicUpstream = upstream.url,
-                        routes = mapOf(DEFAULT_ROUTE to Mode.PASSTHROUGH),
+                        routes = mapOf(DEFAULT_ROUTE to Route(Mode.PASSTHROUGH)),
                     )
                 ProxyServer(config, listOf(Recorder(store))).use { proxy ->
                     val body =

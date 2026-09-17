@@ -17,6 +17,22 @@ const val CONFIG_FILE = "peashoot.toml"
 
 const val DEFAULT_ROUTE = "default"
 
+/** What a route does, and whether a replay miss on it fails rather than asking the upstream. */
+data class Route(val mode: Mode, val strict: Boolean = false)
+
+/** How fast a replay serves its frames: all at once, or at the offsets they were recorded at. */
+enum class Cadence {
+    INSTANT,
+    RECORDED,
+}
+
+/** Which of several recordings of one fingerprint a replay serves. */
+enum class RepeatPolicy {
+    /** Oldest first, one per request, then the last one again: a retry sequence replays whole. */
+    IN_ORDER,
+    LATEST,
+}
+
 data class ProxyConfig(
     val port: Int = 8787,
     val anthropicUpstream: String = "https://api.anthropic.com",
@@ -25,7 +41,11 @@ data class ProxyConfig(
     /** Sent upstream, never kept: not on the Exchange, not in any log or file. Any case. */
     val secretHeaders: Set<String> = setOf("authorization", "x-api-key"),
     /** What each route does; every request takes [DEFAULT_ROUTE] until routing arrives. */
-    val routes: Map<String, Mode> = mapOf(DEFAULT_ROUTE to Mode.RECORD),
+    val routes: Map<String, Route> = mapOf(DEFAULT_ROUTE to Route(Mode.RECORD)),
+    /** `replay.cadence` in the file. */
+    val replayCadence: Cadence = Cadence.INSTANT,
+    /** `replay.repeatPolicy` in the file. */
+    val repeatPolicy: RepeatPolicy = RepeatPolicy.IN_ORDER,
     /** The bundled price table, with any model-prefix override from the file on top of it. */
     val pricing: Map<String, Price> = DEFAULT_PRICES,
     /** Whether a completed turn's file tools are also appended to [GOURCE_FILE]. */
@@ -85,6 +105,8 @@ fun loadConfig(home: Path, env: (String) -> String? = System::getenv): ProxyConf
                 ?.toSet() ?: defaults.secretHeaders,
         routes = defaults.routes + toml.getTable("routes")?.routes().orEmpty(),
         pricing = DEFAULT_PRICES + toml.getTable("pricing")?.prices().orEmpty(),
+        replayCadence = toml.choice("replay.cadence") ?: defaults.replayCadence,
+        repeatPolicy = toml.choice("replay.repeatPolicy") ?: defaults.repeatPolicy,
         gourceEnabled = toml.getBoolean("gource.enabled") ?: defaults.gourceEnabled,
         // A rule file that cannot be read stops the proxy: every fingerprint would be wrong, and
         // a wrong fingerprint is a silently missed replay rather than a visible failure.
@@ -102,6 +124,22 @@ private fun TomlParseResult.pingInterval(default: Duration): Duration =
             raw.toDouble().seconds
         }
         else -> error("resume.pingIntervalSeconds must be a number, not $raw")
+    }
+
+/**
+ * The entry a string names, spelled the way the file spells it: `inOrder` is
+ * [RepeatPolicy.IN_ORDER]. Null when the file says nothing.
+ */
+private inline fun <reified T : Enum<T>> TomlParseResult.choice(key: String): T? {
+    val raw = getString(key) ?: return null
+    return enumValues<T>().firstOrNull { it.spelled() == raw }
+        ?: error("$key must be one of ${enumValues<T>().joinToString { it.spelled() }}, not $raw")
+}
+
+/** `IN_ORDER` as the file writes it: `inOrder`. */
+private fun Enum<*>.spelled(): String =
+    name.lowercase().split('_').let { words ->
+        words.first() + words.drop(1).joinToString("") { it.replaceFirstChar(Char::uppercase) }
     }
 
 /** The file written on first start: the defaults, in the shape a hand edit keeps. */
@@ -123,15 +161,24 @@ private fun ProxyConfig.toToml(): String = buildString {
     appendLine("[resume]")
     appendLine("pingIntervalSeconds = ${pingInterval.inWholeSeconds}")
     appendLine()
+    appendLine("# Replay: cadence instant or recorded; repeatPolicy inOrder or latest.")
+    appendLine("[replay]")
+    appendLine("cadence = \"${replayCadence.spelled()}\"")
+    appendLine("repeatPolicy = \"${repeatPolicy.spelled()}\"")
+    appendLine()
     // The price table is bundled, so no row is written here: an entry only ever overrides one.
     appendLine(
         "# Override a price: [pricing.\"claude-sonnet-4-5\"] with input, output, cacheRead, " +
             "cacheWrite in USD per million tokens."
     )
-    routes.forEach { (name, mode) ->
+    routes.forEach { (name, route) ->
         appendLine()
+        appendLine(
+            "# mode is record, replay, or passthrough; a strict replay route answers a miss 409."
+        )
         appendLine("[routes.$name]")
-        appendLine("mode = \"${mode.name.lowercase()}\"")
+        appendLine("mode = \"${route.mode.spelled()}\"")
+        appendLine("strict = ${route.strict}")
     }
 }
 
@@ -156,12 +203,16 @@ private fun TomlTable.rate(model: String, key: String, bundled: (Price) -> Doubl
         ?: DEFAULT_PRICES[model]?.let(bundled)
         ?: error("pricing.\"$model\".$key is required")
 
-private fun TomlTable.routes(): Map<String, Mode> =
+private fun TomlTable.routes(): Map<String, Route> =
     keySet().associateWith { name ->
         check(name == DEFAULT_ROUTE) {
             "routes.$name: routing is not wired yet; only the '$DEFAULT_ROUTE' route exists"
         }
         val modeString = getString(listOf(name, "mode")) ?: error("routes.$name.mode is required")
-        Mode.entries.firstOrNull { it.name.equals(modeString, ignoreCase = true) }
-            ?: error("routes.$name.mode must be record, replay, or passthrough, not $modeString")
+        val mode =
+            Mode.entries.firstOrNull { it.name.equals(modeString, ignoreCase = true) }
+                ?: error(
+                    "routes.$name.mode must be record, replay, or passthrough, not $modeString"
+                )
+        Route(mode, strict = getBoolean(listOf(name, "strict")) ?: false)
     }

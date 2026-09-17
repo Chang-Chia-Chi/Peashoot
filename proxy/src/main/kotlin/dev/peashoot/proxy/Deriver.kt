@@ -120,9 +120,9 @@ class Deriver(
 
     /**
      * `model` is the model the response named when it named one, which resolves an alias the
-     * request asked for, and the request's otherwise. `replayHit` and `resumed` are not emitted:
-     * nothing sets them until replay (#12) and resume (#26) exist, and a field that is always false
-     * says less than an absent one.
+     * request asked for, and the request's otherwise. A replay hit was billed nothing, so it costs
+     * 0 whatever usage the recording reports. `resumed` is not emitted: nothing sets it until
+     * resume (#26) exists, and a field that is always false says less than an absent one.
      */
     private fun completedEvent(exchange: Exchange, outcome: Outcome, turn: Turn): JsonObject {
         val reader = turn.reader
@@ -130,7 +130,11 @@ class Deriver(
         val model = reader.model ?: Messages.model(exchange.request.json)
         // Subscription traffic is billed by the plan, not by the token: it has no cost here.
         val cost =
-            if (Messages.isOAuth(exchange.request.headers)) null else priced(model, reader.usage)
+            when {
+                exchange.replayHit -> 0.0
+                Messages.isOAuth(exchange.request.headers) -> null
+                else -> priced(model, reader.usage)
+            }
         return buildJsonObject {
             put("ts", now.toString())
             put("event", "exchange.completed")
@@ -142,6 +146,7 @@ class Deriver(
             put("status", outcome.status)
             put("firstByteMs", turn.firstByteAt?.let { millisSince(exchange.receivedAt, it) })
             put("latencyMs", millisSince(exchange.receivedAt, now))
+            put("replayHit", exchange.replayHit)
             put("clientDisconnected", exchange.clientDisconnected)
             put("rateLimit", rateLimitJson(exchange.response?.headers))
         }

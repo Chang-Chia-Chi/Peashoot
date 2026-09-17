@@ -1,7 +1,6 @@
 package dev.peashoot.proxy
 
 import dev.peashoot.core.Interceptor
-import dev.peashoot.core.Mode
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.cio.CIO as ClientCIO
 import io.ktor.http.HttpHeaders
@@ -34,11 +33,6 @@ class ProxyServer(
     init {
         require(DEFAULT_ROUTE in config.routes) {
             "route '$DEFAULT_ROUTE' is not configured; every request takes it until routing arrives"
-        }
-        // Checked here, not only in the loader: a directly constructed config must fail the same
-        // way.
-        require(Mode.REPLAY !in config.routes.values) {
-            "replay mode is not implemented yet (#12); use record or passthrough"
         }
     }
 

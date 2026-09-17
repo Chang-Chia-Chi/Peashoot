@@ -36,6 +36,8 @@ class ConfigTest {
         assertContains(file.readText(), "mode = \"record\"")
         assertContains(file.readText(), "[gource]")
         assertContains(file.readText(), "[resume]")
+        assertContains(file.readText(), "strict = false")
+        assertContains(file.readText(), "repeatPolicy = \"inOrder\"")
         val rules = home.resolve("rules.json")
         assertTrue(Files.isRegularFile(rules), "$rules")
         assertContains(rules.readText(), "keepHeaders")
@@ -77,7 +79,7 @@ class ConfigTest {
         assertTrue(fromFile.gourceEnabled)
         assertEquals("http://localhost:11434", fromFile.anthropicUpstream)
         assertEquals(setOf("authorization", "x-api-key", "x-goog-api-key"), fromFile.secretHeaders)
-        assertEquals(mapOf("default" to Mode.PASSTHROUGH), fromFile.routes)
+        assertEquals(mapOf("default" to Route(Mode.PASSTHROUGH)), fromFile.routes)
         assertEquals(500.milliseconds, fromFile.pingInterval)
 
         val fromEnv =
@@ -94,12 +96,45 @@ class ConfigTest {
     }
 
     @Test
-    fun `a route in replay mode is refused at startup until replay is implemented`() {
-        // At the server, not only the loader: a directly constructed config fails the same way.
-        val config = ProxyConfig(routes = mapOf(DEFAULT_ROUTE to Mode.REPLAY))
+    fun `the file sets a strict replay route, the cadence, and the repeat policy`() {
+        val home = Files.createTempDirectory("peashoot-home")
+        home
+            .resolve("peashoot.toml")
+            .writeText(
+                """
+                [routes.default]
+                mode = "replay"
+                strict = true
 
-        val error = assertFailsWith<IllegalArgumentException> { ProxyServer(config) }
-        assertContains(error.message.orEmpty(), "#12")
+                [replay]
+                cadence = "recorded"
+                repeatPolicy = "latest"
+                """
+                    .trimIndent()
+            )
+
+        val config = loadConfig(home, env())
+
+        assertEquals(mapOf(DEFAULT_ROUTE to Route(Mode.REPLAY, strict = true)), config.routes)
+        assertEquals(Cadence.RECORDED, config.replayCadence)
+        assertEquals(RepeatPolicy.LATEST, config.repeatPolicy)
+    }
+
+    @Test
+    fun `an unknown repeat policy is refused, naming the ones there are`() {
+        val home = Files.createTempDirectory("peashoot-home")
+        home
+            .resolve("peashoot.toml")
+            .writeText(
+                """
+                [replay]
+                repeatPolicy = "random"
+                """
+                    .trimIndent()
+            )
+
+        val error = assertFailsWith<IllegalStateException> { loadConfig(home, env()) }
+        assertContains(error.message.orEmpty(), "must be one of inOrder, latest, not random")
     }
 
     @Test
