@@ -36,6 +36,10 @@ class ConfigTest {
         assertContains(file.readText(), "mode = \"record\"")
         assertContains(file.readText(), "[gource]")
         assertContains(file.readText(), "[resume]")
+        val rules = home.resolve("rules.json")
+        assertTrue(Files.isRegularFile(rules), "$rules")
+        assertContains(rules.readText(), "keepHeaders")
+        assertContains(rules.readText(), "/messages/*/content/*/text")
         assertEquals(
             config,
             loadConfig(home, env()),
@@ -189,5 +193,15 @@ class ConfigTest {
 
         val error = assertFailsWith<IllegalStateException> { loadConfig(home, env()) }
         assertContains(error.message.orEmpty(), "must be positive")
+    }
+
+    @Test
+    fun `a malformed rule file is refused at startup, naming the rule`() {
+        val home = Files.createTempDirectory("peashoot-home")
+        home.resolve("rules.json").writeText("""{"ignorePointers":["metadata"]}""")
+
+        val message = assertFailsWith<IllegalStateException> { loadConfig(home, env()) }.message
+
+        assertContains(message.orEmpty(), "ignorePointers[0]")
     }
 }

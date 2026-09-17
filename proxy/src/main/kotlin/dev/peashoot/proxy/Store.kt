@@ -74,6 +74,7 @@ class Store(home: Path) : AutoCloseable {
                 // One statement per execute: sqlite-jdbc runs no more than that.
                 it.execute(SCHEMA)
                 it.execute(INDEX)
+                it.execute(FINGERPRINT_INDEX)
                 it.execute(EVENT_SCHEMA)
                 it.execute(EVENT_INDEX)
                 it.execute(SESSION_VIEW)
@@ -89,6 +90,7 @@ class Store(home: Path) : AutoCloseable {
             linkedMapOf(
                 "id" to exchange.id,
                 "received_at" to exchange.receivedAt.toEpochMilli(),
+                "fingerprint" to exchange.fingerprint,
                 "route" to exchange.route,
                 "mode" to exchange.mode.name,
                 "method" to exchange.request.method,
@@ -187,6 +189,7 @@ class Store(home: Path) : AutoCloseable {
             )
         exchange.response =
             Exchange.Response(getInt("status"), headersFromJson(getString("response_headers")))
+        exchange.fingerprint = getString("fingerprint")
         exchange.clientDisconnected = getBoolean("client_disconnected")
         val frames = framesFromJson(inlineOrSpilled("frames", "frames_ref").decodeToString())
         return Recorded(exchange, frames)
@@ -210,6 +213,7 @@ class Store(home: Path) : AutoCloseable {
             """CREATE TABLE IF NOT EXISTS exchange (
                 id TEXT PRIMARY KEY,
                 received_at INTEGER NOT NULL,
+                fingerprint TEXT,
                 route TEXT NOT NULL,
                 mode TEXT NOT NULL,
                 method TEXT NOT NULL,
@@ -224,22 +228,27 @@ class Store(home: Path) : AutoCloseable {
                 client_disconnected INTEGER NOT NULL
             )"""
         /**
-         * Names the same 14 columns as [SCHEMA] and [put]'s map; RecorderTest's round trip is the
+         * Names the same 15 columns as [SCHEMA] and [put]'s map; RecorderTest's round trip is the
          * check when one is added.
          */
         const val INSERT =
             """INSERT INTO exchange (
-                id, received_at, route, mode, method, path, request_headers, request_body,
-                request_body_ref, status, response_headers, frames, frames_ref, client_disconnected
+                id, received_at, fingerprint, route, mode, method, path, request_headers,
+                request_body, request_body_ref, status, response_headers, frames, frames_ref,
+                client_disconnected
             ) VALUES (
-                :id, :received_at, :route, :mode, :method, :path, :request_headers, :request_body,
-                :request_body_ref, :status, :response_headers, :frames, :frames_ref,
+                :id, :received_at, :fingerprint, :route, :mode, :method, :path, :request_headers,
+                :request_body, :request_body_ref, :status, :response_headers, :frames, :frames_ref,
                 :client_disconnected
             )"""
         /** Matches the order [list] asks for, so newest-first needs no sort. */
         const val INDEX =
             """CREATE INDEX IF NOT EXISTS exchange_received_at_id
                 ON exchange (received_at DESC, id DESC)"""
+        /** What replay and resume look an exchange up by, newest first within one fingerprint. */
+        const val FINGERPRINT_INDEX =
+            """CREATE INDEX IF NOT EXISTS exchange_fingerprint
+                ON exchange (fingerprint, received_at DESC)"""
         const val SELECT = "SELECT * FROM exchange"
 
         /** The event line, kept whole in [body] so any tool reads the same JSON the file has. */

@@ -61,6 +61,25 @@ class RecorderTest {
     private suspend fun post(proxy: ProxyServer, body: String) =
         HttpClient(CIO).use { it.post("${proxy.url}/v1/messages") { setBody(body) } }
 
+    /**
+     * The fingerprint is set at classify and survives the row: what replay and resume will look an
+     * exchange up by, so the column, not just the field, is what this checks.
+     */
+    private fun assertFingerprintStored(exchange: Exchange) =
+        assertEquals(
+            ProxyConfig()
+                .rules
+                .fingerprint(
+                    exchange.request.method,
+                    exchange.request.path,
+                    exchange.request.headers,
+                    exchange.request.json,
+                    exchange.request.body,
+                ),
+            exchange.fingerprint,
+            "the stored fingerprint is the one the default rules give this request",
+        )
+
     @Test
     fun `record mode persists a streamed exchange with its frames and offsets, minus secrets`() =
         runBlocking {
@@ -107,6 +126,7 @@ class RecorderTest {
                 assertNull(exchange.request.headers["x-api-key"])
                 assertNull(exchange.request.headers["authorization"])
                 assertEquals(Mode.RECORD, exchange.mode)
+                assertFingerprintStored(exchange)
                 val response = checkNotNull(exchange.response)
                 assertEquals(200, response.status)
                 assertEquals("9", response.headers["anthropic-ratelimit-tokens-remaining"])
