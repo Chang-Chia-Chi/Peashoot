@@ -29,7 +29,7 @@ ANTHROPIC_BASE_URL=http://localhost:8787 claude
 
 ## Configuration
 
-The data directory holds `peashoot.db` (the store), `bodies/` (request bodies and frame lists over 64 KB, named by SHA-256), `gource.log` (written only when the Gource formatter is on), `rules.json` (what makes two requests the same request: a header allowlist, ignored JSON pointers, and regex replacements, written with defaults on first start and meant to be edited; reducing it to `{}` is exact matching), and `peashoot.toml`, written with defaults on first start: port, upstream, secret headers, the Gource flag, the keep-alive ping interval, and the mode of each route (`record`, `replay`, or `passthrough`). Environment variables override the file:
+The data directory holds `peashoot.db` (the store), `bodies/` (request bodies and frame lists over 64 KB, named by SHA-256), `gource.log` (written only when the Gource formatter is on), `rules.json` (what makes two requests the same request: a header allowlist, ignored JSON pointers, and regex replacements, written with defaults on first start and meant to be edited; reducing it to `{}` is exact matching), and `peashoot.toml`, written with defaults on first start: port, upstream, secret headers, the Gource flag, the keep-alive ping interval, the mode of each route (`record`, `replay`, or `passthrough`) and whether a replay miss on it is refused (`strict`), and the replay `cadence` and `repeatPolicy`. Environment variables override the file:
 
 | Variable | Default | Meaning |
 |---|---|---|
@@ -37,6 +37,46 @@ The data directory holds `peashoot.db` (the store), `bodies/` (request bodies an
 | `PEASHOOT_PORT` | `8787` | Listen port, loopback only |
 | `PEASHOOT_ANTHROPIC_UPSTREAM` | `https://api.anthropic.com` | Where Messages requests go |
 | `PEASHOOT_DUMP_FRAMES` | unset | Append every raw upstream response to this file, for capturing fixtures |
+
+## Replay: the second run costs nothing
+
+A route in `replay` mode answers every request it has a recording for straight from the store, with the recorded status, headers, and frames, byte for byte, and never calls the provider. Two requests are the same request when `rules.json` gives them the same fingerprint. In `peashoot.toml`:
+
+```
+[routes.default]
+mode = "replay"
+strict = true      # a miss is a 409 naming the fingerprint; false asks the provider and records the answer
+
+[replay]
+cadence = "instant"        # or "recorded": each frame waits for the offset it arrived at
+repeatPolicy = "inOrder"   # or "latest"
+```
+
+With `inOrder`, a request recorded three times replays its three responses in the order they happened, then repeats the last; the count starts over when the proxy restarts. `latest` always serves the newest. A strict miss answers `409` with `{"type":"peashoot_error","error":"replay_miss","fingerprint":"...","route":"default"}`. A lenient miss goes to the provider, and the answer is recorded, so the next identical request hits.
+
+The demo: one Claude Code prompt, run twice. The first run records and is billed; the second replays and is not. Pick a prompt that uses no tools, so the second run sends exactly the request the first one did.
+
+1. Start the proxy in record mode (the default) and run the prompt:
+
+   ```
+   proxy/build/install/proxy/bin/proxy
+   ANTHROPIC_BASE_URL=http://localhost:8787 claude -p "Name three vegetables that grow well in shade."
+   ```
+
+2. Stop the proxy, set `mode = "replay"` and `strict = true` under `[routes.default]` in `~/.peashoot/peashoot.toml`, and start it again with the provider pointed at a port nothing listens on, so any request that got past the replay would fail instead of being billed:
+
+   ```
+   PEASHOOT_ANTHROPIC_UPSTREAM=http://127.0.0.1:9 proxy/build/install/proxy/bin/proxy
+   ANTHROPIC_BASE_URL=http://localhost:8787 claude -p "Name three vegetables that grow well in shade."
+   ```
+
+   The same answer comes back. Every `exchange.completed` line this run added to `~/.peashoot/events.jsonl` says `"replayHit":true` and `"costUsd":0.0`:
+
+   ```
+   grep '"exchange.completed"' ~/.peashoot/events.jsonl | tail -n 5
+   ```
+
+   Claude Code can send more than one request for one prompt; each was recorded in step 1 and replays the same way. A request that differs between the runs gets the 409 instead, and its fingerprint is in the body, so the rule that should have ignored the difference can be found in `rules.json`.
 
 ## Keep-alive pings and a client that leaves
 

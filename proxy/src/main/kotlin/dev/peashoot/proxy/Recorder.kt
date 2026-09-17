@@ -18,8 +18,10 @@ import org.slf4j.LoggerFactory
 private val log = LoggerFactory.getLogger("dev.peashoot.proxy")
 
 /**
- * Record mode persists every exchange a source answered, when it ends; the other modes persist
- * nothing here, and neither does a proxy-side failure, which never had a source.
+ * Record mode persists every exchange a source answered, when it ends, and so does a replay route
+ * for a miss the upstream answered, which is how a lenient cassette grows. Passthrough persists
+ * nothing here, nor does a replay hit, which is a recording already, nor a proxy-side failure,
+ * which never had a source.
  */
 class Recorder(private val store: Store) : Interceptor {
     /**
@@ -29,7 +31,7 @@ class Recorder(private val store: Store) : Interceptor {
     private val buffers = ConcurrentHashMap<String, MutableList<Frame>>()
 
     override fun onFrames(exchange: Exchange, frames: Flow<Frame>): Flow<Frame> {
-        if (exchange.mode != Mode.RECORD) return frames
+        if (exchange.mode == Mode.PASSTHROUGH || exchange.replayHit) return frames
         val buffer = mutableListOf<Frame>()
         // Registered when collection starts, so a response that never began leaves no entry.
         return frames.onStart { buffers[exchange.id] = buffer }.onEach { buffer += it }

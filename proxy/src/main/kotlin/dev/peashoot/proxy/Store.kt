@@ -116,14 +116,17 @@ class Store(home: Path) : AutoCloseable {
             .orElse(null)
     }
 
-    /** Newest first. */
-    suspend fun list(limit: Int = DEFAULT_LIMIT): List<Recorded> = io { handle ->
-        handle
-            .createQuery("$SELECT ORDER BY received_at DESC, id DESC LIMIT :limit")
-            .bind("limit", limit)
-            .map { rows, _ -> rows.toRecorded() }
-            .list()
-    }
+    /** Newest first; only the recordings of [fingerprint] when one is given. */
+    suspend fun list(limit: Int = DEFAULT_LIMIT, fingerprint: String? = null): List<Recorded> =
+        io { handle ->
+            val where = if (fingerprint == null) "" else "WHERE fingerprint = :fingerprint"
+            handle
+                .createQuery("$SELECT $where ORDER BY received_at DESC, id DESC LIMIT :limit")
+                .bind("limit", limit)
+                .apply { if (fingerprint != null) bind("fingerprint", fingerprint) }
+                .map { rows, _ -> rows.toRecorded() }
+                .list()
+        }
 
     /** One event line, as the deriver built it: the object is the row's body, verbatim. */
     suspend fun putEvent(event: JsonObject): Unit = io { handle ->

@@ -102,7 +102,7 @@ Exact mode is the empty rule set. `POST /rules/test` fingerprints the last N exc
 
 Repeats. Several recordings sharing a fingerprint are served in recorded order via a per-fingerprint cursor that resets per proxy start (`inOrder`), so retry sequences replay faithfully. `latest` serves the newest.
 
-Strict miss. Replay on a strict route with no hit returns 409 with body `{"type":"peashoot_error","error":"replay_miss","fingerprint":"...","route":"..."}`; lenient routes fall back to upstream and append the recording.
+Strict miss. Replay on a strict route with no hit returns 409 with body `{"type":"peashoot_error","error":"replay_miss","fingerprint":"...","route":"..."}`; lenient routes fall back to upstream and append the recording. The 409 goes out on the same path as the relay's 502s, so it has no stream and is never recorded; a replay hit is never recorded again either.
 
 Responses API state. Recorded response ids are served verbatim on replay, and `previous_response_id` stays in the fingerprint untouched, so chained Responses calls replay without id mapping.
 
@@ -111,7 +111,7 @@ Responses API state. Recorded response ids are served verbatim on replay, and `p
 JSONL, one object per event, written to `events.jsonl`, the `event` table, and the control API SSE feed.
 
 - `exchange.started`: `ts, event, exchangeId, session, agent, parentAgent, client, surface, model, route, mode, toolResults:[{name, bytes}]`.
-- `exchange.completed`: all of the above plus `tools:[{name, path?, command?}]` (from tool-use blocks in the response), `usage:{input, output, cacheRead, cacheWrite}`, `costUsd` (null for OAuth subscription traffic), `stopReason, status, firstByteMs, latencyMs, replayHit, resumed, clientDisconnected, rateLimit:{remainingTokens?, remainingRequests?, resetAt?}` from provider headers when present. `replayHit` and `resumed` appear with replay (#12) and resume (#26); `model` on completed is the response's when it named one, resolving an alias in the request.
+- `exchange.completed`: all of the above plus `tools:[{name, path?, command?}]` (from tool-use blocks in the response), `usage:{input, output, cacheRead, cacheWrite}`, `costUsd` (null for OAuth subscription traffic, 0 for a replay hit, which was billed nothing), `stopReason, status, firstByteMs, latencyMs, replayHit, resumed, clientDisconnected, rateLimit:{remainingTokens?, remainingRequests?, resetAt?}` from provider headers when present. `resumed` appears with resume (#26); `model` on completed is the response's when it named one, resolving an alias in the request.
 - `exchange.client_gone`: `ts, event, exchangeId, session, bytesSoFar`.
 
 Cost comes from a bundled per-model price table (input, output, cache read, cache write per million tokens), overridable in config.

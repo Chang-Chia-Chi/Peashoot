@@ -14,6 +14,7 @@ fun main(): Unit = runBlocking {
         val gource = if (config.gourceEnabled) GourceLog(home.resolve(GOURCE_FILE)) else null
         val chain =
             listOf(
+                Replay(store, config),
                 Recorder(store),
                 Deriver(store, home.resolve(EVENTS_FILE), config.pricing, gource),
             )
