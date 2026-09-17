@@ -20,6 +20,7 @@ import io.ktor.server.response.respondText
 import io.ktor.server.routing.head
 import io.ktor.server.routing.route
 import io.ktor.server.routing.routing
+import java.net.Inet6Address
 import java.net.InetAddress
 import java.net.UnknownHostException
 import kotlinx.coroutines.runBlocking
@@ -37,9 +38,10 @@ class ProxyServer(
         require(DEFAULT_ROUTE in config.routes) {
             "route '$DEFAULT_ROUTE' is not configured; every request takes it until routing arrives"
         }
-        // The loader refuses it too; this holds for a config built in code.
-        notLoopback(config.host)?.let { throw IllegalArgumentException(it) }
     }
+
+    /** Resolved and checked once, then bound as it is, so the check and the bind cannot differ. */
+    private val address = loopbackAddress(config.host)
 
     private val upstream =
         HttpClient(ClientCIO) {
@@ -48,14 +50,15 @@ class ProxyServer(
         }
 
     private val server: EmbeddedServer<*, *> =
-        embeddedServer(Netty, port = config.port, host = config.host) {
-                relayModule(config, upstream, interceptors, control)
+        embeddedServer(Netty, port = config.port, host = address.hostAddress) {
+                val routes = control?.routes ?: RouteTable(config.routes)
+                relayModule(config, upstream, interceptors, routes, control)
             }
             .start(wait = false)
 
     /** Resolved once: port 0 is only known after start, and a getter must never block. */
     val url: String = runBlocking {
-        val host = if (':' in config.host) "[${config.host}]" else config.host
+        val host = address.hostAddress.let { if (address is Inet6Address) "[$it]" else it }
         "http://$host:${server.engine.resolvedConnectors().first().port}"
     }
 
@@ -66,27 +69,31 @@ class ProxyServer(
 }
 
 /**
- * Why [host] cannot be bound, or null when every address it names is loopback. A name that resolves
- * to nothing is refused too. The control API reads and steers every exchange, and v1 has no
- * transport security to offer anyone else.
+ * The address to bind for [host], which may be a name, an IP literal, or a bracketed IPv6 one.
+ * Every address the name resolves to must be loopback, and a name that resolves to nothing is
+ * refused too: the control API reads and steers every exchange, and v1 has no transport security to
+ * offer anyone else.
  */
-internal fun notLoopback(host: String): String? {
-    val loopback =
+internal fun loopbackAddress(host: String): InetAddress {
+    val addresses =
         try {
-            InetAddress.getAllByName(host).all { it.isLoopbackAddress }
+            InetAddress.getAllByName(host.removeSurrounding("[", "]")).toList()
         } catch (_: UnknownHostException) {
-            false
+            emptyList()
         }
-    return if (loopback) null
-    else
+    check(addresses.isNotEmpty() && addresses.all { it.isLoopbackAddress }) {
         "host $host is not a loopback address; v1 serves the proxy and its control API to this " +
             "machine only"
+    }
+    return addresses.first()
 }
 
 fun Application.relayModule(
     config: ProxyConfig,
     upstream: HttpClient,
     interceptors: List<Interceptor>,
+    /** Read once per request; the control API's own when there is one. */
+    routes: RouteTable,
     control: ControlApi? = null,
 ) {
     install(CallLogging) {
@@ -95,6 +102,8 @@ fun Application.relayModule(
     // A request target that does not start with `/` (`@evil.com/v1/messages`) would concatenate in
     // the relay into a URL whose host is evil.com, secret headers and all. Refused before routing,
     // so no handler, present or future, sees one.
+    // Likewise, anything that names the control prefix in any spelling is the control API's to
+    // answer, token first, and never the relay's: it would carry the control token upstream.
     intercept(ApplicationCallPipeline.Plugins) {
         if (!call.request.uri.startsWith("/")) {
             call.respondText(
@@ -102,16 +111,17 @@ fun Application.relayModule(
                 status = HttpStatusCode.BadRequest,
             )
             finish()
+        } else if (guardControl(call, control)) {
+            finish()
         }
     }
     // The application is the scope every exchange's stream runs in, so a client that leaves does
     // not take its stream with it, and server stop ends them all.
-    val relay = Relay(config, upstream, interceptors, this, control?.routes)
+    val relay = Relay(config, upstream, interceptors, this, routes)
     routing {
         // Claude Code's reachability probe; answered here, never relayed.
         head("/api/hello") { call.respond(HttpStatusCode.OK) }
-        // A constant segment outranks the tailcard below, so nothing under the prefix, known or
-        // not, ever reaches the relay, the recorder, or the deriver.
+        // Only a canonical control path gets here; the guard answered every other spelling.
         route(CONTROL_PREFIX) { controlRoutes(control, config.pingInterval) }
         route("{...}") {
             handle {

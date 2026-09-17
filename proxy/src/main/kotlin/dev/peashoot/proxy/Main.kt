@@ -120,10 +120,11 @@ private fun serve(): Unit = runBlocking {
             )
         }
         val gource = if (config.gourceEnabled) GourceLog(home.resolve(GOURCE_FILE)) else null
-        val control = ControlApi(store, home, config)
+        // One route table and one feed, shared by the chain and the control API.
+        val control = ControlApi(store, home, RouteTable(config.routes))
         val chain =
             listOf(
-                Replay(store, config, control.routes),
+                Replay(store, config),
                 Recorder(store),
                 Deriver(store, home.resolve(EVENTS_FILE), config.pricing, gource, control.feed),
             )

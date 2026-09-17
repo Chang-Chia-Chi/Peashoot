@@ -9,8 +9,25 @@ import kotlinx.serialization.json.JsonObject
 enum class Mode {
     RECORD,
     REPLAY,
-    PASSTHROUGH,
+    PASSTHROUGH;
+
+    /** How the config file, the event line, and the control API write it. */
+    val spelling: String
+        get() = name.lowercase()
+
+    companion object {
+        /** The mode [spelling] names, in any case, or null. */
+        fun of(spelling: String): Mode? = entries.firstOrNull {
+            it.spelling == spelling.lowercase()
+        }
+    }
 }
+
+/**
+ * What a route does, whether a replay miss on it fails rather than asking the upstream, and the
+ * cassette a replay serves from: only that cassette's recordings when named, any when not.
+ */
+data class Route(val mode: Mode, val strict: Boolean = false, val cassette: String? = null)
 
 /**
  * One request through the proxy, from receipt to completion. The request side is fixed at receipt;
@@ -24,8 +41,13 @@ enum class Mode {
  */
 class Exchange(
     val request: Request,
+    /** The route's name, which the store keeps. */
     val route: String,
-    val mode: Mode,
+    /**
+     * What that route said when the request arrived: every interceptor reads this one snapshot, so
+     * a route changed mid-request never mixes two settings. A stored exchange keeps only its mode.
+     */
+    val routing: Route,
     /** A monotonic ULID: sorts by arrival, and in creation order within one millisecond. */
     val id: String = UlidCreator.getMonotonicUlid().toString(),
     val receivedAt: Instant = Instant.now(),
@@ -36,6 +58,9 @@ class Exchange(
     }
 
     class Response(val status: Int, val headers: Headers)
+
+    val mode: Mode
+        get() = routing.mode
 
     /** Who sent this: the headers decide, and the first user message when they say no session. */
     val client: Client by lazy { Client.detect(request.headers, request.json) }

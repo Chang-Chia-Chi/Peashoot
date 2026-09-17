@@ -1,9 +1,15 @@
 package dev.peashoot.proxy
 
+import dev.peashoot.core.Exchange
+import dev.peashoot.core.FrameSource
+import dev.peashoot.core.Interceptor
+import dev.peashoot.core.Mode
+import dev.peashoot.core.Route
 import dev.peashoot.core.text
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.cio.CIO
 import io.ktor.client.request.get
+import io.ktor.client.request.head
 import io.ktor.client.request.header
 import io.ktor.client.request.post
 import io.ktor.client.request.prepareGet
@@ -21,6 +27,11 @@ import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.attribute.AclFileAttributeView
 import java.nio.file.attribute.PosixFilePermissions
+import java.time.Instant
+import java.util.concurrent.Callable
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
+import kotlin.io.path.listDirectoryEntries
 import kotlin.io.path.readText
 import kotlin.test.AfterTest
 import kotlin.test.Test
@@ -37,10 +48,12 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.boolean
+import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.int
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.put
 
 /** The control API on the proxy's own port: token, health, events, exchanges, sessions, routes. */
 class ControlApiTest {
@@ -49,13 +62,22 @@ class ControlApiTest {
         val store: Store,
         val upstream: FakeUpstream,
         val server: ProxyServer,
+        val control: ControlApi,
     ) {
         val token: String = home.resolve(TOKEN_FILE).readText()
         val base = "${server.url}/_peashoot/v1"
     }
 
-    /** A proxy with the whole v1 chain and its control API, relaying to a fake upstream. */
-    private fun withProxy(block: suspend Proxy.() -> Unit) = runBlocking {
+    /**
+     * A proxy with the whole v1 chain and its control API, relaying to a fake upstream; [first]
+     * interceptors run ahead of the chain.
+     */
+    private fun withProxy(
+        route: Route = Route(Mode.RECORD),
+        buffer: Int = FEED_BUFFER,
+        first: (ControlApi) -> List<Interceptor> = { emptyList() },
+        block: suspend Proxy.() -> Unit,
+    ) = runBlocking {
         val home = Files.createTempDirectory("peashoot-home")
         Store(home).use { store ->
             FakeUpstream().use { upstream ->
@@ -64,20 +86,32 @@ class ControlApiTest {
                         port = 0,
                         anthropicUpstream = upstream.url,
                         pingInterval = PING.milliseconds,
+                        routes = mapOf(DEFAULT_ROUTE to route),
                     )
-                val control = ControlApi(store, home, config)
+                val control = ControlApi(store, home, RouteTable(config.routes), EventFeed(buffer))
                 val chain =
-                    listOf(
-                        Replay(store, config, control.routes),
-                        Recorder(store),
-                        Deriver(store, home.resolve(EVENTS_FILE), feed = control.feed),
-                    )
+                    first(control) +
+                        listOf(
+                            Replay(store, config),
+                            Recorder(store),
+                            Deriver(store, home.resolve(EVENTS_FILE), feed = control.feed),
+                        )
                 ProxyServer(config, chain, control).use { server ->
-                    Proxy(home, store, upstream, server).block()
+                    Proxy(home, store, upstream, server, control).block()
                 }
             }
         }
     }
+
+    /** A request to any path on the proxy's port, spelled exactly as given. */
+    private suspend fun Proxy.raw(method: HttpMethod, path: String, token: String?) =
+        client.request("${server.url}$path") {
+            this.method = method
+            token?.let { header(HttpHeaders.Authorization, "Bearer $it") }
+        }
+
+    private fun appLog(): List<String> =
+        Files.readAllLines(Path.of(System.getProperty("peashoot.test.appLog")))
 
     /** No request timeout: a feed stays open for as long as a test reads it. */
     private val client = HttpClient(CIO) { engine { requestTimeout = 0 } }
@@ -139,12 +173,25 @@ class ControlApiTest {
                 HttpMethod.Get to "/routes",
                 HttpMethod.Put to "/routes/default",
             )
-        guarded.forEach { (method, path) ->
+        val unknown =
+            listOf(
+                HttpMethod.Get to "/nothing",
+                HttpMethod.Post to "/events",
+                HttpMethod.Delete to "/routes/default",
+                HttpMethod.Post to "/health",
+            )
+        (guarded + unknown).forEach { (method, path) ->
             listOf(null, "wrong", "$token-and-more", "").forEach { token ->
                 val body = """{"mode":"replay"}""".takeIf { method == HttpMethod.Put }
                 assertProblem(call(method, path, body, token), 401)
             }
         }
+        unknown.forEach { (method, path) ->
+            val status = call(method, path).status.value
+            assertTrue(status == 404 || status == 405, "$method $path with the token: $status")
+            assertProblem(call(method, path), status)
+        }
+        assertProblem(raw(HttpMethod.Get, "/_peashoot/", token = null), 401)
         val raw = client.get("$base/routes") { header(HttpHeaders.Authorization, token) }
         assertProblem(raw, 401)
 
@@ -164,8 +211,8 @@ class ControlApiTest {
     fun `unknown control paths are 404 problems, never relayed, recorded, or derived`() =
         withProxy {
             assertProblem(call(HttpMethod.Get, "/nothing"), 404)
-            assertProblem(client.post("${server.url}/_peashoot/v2/messages"), 404)
-            assertProblem(client.get("${server.url}/_peashoot"), 404)
+            assertProblem(raw(HttpMethod.Post, "/_peashoot/v2/messages", token), 404)
+            assertProblem(raw(HttpMethod.Get, "/_peashoot", token), 404)
             assertProblem(call(HttpMethod.Get, "/exchanges/01NOPE"), 404)
             assertEquals(0, upstream.received.size)
             assertEquals(emptyList(), store.list())
@@ -174,6 +221,72 @@ class ControlApiTest {
             assertEquals(200, relay(REQUEST).first)
             assertEquals(1, upstream.received.size)
         }
+
+    @Test
+    fun `a path that only resembles the prefix is refused, never relayed, recorded, or derived`() =
+        withProxy {
+            val disguised =
+                listOf(
+                    "/_Peashoot/v1/events",
+                    "/_PEASHOOT/v1/routes",
+                    "/_peashoot%2Fv1%2Fevents",
+                    "/%5Fpeashoot/v1/events",
+                    "//_peashoot/v1/routes",
+                    "/v1/_peashoot/v1/events",
+                    "/_peashoot",
+                    "/_peashoot/",
+                )
+            disguised.forEach { path ->
+                assertProblem(raw(HttpMethod.Get, path, token), 404)
+                assertProblem(raw(HttpMethod.Post, path, token = null), 401)
+            }
+            assertEquals(emptyList(), upstream.received.map { it.uri }, "nothing was relayed")
+            assertEquals(emptyList(), store.list())
+            assertEquals(emptyMap(), store.events())
+        }
+
+    @Test
+    fun `Last-Event-ID wins over since, as an EventSource reconnect sends both`() = withProxy {
+        relay(REQUEST)
+        awaitEvents(2)
+        val seen = store.events().keys.first()
+        val resumed = feed("?since=0", mapOf("Last-Event-ID" to "$seen")) { it.take(1) }
+        assertEquals(seen + 1, resumed.single().first)
+    }
+
+    @Test
+    fun `a request keeps the route it arrived under when the table changes mid-request`() =
+        withProxy(
+            route = Route(Mode.REPLAY),
+            first = { control ->
+                listOf(
+                    object : Interceptor {
+                        override suspend fun onRequest(exchange: Exchange): FrameSource? {
+                            control.routes.put(DEFAULT_ROUTE, Route(Mode.REPLAY, strict = true))
+                            return null
+                        }
+                    }
+                )
+            },
+        ) {
+            assertEquals(200, relay(REQUEST).first, "arrived lenient, so the miss is let through")
+            assertEquals(1, upstream.received.size)
+            assertEquals(409, relay("""{"model":"x","messages":[]}""").first, "the next is strict")
+        }
+
+    @Test
+    fun `a store that fails is a 500 problem that does not echo the failure`() = withProxy {
+        store.close()
+        val response = call(HttpMethod.Get, "/sessions")
+        assertProblem(response, 500)
+        val detail = Json.parseToJsonElement(response.bodyAsText()).jsonObject["detail"]?.text()
+        assertTrue(
+            detail != null && "Exception" !in detail && "Hikari" !in detail,
+            "a generic detail: $detail",
+        )
+        assertTrue(appLog().any { "control call /_peashoot/v1/sessions failed" in it })
+        assertTrue(appLog().any { "HikariDataSource" in it }, "the failure itself is logged")
+    }
 
     @Test
     fun `the event feed delivers lines live and backfills what a reconnect missed`() = withProxy {
@@ -202,6 +315,35 @@ class ControlApiTest {
             assertEquals(store.events().keys.filter { it > seen }, ids)
             resumed.forEach { (id, event) -> assertEquals(store.events()[id], event) }
         }
+    }
+
+    @Test
+    fun `a subscriber that falls behind is cut off and resumes with Last-Event-ID`() =
+        withProxy(buffer = 1) {
+            // Published straight to the feed, faster than any reader drains it: what the deriver
+            // would do to a subscriber that stopped reading.
+            val lines =
+                (1..FLOOD).associate { n ->
+                    val event = event(n)
+                    store.putEvent(event) to event
+                }
+            val cut = feed { events ->
+                lines.forEach { (id, event) -> control.feed.publish(id, event) }
+                events.takeUntilEnd()
+            }
+            assertTrue(cut.size < lines.size, "the feed was cut off after ${cut.size} lines")
+            val resumed =
+                feed(headers = mapOf("Last-Event-ID" to "${cut.last().first}")) {
+                    it.take(lines.size - cut.size)
+                }
+            assertEquals(lines.keys.toList(), (cut + resumed).map { it.first }, "no line is lost")
+            assertEquals(lines.values.toList(), (cut + resumed).map { it.second })
+        }
+
+    @Test
+    fun `a subscriber that goes is forgotten`() = withProxy {
+        feed { assertEquals(1, control.feed.subscriberCount) }
+        withTimeout(5_000) { while (control.feed.subscriberCount > 0) delay(20) }
     }
 
     @Test
@@ -246,9 +388,9 @@ class ControlApiTest {
                 "/routes/default" to """{"mode":"replay","strict":"yes"}""",
                 "/routes/default" to """{"mode":"replay","cassette":"../etc"}""",
                 "/routes/default" to """{"mode":"replay","cassette":7}""",
-                "/routes/other" to """{"mode":"replay"}""",
             )
             .forEach { (path, body) -> assertProblem(call(HttpMethod.Put, path, body), 400) }
+        assertProblem(call(HttpMethod.Put, "/routes/other", """{"mode":"replay"}"""), 404)
         assertEquals("record", json("/routes").getValue("default").jsonObject["mode"]?.text())
     }
 
@@ -289,6 +431,9 @@ class ControlApiTest {
             listOf("0", "-1", "ten", "${MAX_EXCHANGES_LIMIT + 1}").forEach {
                 assertProblem(call(HttpMethod.Get, "/exchanges?limit=$it"), 400)
             }
+            listOf("01ZZZZZZZZZZZZZZZZZZZZZZZZ", "not-an-id", "").forEach {
+                assertProblem(call(HttpMethod.Get, "/exchanges?cursor=$it"), 400)
+            }
         }
 
     @Test
@@ -323,33 +468,90 @@ class ControlApiTest {
     @Test
     fun `the token is created once, owner only, and reused on restart`() {
         val home = Files.createTempDirectory("peashoot-home")
-        Store(home).use { store ->
-            val first = ControlApi(store, home, ProxyConfig()).let { home.resolve(TOKEN_FILE) }
-            val token = first.readText()
-            assertTrue(token.length >= 43 && token.all { it.isLetterOrDigit() || it in "-_" })
-            ControlApi(store, home, ProxyConfig())
-            assertEquals(token, first.readText(), "an existing token is kept")
-            val views = first.fileSystem.supportedFileAttributeViews()
-            if ("posix" in views) {
-                assertEquals(
-                    "rw-------",
-                    PosixFilePermissions.toString(Files.getPosixFilePermissions(first)),
-                )
-            } else if ("acl" in views) {
-                val acl = Files.getFileAttributeView(first, AclFileAttributeView::class.java)
-                assertEquals(setOf(Files.getOwner(first)), acl.acl.map { it.principal() }.toSet())
+        val token = loadToken(home)
+        assertTrue(token.length >= 43 && token.all { it.isLetterOrDigit() || it in "-_" })
+        assertEquals(token, loadToken(home), "an existing token is kept")
+        assertOwnerOnly(home.resolve(TOKEN_FILE))
+    }
+
+    @Test
+    fun `an existing token readable by others is tightened, with a warning that omits it`() {
+        val home = Files.createTempDirectory("peashoot-home")
+        val file = home.resolve(TOKEN_FILE)
+        val token = "a".repeat(43)
+        // Written plainly, so it takes the directory's inherited entries or the umask's mode.
+        Files.writeString(file, token)
+        if ("posix" in file.fileSystem.supportedFileAttributeViews()) {
+            Files.setPosixFilePermissions(file, PosixFilePermissions.fromString("rw-r--r--"))
+        }
+        assertEquals(token, loadToken(home))
+        assertOwnerOnly(file)
+        assertEquals(token, file.readText(), "the token itself is kept")
+        val warning = appLog().filter { file.toString() in it }
+        assertTrue(warning.isNotEmpty(), "the tightening is warned about")
+        assertTrue(appLog().none { token in it }, "the token is never logged")
+    }
+
+    @Test
+    fun `an empty or implausibly short token file stops startup, naming the file`() {
+        listOf("", "\n", "short").forEach { content ->
+            val home = Files.createTempDirectory("peashoot-home")
+            Files.writeString(home.resolve(TOKEN_FILE), content)
+            val error = assertFailsWith<IllegalStateException> { loadToken(home) }
+            assertContains(error.message.orEmpty(), home.resolve(TOKEN_FILE).toString())
+        }
+    }
+
+    @Test
+    fun `simultaneous first starts end with one token`() {
+        val home = Files.createTempDirectory("peashoot-home")
+        val start = CountDownLatch(1)
+        val pool = Executors.newFixedThreadPool(STARTS)
+        val tokens =
+            try {
+                List(STARTS) { pool.submit(Callable { start.await().let { loadToken(home) } }) }
+                    .also { start.countDown() }
+                    .map { it.get() }
+            } finally {
+                pool.shutdown()
             }
+        assertEquals(setOf(home.resolve(TOKEN_FILE).readText()), tokens.toSet(), "one token")
+        assertEquals(
+            listOf(home.resolve(TOKEN_FILE)),
+            home.listDirectoryEntries("token*"),
+            "no staging file is left",
+        )
+    }
+
+    private fun assertOwnerOnly(file: Path) {
+        val views = file.fileSystem.supportedFileAttributeViews()
+        if ("posix" in views) {
+            assertEquals(
+                "rw-------",
+                PosixFilePermissions.toString(Files.getPosixFilePermissions(file)),
+            )
+        } else if ("acl" in views) {
+            val acl = Files.getFileAttributeView(file, AclFileAttributeView::class.java)
+            assertEquals(listOf(Files.getOwner(file)), acl.acl.map { it.principal() })
         }
     }
 
     @Test
     fun `binding to a non-loopback address is refused`() {
-        listOf("0.0.0.0", "192.0.2.1").forEach { host ->
+        listOf("0.0.0.0", "192.0.2.1", "[192.0.2.1]", "no-such-host.invalid").forEach { host ->
             val error =
-                assertFailsWith<IllegalArgumentException> {
+                assertFailsWith<IllegalStateException> {
                     ProxyServer(ProxyConfig(port = 0, host = host))
                 }
             assertContains(error.message.orEmpty(), host)
+        }
+    }
+
+    @Test
+    fun `a bracketed IPv6 loopback host binds and serves`() = runBlocking {
+        ProxyServer(ProxyConfig(port = 0, host = "[::1]")).use { server ->
+            assertTrue(server.url.startsWith("http://[0:0:0:0:0:0:0:1]:"), server.url)
+            assertEquals(200, client.head("${server.url}/api/hello").status.value)
         }
     }
 
@@ -379,13 +581,20 @@ class ControlApiTest {
     private class Reader(private val channel: ByteReadChannel) {
         suspend fun take(count: Long): List<Pair<Long, JsonObject>> = take(count.toInt())
 
-        suspend fun take(count: Int): List<Pair<Long, JsonObject>> = List(count) { next() }
+        suspend fun take(count: Int): List<Pair<Long, JsonObject>> =
+            List(count) { checkNotNull(next()) }
 
-        private suspend fun next(): Pair<Long, JsonObject> {
+        /** Every line until the server ends the response. */
+        suspend fun takeUntilEnd(): List<Pair<Long, JsonObject>> = buildList {
+            while (true) add(next() ?: break)
+        }
+
+        /** The next line, or null once the feed has ended. */
+        private suspend fun next(): Pair<Long, JsonObject>? {
             var id: Long? = null
             var data: JsonObject? = null
             while (true) {
-                val line = checkNotNull(channel.readLine()) { "the feed ended" }
+                val line = channel.readLine() ?: return null
                 when {
                     line.startsWith("id: ") -> id = line.removePrefix("id: ").toLong()
                     line.startsWith("data: ") ->
@@ -396,6 +605,14 @@ class ControlApiTest {
         }
     }
 
+    /** An event line of the shape the deriver writes, which the store can keep. */
+    private fun event(n: Int): JsonObject = buildJsonObject {
+        put("ts", Instant.now().toString())
+        put("event", "exchange.started")
+        put("exchangeId", "flood-$n")
+        put("session", "s1")
+    }
+
     private fun List<Pair<Long, JsonObject>>.names() = map { it.second["event"]?.text() }
 
     private suspend fun Proxy.ids(path: String): List<String?> =
@@ -404,5 +621,10 @@ class ControlApiTest {
     private companion object {
         const val REQUEST = """{"model":"claude-sonnet-4-5","messages":[]}"""
         const val PING = 200L
+        const val STARTS = 8
+        /**
+         * Enough lines that a one-line buffer cannot hold them while the reader writes them out.
+         */
+        const val FLOOD = 200
     }
 }

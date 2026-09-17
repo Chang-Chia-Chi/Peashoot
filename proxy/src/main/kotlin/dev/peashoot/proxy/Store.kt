@@ -5,6 +5,7 @@ import com.zaxxer.hikari.HikariDataSource
 import dev.peashoot.core.Exchange
 import dev.peashoot.core.Frame
 import dev.peashoot.core.Mode
+import dev.peashoot.core.Route
 import dev.peashoot.core.Usage
 import dev.peashoot.core.text
 import io.ktor.http.Headers
@@ -45,13 +46,18 @@ data class Recorded(
 )
 
 /**
- * The control API's narrowing of [Store.list]: one session's or one client type's exchanges, those
- * after the exchange [after] in the list's order, and no frames read unless [frames].
+ * Which exchanges [Store.list] returns: those of one [fingerprint], [cassette], [session], or
+ * client type, only live recordings when [live], and only those after the exchange [cursor] in the
+ * list's own order. Frames are read unless [frames] is off, which the control API's list turns off
+ * because they are most of a row's size.
  */
 data class ExchangeQuery(
+    val fingerprint: String? = null,
+    val cassette: String? = null,
     val session: String? = null,
     val client: String? = null,
-    val after: String? = null,
+    val cursor: String? = null,
+    val live: Boolean = false,
     val frames: Boolean = true,
 )
 
@@ -129,6 +135,8 @@ class Store(home: Path) : AutoCloseable {
                         "received_at" to exchange.receivedAt.toEpochMilli(),
                         "fingerprint" to exchange.fingerprint,
                         "route" to exchange.route,
+                        // A stored row keeps the mode it ran under; strict and the cassette are
+                        // the route's at the time, and the cassette column is put's own argument.
                         "mode" to exchange.mode.name,
                         "method" to exchange.request.method,
                         "path" to exchange.request.path,
@@ -147,18 +155,18 @@ class Store(home: Path) : AutoCloseable {
         }
     }
 
-    suspend fun get(id: String): Recorded? = io { handle ->
+    /** The exchange [id], or null; its frames are read unless [frames] is off. */
+    suspend fun get(id: String, frames: Boolean = true): Recorded? = io { handle ->
         handle
             .createQuery("$SELECT WHERE id = :id")
             .bind("id", id)
-            .map { rows, _ -> rows.toRecorded() }
+            .map { rows, _ -> rows.toRecorded(frames) }
             .findOne()
             .orElse(null)
     }
 
     /**
-     * Newest first; only the recordings of [fingerprint], and of [cassette], when given, only live
-     * recordings, tagged with no cassette, when [live], and narrowed by [query].
+     * Newest first, as [query] narrows them.
      *
      * A session or client is known from the exchange's event lines, joined by exchange id, so an
      * imported cassette's rows, which no deriver saw, match neither filter. ponytail: the client
@@ -167,23 +175,20 @@ class Store(home: Path) : AutoCloseable {
      */
     suspend fun list(
         limit: Int = DEFAULT_LIMIT,
-        fingerprint: String? = null,
-        cassette: String? = null,
-        live: Boolean = false,
         query: ExchangeQuery = ExchangeQuery(),
     ): List<Recorded> = io { handle ->
         val filters =
             mapOf(
-                    "fingerprint" to fingerprint,
-                    "cassette" to cassette,
+                    "fingerprint" to query.fingerprint,
+                    "cassette" to query.cassette,
                     "session" to query.session,
                     "client" to query.client,
-                    "after" to query.after,
+                    "cursor" to query.cursor,
                 )
                 .filterValues { it != null }
         val conditions =
             filters.keys.map { LIST_CONDITIONS[it] ?: "$it = :$it" } +
-                listOfNotNull("cassette IS NULL".takeIf { live })
+                listOfNotNull("cassette IS NULL".takeIf { query.live })
         val where = if (conditions.isEmpty()) "" else conditions.joinToString(" AND ", "WHERE ")
         handle
             .createQuery("$SELECT $where ORDER BY received_at DESC, id DESC LIMIT :limit")
@@ -268,7 +273,9 @@ class Store(home: Path) : AutoCloseable {
                     inlineOrSpilled("request_body", "request_body_ref"),
                 ),
                 route = getString("route"),
-                mode = Mode.valueOf(getString("mode")),
+                // A row keeps the mode it ran under; strict and the cassette were the route's at
+                // the time, and the cassette it belongs to now is [Recorded.cassette].
+                routing = Route(Mode.valueOf(getString("mode"))),
                 id = getString("id"),
                 receivedAt = Instant.ofEpochMilli(getLong("received_at")),
             )
@@ -348,9 +355,9 @@ class Store(home: Path) : AutoCloseable {
                 ON exchange (fingerprint, received_at DESC)"""
         const val SELECT = "SELECT * FROM exchange"
         /**
-         * [list]'s conditions that are not a plain column match. `after` compares in the list's own
-         * order, so a page continues where the last one ended; a cursor naming no row yields
-         * nothing, since the comparison is then null.
+         * [list]'s conditions that are not a plain column match. The cursor compares in the list's
+         * own order, so a page continues where the last one ended; the control API refuses a cursor
+         * naming no row, which would otherwise compare null and return nothing.
          */
         val LIST_CONDITIONS =
             mapOf(
@@ -358,8 +365,8 @@ class Store(home: Path) : AutoCloseable {
                 "client" to
                     "id IN (SELECT exchange_id FROM event " +
                         "WHERE json_extract(body, '$.client') = :client)",
-                "after" to
-                    "(received_at, id) < (SELECT received_at, id FROM exchange WHERE id = :after)",
+                "cursor" to
+                    "(received_at, id) < (SELECT received_at, id FROM exchange WHERE id = :cursor)",
             )
 
         /** The event line, kept whole in [body] so any tool reads the same JSON the file has. */

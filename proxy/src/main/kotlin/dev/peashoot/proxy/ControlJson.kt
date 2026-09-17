@@ -1,9 +1,11 @@
 package dev.peashoot.proxy
 
 import dev.peashoot.core.Mode
+import dev.peashoot.core.Route
 import io.ktor.http.ContentType
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.application.ApplicationCall
+import io.ktor.server.plugins.BadRequestException
 import io.ktor.server.response.respondText
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
@@ -17,6 +19,13 @@ import kotlinx.serialization.json.put
 /** The JSON the control API answers with, and the route body it accepts. */
 internal suspend fun ApplicationCall.json(body: JsonObject) =
     respondText(body.toString(), ContentType.Application.Json)
+
+/** One SSE event on the feed: the table id is what a reconnect resumes from. */
+internal fun sseEvent(line: Pair<Long, JsonObject>): String =
+    "id: ${line.first}\ndata: ${line.second}\n\n"
+
+/** A parameter or body the API cannot use: the one failure that is the caller's, not ours. */
+internal fun badRequest(detail: String): Nothing = throw BadRequestException(detail)
 
 /**
  * RFC 9457's shape for every control API error. `about:blank` says the status is the whole story,
@@ -40,7 +49,7 @@ internal fun routesJson(routes: Map<String, Route>): JsonObject = buildJsonObjec
 }
 
 internal fun Route.toJson(): JsonObject = buildJsonObject {
-    put("mode", mode.name.lowercase())
+    put("mode", mode.spelling)
     put("strict", strict)
     put("cassette", cassette)
 }
@@ -50,9 +59,7 @@ internal fun JsonElement.toRoute(): Route {
     val body = requireNotNull(this as? JsonObject) { "a route is a JSON object" }
     val name = body["mode"].string("mode")
     val mode =
-        requireNotNull(Mode.entries.firstOrNull { it.name.equals(name, ignoreCase = true) }) {
-            "mode must be record, replay, or passthrough, not $name"
-        }
+        requireNotNull(Mode.of(name)) { "mode must be record, replay, or passthrough, not $name" }
     val strict =
         body["strict"]?.let {
             requireNotNull((it as? JsonPrimitive)?.takeUnless { p -> p.isString }?.booleanOrNull) {
@@ -91,7 +98,7 @@ private fun JsonObjectBuilder.putSummary(recorded: Recorded) {
     put("id", exchange.id)
     put("receivedAt", exchange.receivedAt.toString())
     put("route", exchange.route)
-    put("mode", exchange.mode.name.lowercase())
+    put("mode", exchange.mode.spelling)
     put("method", exchange.request.method)
     put("path", exchange.request.path)
     put("status", exchange.response?.status)

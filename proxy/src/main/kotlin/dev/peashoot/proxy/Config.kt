@@ -6,6 +6,7 @@ import dev.peashoot.core.Price
 import dev.peashoot.core.REDACT_FILE
 import dev.peashoot.core.RULES_FILE
 import dev.peashoot.core.Redaction
+import dev.peashoot.core.Route
 import dev.peashoot.core.Rules
 import java.nio.file.Files
 import java.nio.file.Path
@@ -22,15 +23,9 @@ const val CONFIG_FILE = "peashoot.toml"
 const val DEFAULT_ROUTE = "default"
 
 /**
- * What a route does, whether a replay miss on it fails rather than asking the upstream, and the
- * cassette a replay serves from: only that cassette's recordings when named, any when not.
- */
-data class Route(val mode: Mode, val strict: Boolean = false, val cassette: String? = null)
-
-/**
  * The routes as they are now: the config's at start, then whatever `PUT /routes/{name}` set. The
- * relay, replay, and the control API read this one table, so a change applies to the next request.
- * Memory only: a restart goes back to the file and the environment.
+ * relay reads it once per request and the control API writes it, so a change applies to the next
+ * request. Memory only: a restart goes back to the file and the environment.
  */
 class RouteTable(initial: Map<String, Route>) {
     private val current = AtomicReference(initial)
@@ -40,10 +35,17 @@ class RouteTable(initial: Map<String, Route>) {
 
     operator fun get(name: String): Route = current.get().getValue(name)
 
-    /** Replaces a route that exists: nothing adds one until routing arrives. */
-    fun put(name: String, route: Route) {
-        require(name in current.get()) { "no route named '$name'; only '$DEFAULT_ROUTE' exists" }
-        current.updateAndGet { it + (name to route) }
+    /**
+     * Replaces the route [name] and says so, or leaves the table alone and returns false when there
+     * is no such route: nothing adds one until routing arrives.
+     */
+    fun put(name: String, route: Route): Boolean {
+        var known = false
+        current.updateAndGet { routes ->
+            known = name in routes
+            if (known) routes + (name to route) else routes
+        }
+        return known
     }
 }
 
@@ -131,7 +133,9 @@ fun loadConfig(home: Path, env: (String) -> String? = System::getenv): ProxyConf
     val cassetteFile = env("PEASHOOT_CASSETTE")?.let(Path::of)
     val routes = defaults.routes + toml.getTable("routes")?.routes().orEmpty()
     val host = listOfNotNull(env("PEASHOOT_HOST"), toml.getString("host"), defaults.host).first()
-    check(notLoopback(host) == null) { notLoopback(host).orEmpty() }
+    // Refused here too, so a bad file fails before anything else starts; the server binds to what
+    // its own call of this returns.
+    loopbackAddress(host)
     return ProxyConfig(
         port =
             env("PEASHOOT_PORT")?.let {
@@ -179,8 +183,7 @@ private fun Route.withEnv(env: (String) -> String?, cassetteFile: Path?): Route 
     )
 
 private fun parseMode(raw: String, key: String): Mode =
-    Mode.entries.firstOrNull { it.name.equals(raw, ignoreCase = true) }
-        ?: error("$key must be record, replay, or passthrough, not $raw")
+    Mode.of(raw) ?: error("$key must be record, replay, or passthrough, not $raw")
 
 /** Any positive TOML number of seconds, or the default when the file says nothing. */
 private fun TomlParseResult.pingInterval(default: Duration): Duration =
@@ -247,7 +250,7 @@ private fun ProxyConfig.toToml(): String = buildString {
             "# mode is record, replay, or passthrough; a strict replay route answers a miss 409."
         )
         appendLine("[routes.$name]")
-        appendLine("mode = \"${route.mode.spelled()}\"")
+        appendLine("mode = \"${route.mode.spelling}\"")
         appendLine("strict = ${route.strict}")
         appendLine("# cassette = \"name\" replays only what `proxy import` tagged with that name.")
         route.cassette?.let { appendLine("cassette = \"$it\"") }

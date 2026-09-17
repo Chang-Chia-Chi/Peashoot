@@ -153,11 +153,9 @@ class Relay(
      * and nothing outlives server stop.
      */
     private val streams: CoroutineScope,
-    /** The control API's table when there is one, so a route change applies to the next request. */
-    routes: RouteTable? = null,
+    /** Read once per request, so a route change applies to the next one. */
+    private val routes: RouteTable,
 ) {
-    private val routes = routes ?: RouteTable(config.routes)
-
     suspend fun handle(call: ApplicationCall) {
         val body = call.receive<ByteArray>()
         val exchange =
@@ -169,7 +167,7 @@ class Relay(
                     body,
                 ),
                 route = DEFAULT_ROUTE,
-                mode = routes[DEFAULT_ROUTE].mode,
+                routing = routes[DEFAULT_ROUTE],
             )
         // Classify: what this request is, before anyone is asked to answer it. Every interceptor
         // sees it, so it is set before the chain rather than by whoever needs it first.

@@ -30,21 +30,30 @@ const val CONTROL_PREFIX = "/_peashoot"
 private const val TOKEN_BYTES = 32
 
 /**
+ * Shorter than this the file holds no token we wrote: base64url of 32 bytes is 43 characters, and a
+ * hand-written one this short is a mistake worth refusing rather than a secret.
+ */
+private const val MIN_TOKEN_LENGTH = 32
+
+/**
  * How many lines a feed subscriber may fall behind before it is cut off: minutes of a busy agent's
  * traffic, and a reconnect's backfill covers the rest.
  */
-private const val FEED_BUFFER = 1024
+internal const val FEED_BUFFER = 1024
 
 private val log = LoggerFactory.getLogger("dev.peashoot.proxy")
 
 /**
- * What the control API serves from: the store, the route table the relay reads, the live event
- * feed, and the token every call but health must carry. Built before the chain, so replay and the
- * deriver are given its table and its feed.
+ * What the control API serves from: the store, the route table the relay reads, the live event feed
+ * the deriver publishes to, and the token every call but health must carry. The table and the feed
+ * are made where the chain is, and handed to both.
  */
-class ControlApi(val store: Store, home: Path, config: ProxyConfig) {
-    val routes = RouteTable(config.routes)
-    val feed = EventFeed()
+class ControlApi(
+    val store: Store,
+    home: Path,
+    val routes: RouteTable,
+    val feed: EventFeed = EventFeed(),
+) {
     internal val started = TimeSource.Monotonic.markNow()
     private val expected = "Bearer ${loadToken(home)}".toByteArray()
 
@@ -62,8 +71,12 @@ class ControlApi(val store: Store, home: Path, config: ProxyConfig) {
  * its response ends, and a reconnect with the last id it saw backfills the rest from the table.
  * Falling behind costs the reader a reconnect, never a line.
  */
-class EventFeed {
+class EventFeed(private val buffer: Int = FEED_BUFFER) {
     private val subscribers = ConcurrentHashMap.newKeySet<Channel<Pair<Long, JsonObject>>>()
+
+    /** How many feeds are open: one whose reader has gone is gone from here too. */
+    internal val subscriberCount: Int
+        get() = subscribers.size
 
     fun publish(id: Long, event: JsonObject) = subscribers.forEach {
         if (it.trySend(id to event).isFailure) it.close()
@@ -71,7 +84,7 @@ class EventFeed {
 
     /** Runs [block] with every line published from now until it returns. */
     suspend fun <T> subscribe(block: suspend (ReceiveChannel<Pair<Long, JsonObject>>) -> T): T {
-        val channel = Channel<Pair<Long, JsonObject>>(FEED_BUFFER)
+        val channel = Channel<Pair<Long, JsonObject>>(buffer)
         subscribers += channel
         try {
             return block(channel)
@@ -82,11 +95,12 @@ class EventFeed {
 }
 
 /**
- * The token in [home], written on first start: staged owner-only, then moved into place, so no
- * reader ever sees it readable by others or half written. A token already there is kept as it is,
- * permissions included; so is one another first start moved in first.
+ * The token in [home], written on first start: staged owner-only, then linked into place, so no
+ * reader ever sees it readable by others or half written, and two starts at once cannot each end up
+ * with a token of their own. A token already there is kept, and tightened if anyone else could read
+ * it; one too short to be a token stops the proxy rather than guarding it with nothing.
  */
-private fun loadToken(home: Path): String {
+internal fun loadToken(home: Path): String {
     val file = home.resolve(TOKEN_FILE)
     if (Files.notExists(file)) {
         val bytes = ByteArray(TOKEN_BYTES).also(SecureRandom()::nextBytes)
@@ -97,25 +111,50 @@ private fun loadToken(home: Path): String {
                 staging,
                 Base64.getUrlEncoder().withoutPadding().encodeToString(bytes),
             )
-            Files.move(staging, file)
+            // A link, not a move: whatever the file system, it fails rather than replaces, so the
+            // start that lost the race reads the winner's token instead of overwriting it.
+            Files.createLink(file, staging)
         } catch (_: FileAlreadyExistsException) {
             // Another start won the race; its token is the one to read.
         } finally {
             Files.deleteIfExists(staging)
         }
+    } else if (readableByOthers(file)) {
+        // The permissions are said out loud, never the token: a token others could already read is
+        // worth rotating, but only its owner can decide that.
+        log.warn("{} was readable by others; restricting it to its owner", file)
+        restrictToOwner(file)
     }
-    return Files.readString(file).trim()
+    val token = Files.readString(file).trim()
+    check(token.length >= MIN_TOKEN_LENGTH) {
+        "$file holds no usable control API token; delete it and start again for a fresh one"
+    }
+    return token
 }
+
+/** Whether anyone but the owner is allowed anything on [file]. */
+private fun readableByOthers(file: Path): Boolean {
+    val posix = Files.getFileAttributeView(file, PosixFileAttributeView::class.java)
+    val acl = Files.getFileAttributeView(file, AclFileAttributeView::class.java)
+    return when {
+        posix != null -> posix.readAttributes().permissions() != OWNER_ONLY
+        acl != null -> acl.acl.any { it.principal() != acl.owner }
+        else -> false
+    }
+}
+
+private val OWNER_ONLY = PosixFilePermissions.fromString("rw-------")
 
 /**
  * `rw-------` where the file system has POSIX permissions; on Windows, an ACL naming the owner
- * alone, which also drops the entries the data directory would have passed down.
+ * alone. Java writes that ACL protected (`D:PAI`), so the data directory's inheritable entries
+ * neither stay on the file nor come back when the directory's own ACL changes.
  */
 private fun restrictToOwner(file: Path) {
     val posix = Files.getFileAttributeView(file, PosixFileAttributeView::class.java)
     val acl = Files.getFileAttributeView(file, AclFileAttributeView::class.java)
     when {
-        posix != null -> posix.setPermissions(PosixFilePermissions.fromString("rw-------"))
+        posix != null -> posix.setPermissions(OWNER_ONLY)
         acl != null ->
             acl.acl =
                 listOf(

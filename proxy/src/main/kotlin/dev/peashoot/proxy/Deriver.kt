@@ -188,7 +188,7 @@ class Deriver(
         put("surface", Messages.SURFACE)
         put("model", model)
         put("route", exchange.route)
-        put("mode", exchange.mode.name.lowercase())
+        put("mode", exchange.mode.spelling)
         put("toolResults", toolResultsJson(exchange))
     }
 
