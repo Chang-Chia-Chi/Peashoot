@@ -79,8 +79,10 @@ jobs:
             4. What looks good
 
             Do NOT apply fixes. Review only.
-          claude_args: "--model claude-sonnet-4-6 --max-turns 15"
-          # Review only: no Write, no Edit, and only the read-only commands a review needs.
-          # One line: the list is parsed on commas, so a wrapped line would add spaces.
-          additional_permissions: "Read(*),Glob(*),Grep(*),Bash(git diff:*),Bash(git log:*),Bash(git show:*),Bash(git status:*),Bash(gh pr view:*),Bash(gh pr diff:*)"
+          # Tool limits belong here, in the CLI's own --allowedTools: the action's
+          # additional_permissions input is for GitHub scopes ("actions: read") and
+          # refuses a tool pattern. Review only, so no Write and no Edit.
+          claude_args: >-
+            --model claude-sonnet-4-6 --max-turns 15
+            --allowedTools "Read,Glob,Grep,Bash(git diff:*),Bash(git log:*),Bash(git show:*),Bash(git status:*),Bash(gh pr view:*),Bash(gh pr diff:*)"
           show_full_output: true

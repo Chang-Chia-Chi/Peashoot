@@ -59,7 +59,9 @@ jobs:
               hooks, workflows) and never add @Suppress or a baseline entry
             - Keep changes minimal and traceable
             - If a fix would significantly expand scope, leave a comment instead
-          claude_args: "--model claude-sonnet-4-6 --max-turns 10"
-          # The commands this job actually needs, rather than every command there is.
-          # One line: the list is parsed on commas, so a wrapped line would add spaces.
-          additional_permissions: "Read(*),Glob(*),Grep(*),Edit(*),Write(*),Bash(./gradlew:*),Bash(git status:*),Bash(git diff:*),Bash(git log:*),Bash(git show:*),Bash(git fetch:*),Bash(git add:*),Bash(git commit:*),Bash(git push:*),Bash(gh pr view:*),Bash(gh pr diff:*)"
+          # Tool limits belong here, in the CLI's own --allowedTools: the action's
+          # additional_permissions input is for GitHub scopes ("actions: read") and
+          # refuses a tool pattern. These are the commands this job actually needs.
+          claude_args: >-
+            --model claude-sonnet-4-6 --max-turns 10
+            --allowedTools "Read,Glob,Grep,Edit,Write,Bash(./gradlew:*),Bash(git status:*),Bash(git diff:*),Bash(git log:*),Bash(git show:*),Bash(git fetch:*),Bash(git add:*),Bash(git commit:*),Bash(git push:*),Bash(gh pr view:*),Bash(gh pr diff:*)"
