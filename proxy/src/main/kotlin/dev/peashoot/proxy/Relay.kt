@@ -153,7 +153,11 @@ class Relay(
      * and nothing outlives server stop.
      */
     private val streams: CoroutineScope,
+    /** The control API's table when there is one, so a route change applies to the next request. */
+    routes: RouteTable? = null,
 ) {
+    private val routes = routes ?: RouteTable(config.routes)
+
     suspend fun handle(call: ApplicationCall) {
         val body = call.receive<ByteArray>()
         val exchange =
@@ -165,7 +169,7 @@ class Relay(
                     body,
                 ),
                 route = DEFAULT_ROUTE,
-                mode = config.routes.getValue(DEFAULT_ROUTE).mode,
+                mode = routes[DEFAULT_ROUTE].mode,
             )
         // Classify: what this request is, before anyone is asked to answer it. Every interceptor
         // sees it, so it is set before the chain rather than by whoever needs it first.
@@ -416,15 +420,16 @@ private tailrec fun ApplicationCall.engineCall(): NettyApplicationCall? =
  * fails is the wrong thing to wait for: it never comes for a response written in one burst, and
  * never for a client that left before the first byte (#51). Asking the channel costs a volatile
  * read, so the writer can ask every time round its wait. Another engine leaves the channel null and
- * falls back to hearing the departure from the failing write, as before.
+ * falls back to hearing the departure from the failing write, as before. The control API's event
+ * feed asks it too: a feed that only ever writes would otherwise outlive its reader for good.
  */
-private fun ApplicationCall.clientGone(): () -> Boolean {
+internal fun ApplicationCall.clientGone(): () -> Boolean {
     val channel = engineCall()?.context?.channel()
     return { channel?.isOpen == false }
 }
 
 /** What a silent stream sends the client, so a byte-counting watchdog is not tripped by us. */
-private const val KEEP_ALIVE = ": keep-alive\n\n"
+internal const val KEEP_ALIVE = ": keep-alive\n\n"
 
 /**
  * One exchange's frames on their way to the sinks. The drive is the only collector, so the client

@@ -29,12 +29,13 @@ ANTHROPIC_BASE_URL=http://localhost:8787 claude
 
 ## Configuration
 
-The data directory holds `peashoot.db` (the store), `bodies/` (request bodies and frame lists over 64 KB, named by SHA-256), `gource.log` (written only when the Gource formatter is on), `rules.json` (what makes two requests the same request: a header allowlist, ignored JSON pointers, and regex replacements, written with defaults on first start and meant to be edited; reducing it to `{}` is exact matching), `redact.json` (what a cassette export strips, see below), `cassettes/` (exported cassettes), and `peashoot.toml`, written with defaults on first start: port, upstream, secret headers, the Gource flag, the keep-alive ping interval, the mode of each route (`record`, `replay`, or `passthrough`), whether a replay miss on it is refused (`strict`), and the cassette it replays from (`cassette`), and the replay `cadence` and `repeatPolicy`. Environment variables override the file:
+The data directory holds `peashoot.db` (the store), `bodies/` (request bodies and frame lists over 64 KB, named by SHA-256), `gource.log` (written only when the Gource formatter is on), `rules.json` (what makes two requests the same request: a header allowlist, ignored JSON pointers, and regex replacements, written with defaults on first start and meant to be edited; reducing it to `{}` is exact matching), `redact.json` (what a cassette export strips, see below), `cassettes/` (exported cassettes), `token` (the control API's bearer token, created on first start, readable by its owner only), and `peashoot.toml`, written with defaults on first start: port, host, upstream, secret headers, the Gource flag, the keep-alive ping interval, the mode of each route (`record`, `replay`, or `passthrough`), whether a replay miss on it is refused (`strict`), and the cassette it replays from (`cassette`), and the replay `cadence` and `repeatPolicy`. Environment variables override the file:
 
 | Variable | Default | Meaning |
 |---|---|---|
 | `PEASHOOT_HOME` | `~/.peashoot` | The data directory |
 | `PEASHOOT_PORT` | `8787` | Listen port, loopback only; `0` takes a free one and logs it |
+| `PEASHOOT_HOST` | `127.0.0.1` | Listen address; anything that is not loopback is refused |
 | `PEASHOOT_ANTHROPIC_UPSTREAM` | `https://api.anthropic.com` | Where Messages requests go |
 | `PEASHOOT_MODE` | `record` | The default route's mode: `record`, `replay`, or `passthrough` |
 | `PEASHOOT_STRICT` | `false` | `true` refuses a replay miss with 409 |
@@ -44,6 +45,21 @@ The data directory holds `peashoot.db` (the store), `bodies/` (request bodies an
 An invalid value stops the proxy with a message naming the variable.
 
 The database schema is created if absent and never altered before v1. A `peashoot.db` made before cassettes (#13) lacks the `cassette` column, and the proxy refuses to open it: move it aside and a fresh one is created.
+
+## Control API
+
+The proxy's own port serves a control API under `/_peashoot/v1/`; nothing under `/_peashoot/` is ever relayed. Every call but `GET /health` needs the token from the data directory:
+
+```
+TOKEN=$(cat ~/.peashoot/token)
+curl http://localhost:8787/_peashoot/v1/health
+curl -N -H "Authorization: Bearer $TOKEN" "http://localhost:8787/_peashoot/v1/events?since=0"
+curl -H "Authorization: Bearer $TOKEN" "http://localhost:8787/_peashoot/v1/exchanges?client=claude-code&limit=10"
+curl -X PUT -H "Authorization: Bearer $TOKEN" -d '{"mode":"replay","strict":true}' \
+  http://localhost:8787/_peashoot/v1/routes/default
+```
+
+`/events` is a server-sent event feed of the event lines, each with its id; `since` or `Last-Event-ID` backfills what came after that id. `/exchanges` pages newest first with `cursor` and filters by `session` and `client`; `/exchanges/{id}?frames=true` adds the frames. `/sessions` is the spend per session and agent. `/routes` shows each route, and a `PUT` changes one for the next request without a restart; the change is held in memory, so a restart goes back to `peashoot.toml` and the environment. Errors are `application/problem+json` objects with `type`, `title`, `detail`, and `status`.
 
 ## Replay: the second run costs nothing
 

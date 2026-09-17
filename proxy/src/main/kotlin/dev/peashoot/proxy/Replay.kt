@@ -20,7 +20,12 @@ private val log = LoggerFactory.getLogger("dev.peashoot.proxy")
  * the upstream. A miss on a strict route is refused with 409, naming what missed; on a lenient one
  * it is let through, and the recorder appends what the upstream says.
  */
-class Replay(private val store: Store, private val config: ProxyConfig) : Interceptor {
+class Replay(
+    private val store: Store,
+    private val config: ProxyConfig,
+    /** The table the relay reads, so strict and cassette change with the mode. */
+    private val routes: RouteTable = RouteTable(config.routes),
+) : Interceptor {
     /**
      * How many hits each fingerprint has had since this proxy started, for [RepeatPolicy.IN_ORDER].
      * Held here, not in the store, so a restart replays a retry sequence from its start.
@@ -30,7 +35,7 @@ class Replay(private val store: Store, private val config: ProxyConfig) : Interc
     override suspend fun onRequest(exchange: Exchange): FrameSource? {
         val fingerprint = exchange.fingerprint
         if (exchange.mode != Mode.REPLAY || fingerprint == null) return null
-        val route = config.routes.getValue(exchange.route)
+        val route = routes[exchange.route]
         val hit = recording(fingerprint, route.cassette)
         return when {
             hit != null -> {

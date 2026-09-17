@@ -40,7 +40,7 @@ Data directory `~/.peashoot/` (override with `PEASHOOT_HOME`):
 - `peashoot.toml`: configuration.
 
 Configuration keys (TOML, with `PEASHOOT_`-prefixed environment overrides for the ones CI needs):
-- `port` (default 8787), `bind` (default 127.0.0.1, not changeable to a non-loopback address in v1).
+- `port` (default 8787), `host` (`PEASHOOT_HOST`, default 127.0.0.1). Anything that does not resolve to loopback addresses only is refused at startup, by the loader and by the server for a config built in code.
 - `surfaces.anthropic.upstream` (default `https://api.anthropic.com`), `surfaces.openai.upstream` (default `https://api.openai.com`). Pointing the OpenAI surfaces at Ollama's OpenAI-compatible endpoint is the free local test setup.
 - `routes.<name>.mode` in `record | replay | passthrough`, `routes.<name>.strict` (bool), `routes.<name>.cassette` (name). Default route per surface, mode `record`. The environment sets the default route: `PEASHOOT_MODE`, `PEASHOOT_STRICT` (`true | false`), and `PEASHOOT_CASSETTE` (a cassette file, imported on start under its base name, which becomes the route's cassette). `PEASHOOT_PORT` and `PEASHOOT_ANTHROPIC_UPSTREAM` set the port and upstream. An invalid value stops the proxy with a message naming the variable.
 - `resume.windowSeconds` (default 300), `resume.maxBufferedExchanges` (default 100), `resume.pingIntervalSeconds` (default 15; SSE comment lines emitted while an upstream is silent, so byte-counting watchdogs stay alive).
@@ -129,18 +129,18 @@ Paths appear in the event line and Gource output; both are local data. The label
 
 ## 8. Control API
 
-Base `/_peashoot/v1/`, loopback only, bearer token from the `token` file on every call except `GET /health`.
+Base `/_peashoot/v1/`, loopback only, bearer token from the `token` file on every call except `GET /health`. The token is 32 random bytes, base64url, written on first start to a staged file restricted to its owner (`rw-------`, or on Windows an ACL naming the owner alone) and then moved into place; an existing file is read as it is. It is compared in constant time and never logged. Nothing under `/_peashoot/` is relayed, recorded, or derived: an unknown path there is a 404 problem.
 
 - `GET /health`: version, uptime, routes and their modes.
-- `GET /events`: SSE feed of event lines; `?since=<eventId>` backfills.
-- `GET /exchanges?session=&client=&cursor=&limit=`; `GET /exchanges/{id}` (`?frames=true` includes frames).
+- `GET /events`: SSE feed of event lines, each with its `event` table id as the SSE `id`; `?since=<eventId>`, or the standard `Last-Event-ID` header, backfills every line after that id, then the feed continues live; with neither, only new lines. The subscription is taken before the backfill is read and ids already sent are skipped, and the deriver stores and publishes under one lock, so ids arrive in order with no gap and no duplicate. A comment line opens the feed and repeats while it is idle. Each subscriber has a bounded buffer and publishing never waits: a subscriber that falls that far behind gets what it had buffered, then its response ends, and it reconnects with its last id.
+- `GET /exchanges?session=&client=&cursor=&limit=`: newest first, summary rows; `cursor` is the last id of the previous page, `nextCursor` is set when the page is full, `limit` is 1 to 500 (default 50). Session and client come from the exchange's event lines, so an imported cassette's rows match neither filter. `GET /exchanges/{id}` adds request headers and body and response headers; `?frames=true` adds `frames: [{t, raw}]`.
 - `GET /sessions`: per session and agent aggregates.
-- `GET /routes`; `PUT /routes/{name}` body `{mode, strict, cassette}`.
+- `GET /routes`; `PUT /routes/{name}` body `{mode, strict?, cassette?}` replaces that route for the next request. The relay, replay, and the control API read one route table; it lives in memory, so a restart goes back to the config file and the environment. Only `default` exists until routing arrives.
 - `GET /rules`; `PUT /rules` (validated, whole replacement); `POST /rules/test` body `{rules, lastN}`.
 - `GET /cassettes`; `POST /cassettes/export` body `{name, sessionIds?, exchangeIds?}` with `?dryRun=true` returning the redaction preview; `POST /cassettes/import` body `{path}`.
 - `GET /config`; `PUT /config` (fields needing restart are flagged in the response); `POST /shutdown`.
 
-Errors are JSON problem objects `{type, title, detail, status}`. The app never opens the database file.
+Errors are JSON problem objects `{type, title, detail, status}` served as `application/problem+json`: 400 for a parameter or body that cannot be used, 401 for a missing or wrong token, 404 for an unknown path or exchange, 500 for a store that cannot be read. The app never opens the database file.
 
 ## 9. Surfaces, headers, client detection
 

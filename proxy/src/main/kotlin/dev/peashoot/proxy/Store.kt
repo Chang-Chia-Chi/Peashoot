@@ -34,8 +34,26 @@ import kotlinx.serialization.json.put
 import org.jdbi.v3.core.Handle
 import org.jdbi.v3.core.Jdbi
 
-/** A stored exchange: the context object rebuilt from its row, plus the frames it produced. */
-data class Recorded(val exchange: Exchange, val frames: List<Frame>)
+/**
+ * A stored exchange: the context object rebuilt from its row, plus the frames it produced, and the
+ * cassette a stored row belongs to. [Store.put] takes the cassette as its own argument.
+ */
+data class Recorded(
+    val exchange: Exchange,
+    val frames: List<Frame>,
+    val cassette: String? = null,
+)
+
+/**
+ * The control API's narrowing of [Store.list]: one session's or one client type's exchanges, those
+ * after the exchange [after] in the list's order, and no frames read unless [frames].
+ */
+data class ExchangeQuery(
+    val session: String? = null,
+    val client: String? = null,
+    val after: String? = null,
+    val frames: Boolean = true,
+)
 
 /** One row of the session view: what one session and agent have spent. */
 data class Session(
@@ -139,30 +157,47 @@ class Store(home: Path) : AutoCloseable {
     }
 
     /**
-     * Newest first; only the recordings of [fingerprint], and of [cassette], when given, and only
-     * live recordings, tagged with no cassette, when [live].
+     * Newest first; only the recordings of [fingerprint], and of [cassette], when given, only live
+     * recordings, tagged with no cassette, when [live], and narrowed by [query].
+     *
+     * A session or client is known from the exchange's event lines, joined by exchange id, so an
+     * imported cassette's rows, which no deriver saw, match neither filter. ponytail: the client
+     * filter reads it out of the event body, a scan of the event table per query. Upgrade: a
+     * `client` column on `event` with an index, if `/exchanges?client=` ever feels slow.
      */
     suspend fun list(
         limit: Int = DEFAULT_LIMIT,
         fingerprint: String? = null,
         cassette: String? = null,
         live: Boolean = false,
+        query: ExchangeQuery = ExchangeQuery(),
     ): List<Recorded> = io { handle ->
         val filters =
-            mapOf("fingerprint" to fingerprint, "cassette" to cassette).filterValues { it != null }
+            mapOf(
+                    "fingerprint" to fingerprint,
+                    "cassette" to cassette,
+                    "session" to query.session,
+                    "client" to query.client,
+                    "after" to query.after,
+                )
+                .filterValues { it != null }
         val conditions =
-            filters.keys.map { "$it = :$it" } + listOfNotNull("cassette IS NULL".takeIf { live })
+            filters.keys.map { LIST_CONDITIONS[it] ?: "$it = :$it" } +
+                listOfNotNull("cassette IS NULL".takeIf { live })
         val where = if (conditions.isEmpty()) "" else conditions.joinToString(" AND ", "WHERE ")
         handle
             .createQuery("$SELECT $where ORDER BY received_at DESC, id DESC LIMIT :limit")
             .bind("limit", limit)
             .bindMap(filters)
-            .map { rows, _ -> rows.toRecorded() }
+            .map { rows, _ -> rows.toRecorded(query.frames) }
             .list()
     }
 
-    /** One event line, as the deriver built it: the object is the row's body, verbatim. */
-    suspend fun putEvent(event: JsonObject): Unit = io { handle ->
+    /**
+     * One event line, as the deriver built it: the object is the row's body, verbatim. Returns the
+     * row's id, which is the line's place in the feed.
+     */
+    suspend fun putEvent(event: JsonObject): Long = io { handle ->
         val columns =
             linkedMapOf(
                 "ts" to Instant.parse(event.getValue("ts").jsonPrimitive.content).toEpochMilli(),
@@ -172,15 +207,29 @@ class Store(home: Path) : AutoCloseable {
                 "agent" to event["agent"].text(),
                 "body" to event.toString(),
             )
-        handle.createUpdate(INSERT_EVENT).bindMap(columns).execute()
+        handle
+            .createUpdate(INSERT_EVENT)
+            .bindMap(columns)
+            .executeAndReturnGeneratedKeys("id")
+            .mapTo(Long::class.java)
+            .one()
     }
 
-    /** Every event line the store holds, oldest first. */
-    suspend fun events(): List<JsonObject> = io { handle ->
+    /**
+     * The event lines after the id [after], by id, oldest first: all of them from 0.
+     *
+     * ponytail: a backfill from 0 reads the whole table into memory. Upgrade: page it, if a feed
+     * client ever asks for months of history at once.
+     */
+    suspend fun events(after: Long = 0): Map<Long, JsonObject> = io { handle ->
         handle
             .createQuery(SELECT_EVENTS)
-            .map { rows, _ -> Json.parseToJsonElement(rows.getString("body")).jsonObject }
+            .bind("after", after)
+            .map { rows, _ ->
+                rows.getLong("id") to Json.parseToJsonElement(rows.getString("body")).jsonObject
+            }
             .list()
+            .toMap()
     }
 
     suspend fun sessions(): List<Session> = io { handle ->
@@ -209,7 +258,7 @@ class Store(home: Path) : AutoCloseable {
     private fun ResultSet.inlineOrSpilled(inline: String, ref: String): ByteArray =
         getBytes(inline) ?: Files.readAllBytes(bodies.resolve(getString(ref)))
 
-    private fun ResultSet.toRecorded(): Recorded {
+    private fun ResultSet.toRecorded(withFrames: Boolean = true): Recorded {
         val exchange =
             Exchange(
                 Exchange.Request(
@@ -231,10 +280,12 @@ class Store(home: Path) : AutoCloseable {
         exchange.fingerprint = getString("fingerprint")
         exchange.clientDisconnected = getBoolean("client_disconnected")
         val frames =
-            Json.parseToJsonElement(inlineOrSpilled("frames", "frames_ref").decodeToString())
-                .jsonArray
-                .toFrames()
-        return Recorded(exchange, frames)
+            if (!withFrames) emptyList()
+            else
+                Json.parseToJsonElement(inlineOrSpilled("frames", "frames_ref").decodeToString())
+                    .jsonArray
+                    .toFrames()
+        return Recorded(exchange, frames, getString("cassette"))
     }
 
     private companion object {
@@ -296,6 +347,20 @@ class Store(home: Path) : AutoCloseable {
             """CREATE INDEX IF NOT EXISTS exchange_fingerprint
                 ON exchange (fingerprint, received_at DESC)"""
         const val SELECT = "SELECT * FROM exchange"
+        /**
+         * [list]'s conditions that are not a plain column match. `after` compares in the list's own
+         * order, so a page continues where the last one ended; a cursor naming no row yields
+         * nothing, since the comparison is then null.
+         */
+        val LIST_CONDITIONS =
+            mapOf(
+                "session" to "id IN (SELECT exchange_id FROM event WHERE session = :session)",
+                "client" to
+                    "id IN (SELECT exchange_id FROM event " +
+                        "WHERE json_extract(body, '$.client') = :client)",
+                "after" to
+                    "(received_at, id) < (SELECT received_at, id FROM exchange WHERE id = :after)",
+            )
 
         /** The event line, kept whole in [body] so any tool reads the same JSON the file has. */
         const val EVENT_SCHEMA =
@@ -334,7 +399,7 @@ class Store(home: Path) : AutoCloseable {
             """INSERT INTO event (ts, event, exchange_id, session, agent, body)
                 VALUES (:ts, :event, :exchange_id, :session, :agent, :body)"""
         /** The insertion order, which is arrival order: the id is the only monotonic column. */
-        const val SELECT_EVENTS = "SELECT body FROM event ORDER BY id"
+        const val SELECT_EVENTS = "SELECT id, body FROM event WHERE id > :after ORDER BY id"
         const val SELECT_SESSIONS = "SELECT * FROM session ORDER BY session, agent"
     }
 }

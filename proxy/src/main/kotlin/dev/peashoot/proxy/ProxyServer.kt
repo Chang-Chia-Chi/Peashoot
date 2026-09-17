@@ -20,20 +20,25 @@ import io.ktor.server.response.respondText
 import io.ktor.server.routing.head
 import io.ktor.server.routing.route
 import io.ktor.server.routing.routing
+import java.net.InetAddress
+import java.net.UnknownHostException
 import kotlinx.coroutines.runBlocking
 
 /**
  * The headless proxy: one Ktor server, loopback only, relaying every request to the configured
- * upstream.
+ * upstream, and serving the control API under [CONTROL_PREFIX] when given one.
  */
 class ProxyServer(
     private val config: ProxyConfig,
     interceptors: List<Interceptor> = emptyList(),
+    control: ControlApi? = null,
 ) : AutoCloseable {
     init {
         require(DEFAULT_ROUTE in config.routes) {
             "route '$DEFAULT_ROUTE' is not configured; every request takes it until routing arrives"
         }
+        // The loader refuses it too; this holds for a config built in code.
+        notLoopback(config.host)?.let { throw IllegalArgumentException(it) }
     }
 
     private val upstream =
@@ -43,14 +48,15 @@ class ProxyServer(
         }
 
     private val server: EmbeddedServer<*, *> =
-        embeddedServer(Netty, port = config.port, host = "127.0.0.1") {
-                relayModule(config, upstream, interceptors)
+        embeddedServer(Netty, port = config.port, host = config.host) {
+                relayModule(config, upstream, interceptors, control)
             }
             .start(wait = false)
 
     /** Resolved once: port 0 is only known after start, and a getter must never block. */
     val url: String = runBlocking {
-        "http://127.0.0.1:${server.engine.resolvedConnectors().first().port}"
+        val host = if (':' in config.host) "[${config.host}]" else config.host
+        "http://$host:${server.engine.resolvedConnectors().first().port}"
     }
 
     override fun close() {
@@ -59,10 +65,29 @@ class ProxyServer(
     }
 }
 
+/**
+ * Why [host] cannot be bound, or null when every address it names is loopback. A name that resolves
+ * to nothing is refused too. The control API reads and steers every exchange, and v1 has no
+ * transport security to offer anyone else.
+ */
+internal fun notLoopback(host: String): String? {
+    val loopback =
+        try {
+            InetAddress.getAllByName(host).all { it.isLoopbackAddress }
+        } catch (_: UnknownHostException) {
+            false
+        }
+    return if (loopback) null
+    else
+        "host $host is not a loopback address; v1 serves the proxy and its control API to this " +
+            "machine only"
+}
+
 fun Application.relayModule(
     config: ProxyConfig,
     upstream: HttpClient,
     interceptors: List<Interceptor>,
+    control: ControlApi? = null,
 ) {
     install(CallLogging) {
         disableDefaultColors()
@@ -81,10 +106,13 @@ fun Application.relayModule(
     }
     // The application is the scope every exchange's stream runs in, so a client that leaves does
     // not take its stream with it, and server stop ends them all.
-    val relay = Relay(config, upstream, interceptors, this)
+    val relay = Relay(config, upstream, interceptors, this, control?.routes)
     routing {
         // Claude Code's reachability probe; answered here, never relayed.
         head("/api/hello") { call.respond(HttpStatusCode.OK) }
+        // A constant segment outranks the tailcard below, so nothing under the prefix, known or
+        // not, ever reaches the relay, the recorder, or the deriver.
+        route(CONTROL_PREFIX) { controlRoutes(control, config.pingInterval) }
         route("{...}") {
             handle {
                 when {

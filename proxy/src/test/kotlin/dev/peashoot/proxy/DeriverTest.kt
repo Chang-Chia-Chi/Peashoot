@@ -101,7 +101,11 @@ class DeriverTest {
                 assertStarted(started)
                 assertCompleted(completed)
                 assertEquals(started.text("exchangeId"), completed.text("exchangeId"))
-                assertEquals(lines, store.events(), "the event table mirrors the file")
+                assertEquals(
+                    lines,
+                    store.events().values.toList(),
+                    "the event table mirrors the file",
+                )
                 assertSession(store.sessions().single())
                 assertTrue(Files.notExists(home.resolve(GOURCE_FILE)), "the flag was off")
             }

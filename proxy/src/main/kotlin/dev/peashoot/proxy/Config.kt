@@ -9,6 +9,7 @@ import dev.peashoot.core.Redaction
 import dev.peashoot.core.Rules
 import java.nio.file.Files
 import java.nio.file.Path
+import java.util.concurrent.atomic.AtomicReference
 import kotlin.io.path.nameWithoutExtension
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
@@ -26,6 +27,26 @@ const val DEFAULT_ROUTE = "default"
  */
 data class Route(val mode: Mode, val strict: Boolean = false, val cassette: String? = null)
 
+/**
+ * The routes as they are now: the config's at start, then whatever `PUT /routes/{name}` set. The
+ * relay, replay, and the control API read this one table, so a change applies to the next request.
+ * Memory only: a restart goes back to the file and the environment.
+ */
+class RouteTable(initial: Map<String, Route>) {
+    private val current = AtomicReference(initial)
+
+    val all: Map<String, Route>
+        get() = current.get()
+
+    operator fun get(name: String): Route = current.get().getValue(name)
+
+    /** Replaces a route that exists: nothing adds one until routing arrives. */
+    fun put(name: String, route: Route) {
+        require(name in current.get()) { "no route named '$name'; only '$DEFAULT_ROUTE' exists" }
+        current.updateAndGet { it + (name to route) }
+    }
+}
+
 /** How fast a replay serves its frames: all at once, or at the offsets they were recorded at. */
 enum class Cadence {
     INSTANT,
@@ -41,6 +62,8 @@ enum class RepeatPolicy {
 
 data class ProxyConfig(
     val port: Int = 8787,
+    /** The listen address. Loopback only: the control API reads and steers all traffic. */
+    val host: String = "127.0.0.1",
     val anthropicUpstream: String = "https://api.anthropic.com",
     /** Debug: append every raw upstream response to this file, for building fixtures. */
     val dumpFrames: Path? = null,
@@ -107,11 +130,14 @@ fun loadConfig(home: Path, env: (String) -> String? = System::getenv): ProxyConf
     check(!toml.hasErrors()) { "$file: " + toml.errors().joinToString { it.toString() } }
     val cassetteFile = env("PEASHOOT_CASSETTE")?.let(Path::of)
     val routes = defaults.routes + toml.getTable("routes")?.routes().orEmpty()
+    val host = listOfNotNull(env("PEASHOOT_HOST"), toml.getString("host"), defaults.host).first()
+    check(notLoopback(host) == null) { notLoopback(host).orEmpty() }
     return ProxyConfig(
         port =
             env("PEASHOOT_PORT")?.let {
                 it.toIntOrNull() ?: error("PEASHOOT_PORT must be a port number, not $it")
             } ?: toml.getLong("port")?.toInt() ?: defaults.port,
+        host = host,
         anthropicUpstream =
             env("PEASHOOT_ANTHROPIC_UPSTREAM")
                 ?: toml.getString("surfaces.anthropic.upstream")
@@ -189,7 +215,9 @@ private fun ProxyConfig.toToml(): String = buildString {
         "# Peashoot. PEASHOOT_PORT and PEASHOOT_ANTHROPIC_UPSTREAM override port and upstream;"
     )
     appendLine("# PEASHOOT_MODE, PEASHOOT_STRICT, and PEASHOOT_CASSETTE, the default route.")
+    appendLine("# PEASHOOT_HOST overrides host, which must be a loopback address.")
     appendLine("port = $port")
+    appendLine("host = \"$host\"")
     appendLine("secretHeaders = [${secretHeaders.joinToString { "\"$it\"" }}]")
     appendLine()
     appendLine("[surfaces.anthropic]")

@@ -47,8 +47,9 @@ const val EVENTS_FILE = "events.jsonl"
 /**
  * The event line: one `exchange.started` when the request is heard, one `exchange.client_gone` when
  * the client leaves mid-stream, and one `exchange.completed` when the response ends, to the events
- * file and the event table, and the file tools of every turn to the Gource log when that flag is
- * on. Never throws: an event that cannot be written is one WARN line, never a failed request.
+ * file, the event table, and the control API's live feed, and the file tools of every turn to the
+ * Gource log when that flag is on. Never throws: an event that cannot be written is one WARN line,
+ * never a failed request.
  */
 class Deriver(
     private val store: Store,
@@ -56,6 +57,8 @@ class Deriver(
     private val prices: Map<String, Price> = DEFAULT_PRICES,
     /** Only when `gource.enabled` is on: the file tools of every turn, for Gource to animate. */
     private val gource: GourceLog? = null,
+    /** The control API's live feed: every line the table stored, under the id it got there. */
+    private val feed: EventFeed? = null,
 ) : Interceptor {
     /**
      * What the frames have said so far, for an exchange whose response began. Only that exchange's
@@ -68,7 +71,11 @@ class Deriver(
 
     private val turns = ConcurrentHashMap<String, Turn>()
 
-    /** One events file per deriver, so one lock keeps concurrent exchanges from interleaving. */
+    /**
+     * One events file per deriver, so one lock keeps concurrent exchanges from interleaving. It
+     * holds the table insert and the feed too, so the feed hears ids in the order they were given:
+     * a subscriber that skips what it already sent then never skips what it has not.
+     */
     private val lock = Mutex()
 
     /** Model ids seen without a price: the ledger's silence is explained once, not every turn. */
@@ -187,21 +194,26 @@ class Deriver(
 
     /**
      * Both sinks are tried, whichever fails: the file is what a tail watches and the table is what
-     * the farm queries, and neither is worth the other.
+     * the farm queries, and neither is worth the other. The feed carries only what the table
+     * stored, since a line without an id could never be backfilled. Publishing never waits on a
+     * subscriber.
      */
-    private suspend fun emit(exchange: Exchange, event: JsonObject) =
+    private suspend fun emit(exchange: Exchange, event: JsonObject): Unit =
         withContext(Dispatchers.IO + NonCancellable) {
-            try {
-                lock.withLock { Files.writeString(eventsFile, "$event\n", CREATE, APPEND) }
-            } catch (e: IOException) {
-                warn(event, exchange, e)
-            }
-            try {
-                store.putEvent(event)
-            } catch (e: IOException) {
-                warn(event, exchange, e)
-            } catch (e: JdbiException) {
-                warn(event, exchange, e)
+            lock.withLock {
+                try {
+                    Files.writeString(eventsFile, "$event\n", CREATE, APPEND)
+                } catch (e: IOException) {
+                    warn(event, exchange, e)
+                }
+                try {
+                    val id = store.putEvent(event)
+                    feed?.publish(id, event)
+                } catch (e: IOException) {
+                    warn(event, exchange, e)
+                } catch (e: JdbiException) {
+                    warn(event, exchange, e)
+                }
             }
         }
 
