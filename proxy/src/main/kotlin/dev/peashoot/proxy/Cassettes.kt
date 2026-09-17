@@ -5,56 +5,54 @@ import dev.peashoot.core.Frame
 import dev.peashoot.core.Messages
 import dev.peashoot.core.Mode
 import dev.peashoot.core.Redacted
-import io.ktor.http.ContentType
-import io.ktor.http.Headers
-import io.ktor.http.HttpHeaders
 import java.nio.file.Files
 import java.nio.file.Path
+import java.time.DateTimeException
 import java.time.Instant
 import kotlin.io.path.nameWithoutExtension
-import kotlinx.serialization.SerializationException
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
-import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
-import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.intOrNull
-import kotlinx.serialization.json.longOrNull
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonObject
 
 /** Where `proxy export` writes, in the data directory. */
 const val CASSETTES_DIR = "cassettes"
 
+/** A cassette name is a file name in the data directory and a tag, so it may not name a path. */
+internal val CASSETTE_NAME = Regex("[A-Za-z0-9][A-Za-z0-9._-]*")
+
 /** The cassette format's version: a record with any other is refused, never guessed at. */
 private const val VERSION = 1
 
 /**
- * An export: the JSONL text, how many exchanges it holds, and every redaction it made, with the id
- * of the exchange each was in.
+ * An export: the JSONL text, how many exchanges it holds, and the redactions it made, by the id of
+ * the exchange they were in, in export order.
  */
-class Export(val jsonl: String, val count: Int, val hits: List<Pair<String, Redacted>>)
+class Export(val jsonl: String, val count: Int, val hits: Map<String, List<Redacted>>)
 
 /**
- * Every stored exchange, oldest first, or only [session]'s, as cassette records with the redaction
- * rules applied. The fingerprint is kept as recorded, so a redacted request still replays.
+ * Every live recording, oldest first, or only [session]'s, as cassette records with the redaction
+ * rules applied. An imported cassette's rows are left out: they are already some cassette's. The
+ * fingerprint is kept as recorded, so a redacted request still replays.
  *
  * ponytail: every recording is held in memory at once. Upgrade: page through the store and stream
  * lines to the file, if a cassette ever outgrows a heap.
  */
 suspend fun exportCassette(store: Store, config: ProxyConfig, session: String?): Export {
-    val hits = mutableListOf<Pair<String, Redacted>>()
+    val hits = linkedMapOf<String, List<Redacted>>()
     val lines =
         store
-            .list(Int.MAX_VALUE)
+            .list(Int.MAX_VALUE, live = true)
             .asReversed()
             .filter { session == null || it.exchange.client.session == session }
             .map { recorded ->
                 val found = mutableListOf<Redacted>()
                 val line = recorded.toRecord(config, found).toString()
-                found.mapTo(hits) { recorded.exchange.id to it }
+                if (found.isNotEmpty()) hits[recorded.exchange.id] = found
                 line
             }
     return Export(lines.joinToString("") { "$it\n" }, lines.size, hits)
@@ -62,16 +60,34 @@ suspend fun exportCassette(store: Store, config: ProxyConfig, session: String?):
 
 /**
  * Imports [file] as the cassette named by its base name, replacing whatever that cassette held, and
- * returns how many exchanges it has. A record the format does not allow fails the whole import,
- * naming its line, before anything is replaced.
+ * returns how many exchanges it has. Secret headers are dropped, as capture drops them. A record
+ * the format does not allow fails the whole import, naming its line, before anything is replaced.
  */
-suspend fun importCassette(store: Store, file: Path): Int {
+suspend fun importCassette(store: Store, config: ProxyConfig, file: Path): Int {
+    check(Files.isRegularFile(file)) { "no such cassette: $file" }
+    val name = file.nameWithoutExtension
+    check(CASSETTE_NAME.matches(name)) {
+        "$file: '$name' is not a usable cassette name; the file's base name must match $CASSETTE_NAME"
+    }
     val recordings =
         Files.readAllLines(file)
             .withIndex()
             .filter { it.value.isNotBlank() }
-            .map { (i, line) -> line.toRecorded("$file:${i + 1}") }
-    store.put(recordings, cassette = file.nameWithoutExtension)
+            .map { (i, line) ->
+                val where = "$file:${i + 1}"
+                // Every way a record can be wrong is one of these three, so none reaches the user
+                // as a stack trace.
+                try {
+                    line.toRecorded(config.lowercaseSecretHeaders)
+                } catch (e: IllegalArgumentException) {
+                    error("$where: ${e.message}")
+                } catch (e: IllegalStateException) {
+                    error("$where: ${e.message}")
+                } catch (e: DateTimeException) {
+                    error("$where: ${e.message}")
+                }
+            }
+    store.put(recordings, cassette = name)
     return recordings.size
 }
 
@@ -87,14 +103,6 @@ private fun Recorded.toRecord(config: ProxyConfig, hits: MutableList<Redacted>):
     val response = checkNotNull(exchange.response) { "a stored exchange has one" }
     val redaction = config.redaction
     val reader = Messages.Reader().also { reader -> frames.forEach(reader::read) }
-    val streamed =
-        response.headers[HttpHeaders.ContentType]
-            .orEmpty()
-            .trimStart()
-            .startsWith(
-                ContentType.Text.EventStream.toString(),
-                ignoreCase = true,
-            )
     return buildJsonObject {
         put("v", VERSION)
         put("fingerprint", exchange.fingerprint)
@@ -111,21 +119,12 @@ private fun Recorded.toRecord(config: ProxyConfig, hits: MutableList<Redacted>):
         }
         putJsonObject("response") {
             put("status", response.status)
-            put("headers", response.headers.toJson(secrets))
-            if (streamed) {
-                put(
-                    "frames",
-                    buildJsonArray {
-                        frames.forEachIndexed { i, frame ->
-                            add(
-                                buildJsonObject {
-                                    put("t", frame.offsetMillis)
-                                    put("raw", redaction.text(frame.raw, "response frame $i", hits))
-                                }
-                            )
-                        }
-                    },
-                )
+            put("headers", response.headers.toJson(without = secrets))
+            if (response.headers.declaresEventStream()) {
+                val redacted = frames.mapIndexed { i, frame ->
+                    frame.copy(raw = redaction.text(frame.raw, "response frame $i", hits))
+                }
+                put("frames", redacted.toJson())
             } else {
                 val body = frames.joinToString("") { it.raw }
                 put("body", redaction.text(body, "response body", hits))
@@ -142,28 +141,22 @@ private fun Recorded.toRecord(config: ProxyConfig, hits: MutableList<Redacted>):
 }
 
 /**
- * The exchange a record describes, under the default route. It takes a fresh id, and its recorded
- * time as its arrival, so a retry sequence keeps its order.
+ * The exchange a record describes, under the default route, less any [secrets] header. It takes a
+ * fresh id, and its recorded time as its arrival, so a retry sequence keeps its order.
  */
-private fun String.toRecorded(where: String): Recorded {
-    val parsed =
-        try {
-            Json.parseToJsonElement(this)
-        } catch (e: SerializationException) {
-            error("$where: ${e.message}")
-        }
-    val record = parsed as? JsonObject ?: error("$where: a record must be a JSON object")
+private fun String.toRecorded(secrets: Set<String>): Recorded {
+    val record = Json.parseToJsonElement(this) as? JsonObject ?: error("a record must be an object")
     val version = (record["v"] as? JsonPrimitive)?.intOrNull
-    check(version == VERSION) { "$where: cassette version ${record["v"]} is not $VERSION" }
-    val request = record.field<JsonObject>("request", where)
-    val response = record.field<JsonObject>("response", where)
-    val recordedAt = ((record["meta"] as? JsonObject)?.get("recordedAt") as? JsonPrimitive)?.content
+    check(version == VERSION) { "cassette version ${record["v"]} is not $VERSION" }
+    val request = record.field("request")
+    val response = record.field("response")
+    val recordedAt = (record["meta"] as? JsonObject)?.get("recordedAt")?.string("meta.recordedAt")
     val exchange =
         Exchange(
             Exchange.Request(
-                request.field<JsonPrimitive>("method", where).content,
-                request.field<JsonPrimitive>("path", where).content,
-                request.field<JsonObject>("headers", where).toHeaders(),
+                request["method"].string("request.method"),
+                request["path"].string("request.path"),
+                request.field("headers").toHeaders(without = secrets),
                 when (val body = request["body"]) {
                     null -> ByteArray(0)
                     is JsonPrimitive if body.isString -> body.content.encodeToByteArray()
@@ -174,48 +167,28 @@ private fun String.toRecorded(where: String): Recorded {
             mode = Mode.RECORD,
             receivedAt = recordedAt?.let(Instant::parse) ?: Instant.now(),
         )
-    exchange.fingerprint = record.field<JsonPrimitive>("fingerprint", where).content
+    exchange.fingerprint = record["fingerprint"].string("fingerprint")
+    val status = (response["status"] as? JsonPrimitive)?.takeUnless { it.isString }?.intOrNull
     exchange.response =
         Exchange.Response(
-            checkNotNull(response.field<JsonPrimitive>("status", where).intOrNull) {
-                "$where: response.status must be a number"
-            },
-            response.field<JsonObject>("headers", where).toHeaders(),
+            requireNotNull(status) { "response.status must be a number" },
+            response.field("headers").toHeaders(without = secrets),
         )
-    return Recorded(exchange, response.frames(where))
+    return Recorded(exchange, response.frames())
 }
 
 /** A stream's frames as recorded; a whole body is one frame, and an empty one none, as captured. */
-private fun JsonObject.frames(where: String): List<Frame> {
-    val frames =
-        this["frames"]
-            ?: return listOfNotNull(
-                field<JsonPrimitive>("body", where)
-                    .content
+private fun JsonObject.frames(): List<Frame> =
+    when (val frames = this["frames"]) {
+        null ->
+            listOfNotNull(
+                this["body"]
+                    .string("response.body")
                     .takeIf { it.isNotEmpty() }
                     ?.let { Frame(it, 0) }
             )
-    return (frames as? JsonArray ?: error("$where: response.frames must be a list")).map {
-        val frame = it as? JsonObject ?: error("$where: a frame must be an object")
-        Frame(
-            frame.field<JsonPrimitive>("raw", where).content,
-            frame.field<JsonPrimitive>("t", where).longOrNull
-                ?: error("$where: a frame's t must be a number"),
-        )
+        else -> requireNotNull(frames as? JsonArray) { "response.frames must be a list" }.toFrames()
     }
-}
 
-private inline fun <reified T : JsonElement> JsonObject.field(key: String, where: String): T =
-    this[key] as? T ?: error("$where: $key is required")
-
-private fun JsonObject.toHeaders(): Headers = Headers.build {
-    forEach { (name, values) ->
-        (values as? JsonArray)?.forEach { append(name, (it as JsonPrimitive).content) }
-    }
-}
-
-private fun Headers.toJson(without: Set<String>): JsonObject = buildJsonObject {
-    entries()
-        .filter { it.key.lowercase() !in without }
-        .forEach { (name, values) -> put(name, JsonArray(values.map(::JsonPrimitive))) }
-}
+private fun JsonObject.field(key: String): JsonObject =
+    requireNotNull(this[key] as? JsonObject) { "$key must be an object" }

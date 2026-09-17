@@ -28,6 +28,10 @@ data class Redacted(val where: String, val matched: String, val becomes: String)
  * document, names every string in the body at any depth and the response text too, each frame's raw
  * text or a whole body: a stream is SSE text, not a JSON document a pointer could reach into.
  *
+ * Such a rule runs over that raw text, SSE field names and JSON escapes included, so a pattern that
+ * matches across them can break a frame on export. Nothing checks for it: the default only ever
+ * replaces key characters, and the dry run shows what any other rule would change.
+ *
  * ponytail: a key the provider streams split across two deltas is in neither frame whole, so no
  * rule matches it. Upgrade: redact the joined text and map the edits back onto frames.
  */

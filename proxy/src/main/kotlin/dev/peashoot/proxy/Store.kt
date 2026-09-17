@@ -21,6 +21,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonArray
@@ -28,7 +29,7 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
-import kotlinx.serialization.json.long
+import kotlinx.serialization.json.longOrNull
 import kotlinx.serialization.json.put
 import org.jdbi.v3.core.Handle
 import org.jdbi.v3.core.Jdbi
@@ -102,7 +103,8 @@ class Store(home: Path) : AutoCloseable {
                 val response =
                     checkNotNull(exchange.response) { "exchange ${exchange.id} has no response" }
                 val (body, bodyRef) = inlineOrSpill(exchange.request.body)
-                val (framesInline, framesRef) = inlineOrSpill(frames.toJson().toByteArray())
+                val (framesInline, framesRef) =
+                    inlineOrSpill(frames.toJson().toString().toByteArray())
                 val columns =
                     linkedMapOf(
                         "id" to exchange.id,
@@ -112,11 +114,11 @@ class Store(home: Path) : AutoCloseable {
                         "mode" to exchange.mode.name,
                         "method" to exchange.request.method,
                         "path" to exchange.request.path,
-                        "request_headers" to exchange.request.headers.toJson(),
+                        "request_headers" to exchange.request.headers.toJson().toString(),
                         "request_body" to body,
                         "request_body_ref" to bodyRef,
                         "status" to response.status,
-                        "response_headers" to response.headers.toJson(),
+                        "response_headers" to response.headers.toJson().toString(),
                         "frames" to framesInline,
                         "frames_ref" to framesRef,
                         "client_disconnected" to exchange.clientDisconnected,
@@ -136,17 +138,21 @@ class Store(home: Path) : AutoCloseable {
             .orElse(null)
     }
 
-    /** Newest first; only the recordings of [fingerprint], and of [cassette], when given. */
+    /**
+     * Newest first; only the recordings of [fingerprint], and of [cassette], when given, and only
+     * live recordings, tagged with no cassette, when [live].
+     */
     suspend fun list(
         limit: Int = DEFAULT_LIMIT,
         fingerprint: String? = null,
         cassette: String? = null,
+        live: Boolean = false,
     ): List<Recorded> = io { handle ->
         val filters =
             mapOf("fingerprint" to fingerprint, "cassette" to cassette).filterValues { it != null }
-        val where =
-            if (filters.isEmpty()) ""
-            else filters.keys.joinToString(" AND ", "WHERE ") { "$it = :$it" }
+        val conditions =
+            filters.keys.map { "$it = :$it" } + listOfNotNull("cassette IS NULL".takeIf { live })
+        val where = if (conditions.isEmpty()) "" else conditions.joinToString(" AND ", "WHERE ")
         handle
             .createQuery("$SELECT $where ORDER BY received_at DESC, id DESC LIMIT :limit")
             .bind("limit", limit)
@@ -209,7 +215,7 @@ class Store(home: Path) : AutoCloseable {
                 Exchange.Request(
                     getString("method"),
                     getString("path"),
-                    headersFromJson(getString("request_headers")),
+                    Json.parseToJsonElement(getString("request_headers")).jsonObject.toHeaders(),
                     inlineOrSpilled("request_body", "request_body_ref"),
                 ),
                 route = getString("route"),
@@ -218,10 +224,16 @@ class Store(home: Path) : AutoCloseable {
                 receivedAt = Instant.ofEpochMilli(getLong("received_at")),
             )
         exchange.response =
-            Exchange.Response(getInt("status"), headersFromJson(getString("response_headers")))
+            Exchange.Response(
+                getInt("status"),
+                Json.parseToJsonElement(getString("response_headers")).jsonObject.toHeaders(),
+            )
         exchange.fingerprint = getString("fingerprint")
         exchange.clientDisconnected = getBoolean("client_disconnected")
-        val frames = framesFromJson(inlineOrSpilled("frames", "frames_ref").decodeToString())
+        val frames =
+            Json.parseToJsonElement(inlineOrSpilled("frames", "frames_ref").decodeToString())
+                .jsonArray
+                .toFrames()
         return Recorded(exchange, frames)
     }
 
@@ -347,36 +359,52 @@ private fun ResultSet.toSession(): Session =
 private fun sha256(bytes: ByteArray): String =
     MessageDigest.getInstance("SHA-256").digest(bytes).toHexString()
 
-private fun Headers.toJson(): String {
-    val json = buildJsonObject {
-        forEach { name, values -> put(name, JsonArray(values.map(::JsonPrimitive))) }
+/**
+ * Header names to lists of values, the shape both the store and a cassette keep, less the names in
+ * [without] (lower-case).
+ */
+internal fun Headers.toJson(without: Set<String> = emptySet()): JsonObject = buildJsonObject {
+    forEach { name, values ->
+        if (name.lowercase() !in without) put(name, JsonArray(values.map(::JsonPrimitive)))
     }
-    return json.toString()
 }
 
-private fun headersFromJson(text: String): Headers = Headers.build {
-    Json.parseToJsonElement(text).jsonObject.forEach { (name, values) ->
-        values.jsonArray.forEach { append(name, it.jsonPrimitive.content) }
-    }
+/**
+ * The headers [toJson] wrote, less the names in [without] (lower-case). A hand-written cassette may
+ * give one value as a plain string; anything else is an IllegalArgumentException.
+ */
+internal fun JsonObject.toHeaders(without: Set<String> = emptySet()): Headers = Headers.build {
+    filterKeys { it.lowercase() !in without }
+        .forEach { (name, values) ->
+            (values as? JsonArray ?: listOf(values)).forEach { append(name, it.string(name)) }
+        }
 }
 
 /** The cassette shape: `[{"t": offsetMillis, "raw": text}]`. */
-private fun List<Frame>.toJson(): String {
-    val json = buildJsonArray {
-        forEach { frame ->
-            add(
-                buildJsonObject {
-                    put("t", frame.offsetMillis)
-                    put("raw", frame.raw)
-                }
-            )
-        }
+internal fun List<Frame>.toJson(): JsonArray = buildJsonArray {
+    forEach { frame ->
+        add(
+            buildJsonObject {
+                put("t", frame.offsetMillis)
+                put("raw", frame.raw)
+            }
+        )
     }
-    return json.toString()
 }
 
-private fun framesFromJson(text: String): List<Frame> =
-    Json.parseToJsonElement(text).jsonArray.map {
-        val frame = it.jsonObject
-        Frame(frame.getValue("raw").jsonPrimitive.content, frame.getValue("t").jsonPrimitive.long)
-    }
+/** The frames [toJson] wrote; anything else is an IllegalArgumentException. */
+internal fun JsonArray.toFrames(): List<Frame> = map {
+    val frame = requireNotNull(it as? JsonObject) { "a frame must be an object" }
+    val offset = (frame["t"] as? JsonPrimitive)?.takeUnless { t -> t.isString }?.longOrNull
+    Frame(
+        frame["raw"].string("a frame's raw"),
+        requireNotNull(offset) { "a frame's t must be a number" },
+    )
+}
+
+/** This element as a string, or an IllegalArgumentException naming [what] it should have been. */
+internal fun JsonElement?.string(what: String): String {
+    val primitive = this as? JsonPrimitive
+    require(primitive != null && primitive.isString) { "$what must be a string" }
+    return primitive.content
+}

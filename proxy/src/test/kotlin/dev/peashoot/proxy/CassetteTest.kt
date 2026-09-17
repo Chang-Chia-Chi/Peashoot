@@ -21,6 +21,7 @@ import java.sql.DriverManager
 import kotlin.io.path.exists
 import kotlin.io.path.readLines
 import kotlin.io.path.readText
+import kotlin.io.path.writeText
 import kotlin.test.Test
 import kotlin.test.assertContains
 import kotlin.test.assertEquals
@@ -30,6 +31,8 @@ import kotlin.test.assertTrue
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonObject
 
 /** Cassettes: export with redaction, import by name, and a replay route that serves only one. */
 class CassetteTest {
@@ -179,11 +182,15 @@ class CassetteTest {
                 val preview = command(listOf("export", "demo", "--dry-run"), source, noEnv)
                 assertEquals(
                     listOf(
-                        "$id request /messages/0/content/0/text: $KEY -> [REDACTED]",
-                        "$id response frame 1: $KEY -> [REDACTED]",
+                        "$id request /messages/0/content/0/text: sk-ant... (${KEY.length} chars) -> [REDACTED]",
+                        "$id response frame 1: sk-ant... (${KEY.length} chars) -> [REDACTED]",
                         "dry run: 1 exchanges, 2 redactions, nothing written",
                     ),
                     preview.lines(),
+                )
+                assertFalse(
+                    KEY in preview,
+                    "a preview lands in CI logs, so it never shows a secret",
                 )
                 assertFalse(source.resolve("cassettes").exists(), "a dry run writes nothing")
 
@@ -273,6 +280,114 @@ class CassetteTest {
             command(listOf("export", "a", "--session", "a"), source, noEnv),
         )
         assertContains(source.resolve("cassettes/a.jsonl").readText(), """{\"n\":1}""")
+    }
+
+    /** A hand-written record: headers as a plain string and as a list, secrets on both sides. */
+    private fun handWritten(fingerprint: String) =
+        """{"v":1,"fingerprint":"$fingerprint",""" +
+            """"request":{"method":"POST","path":"/v1/messages",""" +
+            """"headers":{"Authorization":"Bearer $AUTH_CANARY","content-type":"application/json"},""" +
+            """"body":{"model":"m"}},""" +
+            """"response":{"status":200,"headers":{"x-api-key":["$API_CANARY"],""" +
+            """"content-type":"application/json","x-note":["recorded"]},"body":"{\"n\":1}"},""" +
+            """"meta":{"recordedAt":"2026-09-12T10:00:00Z"}}"""
+
+    @Test
+    fun `an imported cassette's secret headers are dropped, never stored or replayed`() =
+        runBlocking {
+            val home = home()
+            // The fingerprint the proxy computes for the request replay will send.
+            val fingerprint =
+                Rules.DEFAULT.fingerprint(
+                    "POST",
+                    "/v1/messages",
+                    Headers.build { append(HttpHeaders.ContentType, "application/json") },
+                    buildJsonObject { put("model", JsonPrimitive("m")) },
+                )
+            val file =
+                home.resolve("leaky.jsonl").also { it.writeText(handWritten(fingerprint) + "\n") }
+            assertEquals(
+                "imported 1 exchanges as cassette leaky",
+                command(listOf("import", "$file"), home, noEnv),
+            )
+            Store(home).use { store ->
+                val stored = store.list(cassette = "leaky").single().exchange
+                for (headers in
+                    listOf(stored.request.headers, checkNotNull(stored.response).headers)) {
+                    assertEquals(null, headers[HttpHeaders.Authorization])
+                    assertEquals(null, headers["x-api-key"])
+                }
+                assertEquals("application/json", stored.request.headers[HttpHeaders.ContentType])
+                FakeUpstream().use { upstream ->
+                    val config = config(upstream, Route(Mode.REPLAY, strict = true, "leaky"))
+                    ProxyServer(config, listOf(Replay(store, config))).use { proxy ->
+                        HttpClient(CIO).use { client ->
+                            val response =
+                                client.post("${proxy.url}/v1/messages") {
+                                    setBody(
+                                        ByteArrayContent(
+                                            """{"model":"m"}""".encodeToByteArray(),
+                                            ContentType.Application.Json,
+                                        )
+                                    )
+                                }
+                            assertEquals(200, response.status.value)
+                            assertEquals("""{"n":1}""", response.bodyAsText())
+                            assertEquals("recorded", response.headers["x-note"])
+                            assertEquals(null, response.headers["x-api-key"])
+                        }
+                    }
+                }
+            }
+        }
+
+    @Test
+    fun `an export holds live recordings only, never a cassette the home imported`() = runBlocking {
+        val home = home()
+        val imported = home.resolve("old.jsonl").also { it.writeText(handWritten("f") + "\n") }
+        command(listOf("import", "$imported"), home, noEnv)
+        FakeUpstream().use { upstream ->
+            upstream.reply = { reply(it) }
+            record(home, upstream, listOf(PLAIN_REQUEST))
+        }
+        assertEquals(
+            "wrote 1 exchanges to ${home.resolve("cassettes/new.jsonl")}, 0 redactions",
+            command(listOf("export", "new"), home, noEnv),
+        )
+        assertFalse(""""fingerprint":"f"""" in home.resolve("cassettes/new.jsonl").readText())
+    }
+
+    @Test
+    fun `a malformed cassette or an unusable name fails naming the file and line`() = runBlocking {
+        val home = home()
+        val good = handWritten("f")
+        val broken =
+            listOf(
+                "not json",
+                good.replace(""""v":1""", """"v":2"""),
+                good.replace(""""status":200""", """"status":"ok""""),
+                good.replace(""""method":"POST"""", """"method":["POST"]"""),
+                good.replace("2026-09-12T10:00:00Z", "yesterday"),
+                good.replace(""""body":"{\"n\":1}"""", """"frames":[{"t":"soon","raw":"x"}]"""),
+                good.replace(""""x-note":["recorded"]""", """"x-note":[1,{}]"""),
+            )
+        broken.forEach { line ->
+            val file = home.resolve("broken.jsonl").also { it.writeText("$good\n$line\n") }
+            val error =
+                assertFailsWith<IllegalStateException>(line) {
+                    command(listOf("import", "$file"), home, noEnv)
+                }
+            assertContains(error.message.orEmpty(), "$file:2: ")
+        }
+        Store(home).use { assertEquals(emptyList(), it.list(), "a failed import stores nothing") }
+        for (name in listOf(".jsonl", "my cassette.jsonl")) {
+            val file = home.resolve(name).also { it.writeText("$good\n") }
+            val error =
+                assertFailsWith<IllegalStateException> {
+                    command(listOf("import", "$file"), home, noEnv)
+                }
+            assertContains(error.message.orEmpty(), "is not a usable cassette name")
+        }
     }
 
     @Test

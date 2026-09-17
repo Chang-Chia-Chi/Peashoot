@@ -62,7 +62,7 @@ class CiReplayTest {
                     .readBytes()
                     .decodeToString()
             Store(home).use { store ->
-                importCassette(store, checkNotNull(config.cassetteFile))
+                importCassette(store, config, checkNotNull(config.cassetteFile))
                 ProxyServer(config, listOf(Replay(store, config), Recorder(store))).use { proxy ->
                     val hit = post(proxy, example.resolve("request.json").readBytes())
                     assertEquals(200, hit.status.value)

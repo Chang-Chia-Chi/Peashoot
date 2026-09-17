@@ -149,11 +149,7 @@ private fun Route.withEnv(env: (String) -> String?, cassetteFile: Path?): Route 
                 it.toBooleanStrictOrNull()
                     ?: error("PEASHOOT_STRICT must be true or false, not $it")
             } ?: strict,
-        cassette =
-            cassetteFile?.let {
-                check(Files.isRegularFile(it)) { "PEASHOOT_CASSETTE names no file: $it" }
-                it.nameWithoutExtension
-            } ?: cassette,
+        cassette = cassetteFile?.nameWithoutExtension ?: cassette,
     )
 
 private fun parseMode(raw: String, key: String): Mode =

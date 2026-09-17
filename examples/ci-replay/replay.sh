@@ -20,7 +20,12 @@ PEASHOOT_HOME=$home \
   PEASHOOT_ANTHROPIC_UPSTREAM=http://127.0.0.1:9 \
   proxy/build/install/proxy/bin/proxy >"$log" 2>&1 &
 proxy=$!
-trap 'kill "$proxy" 2>/dev/null || true' EXIT
+cleanup() {
+  kill "$proxy" 2>/dev/null || true
+  wait "$proxy" 2>/dev/null || true
+  rm -rf "$home"
+}
+trap cleanup EXIT
 
 url=
 for _ in $(seq 60); do
@@ -32,7 +37,7 @@ done
 [ -n "$url" ] || { echo "the proxy did not start"; cat "$log"; exit 1; }
 
 post() {
-  curl -sS -o "$home/body" -w '%{http_code}' \
+  curl -sS --max-time 30 -o "$home/body" -w '%{http_code}' \
     -H 'content-type: application/json' \
     -H 'anthropic-version: 2023-06-01' \
     --data-binary "$1" "$url/v1/messages"

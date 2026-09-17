@@ -164,7 +164,6 @@ class ConfigTest {
         listOf(
                 "PEASHOOT_MODE" to "fast",
                 "PEASHOOT_STRICT" to "yes",
-                "PEASHOOT_CASSETTE" to "${home.resolve("missing.jsonl")}",
                 "PEASHOOT_PORT" to "http",
             )
             .forEach { (name, value) ->
