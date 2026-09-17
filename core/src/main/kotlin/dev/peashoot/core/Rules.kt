@@ -166,9 +166,10 @@ data class Rules(
                         .toSet(),
                 ignorePointers =
                     root.stringList("ignorePointers").onEachIndexed { i, pointer ->
-                        checkPointer(pointer, "ignorePointers[$i]")
+                        checkPointer(pointer, RULES_FILE, "ignorePointers[$i]")
                     },
-                replace = root.replacements(),
+                replace =
+                    root["replace"]?.let { replacements(it, RULES_FILE, "replace") }.orEmpty(),
             )
         }
 
@@ -185,37 +186,27 @@ data class Rules(
             putJsonArray("ignorePointers") {
                 DEFAULT.ignorePointers.forEach { add(JsonPrimitive(it)) }
             }
-            putJsonArray("replace") {
-                DEFAULT.replace.forEach { rule ->
-                    add(
-                        buildJsonObject {
-                            put("pointer", rule.pointer)
-                            put("pattern", rule.pattern)
-                            put("replacement", rule.replacement)
-                        }
-                    )
-                }
-            }
+            put("replace", DEFAULT.replace.toJson())
         }
     }
 }
 
 /** The rule file is read by people, so it is written for them. */
-private val PRETTY = Json { prettyPrint = true }
+internal val PRETTY = Json { prettyPrint = true }
 
 /**
  * A replacement is not plain text: `Regex.replace` reads `$` as a group reference and a backslash
  * as an escape, so a hand-written one can throw at the first request it ever matches, past every
  * startup check. Read here instead, while the file is still in hand.
  */
-private fun Replacement.checkReplacement(rule: String) {
+private fun Replacement.checkReplacement(file: String, rule: String) {
     val groups = regex.toPattern().matcher("").groupCount()
     var i = 0
     while (i < replacement.length) {
         val char = replacement[i]
         if (char == '\\') {
             check(i + 1 < replacement.length) {
-                "$RULES_FILE: $rule.replacement ends in a backslash, which escapes nothing"
+                "$file: $rule.replacement ends in a backslash, which escapes nothing"
             }
             i += 2
             continue
@@ -223,10 +214,10 @@ private fun Replacement.checkReplacement(rule: String) {
         if (char == '$') {
             val digits = replacement.substring(i + 1).takeWhile(Char::isDigit)
             check(digits.isNotEmpty()) {
-                "$RULES_FILE: $rule.replacement has a $$ with no group number after it"
+                "$file: $rule.replacement has a $$ with no group number after it"
             }
             check(digits.toInt() <= groups) {
-                "$RULES_FILE: $rule.replacement uses group $digits, but the pattern has $groups"
+                "$file: $rule.replacement uses group $digits, but the pattern has $groups"
             }
             i += digits.length
         }
@@ -246,48 +237,60 @@ private fun JsonObject.stringList(key: String): List<String> {
     }
 }
 
-private fun JsonObject.replacements(): List<Replacement> {
-    val value = this["replace"] ?: return emptyList()
-    val array = value as? JsonArray ?: error("$RULES_FILE: replace must be a list, not $value")
+/**
+ * The replacements [value] lists, as [file] holds them under [key], which every failure names. The
+ * redaction file is one bare list, so its [key] is empty and its rules may point at the whole
+ * document; a matching rule may not, since the body is always an object.
+ */
+internal fun replacements(
+    value: JsonElement,
+    file: String,
+    key: String,
+    wholeDocument: Boolean = false,
+): List<Replacement> {
+    val array =
+        value as? JsonArray
+            ?: error("$file: ${key.ifEmpty { "the file" }} must be a list, not $value")
     return array.mapIndexed { i, element ->
-        val rule = element as? JsonObject ?: error("$RULES_FILE: replace[$i] must be an object")
-        val pointer = rule.requiredString("replace[$i]", "pointer")
-        checkPointer(pointer, "replace[$i].pointer")
-        val pattern = rule.requiredString("replace[$i]", "pattern")
-        val replacement = rule.requiredString("replace[$i]", "replacement")
+        val at = "$key[$i]"
+        val rule = element as? JsonObject ?: error("$file: $at must be an object")
+        val pointer = rule.requiredString(file, at, "pointer")
+        if (!(wholeDocument && pointer.isEmpty())) checkPointer(pointer, file, "$at.pointer")
+        val pattern = rule.requiredString(file, at, "pattern")
+        val replacement = rule.requiredString(file, at, "replacement")
         val compiled =
             try {
                 Replacement(pointer, pattern, replacement)
             } catch (e: IllegalArgumentException) {
-                error("$RULES_FILE: replace[$i].pattern is not a regular expression: ${e.message}")
+                error("$file: $at.pattern is not a regular expression: ${e.message}")
             }
-        compiled.checkReplacement("replace[$i]")
+        compiled.checkReplacement(file, at)
         compiled
     }
 }
 
-private fun JsonObject.requiredString(rule: String, key: String): String {
+private fun JsonObject.requiredString(file: String, rule: String, key: String): String {
     val primitive = this[key] as? JsonPrimitive
     check(primitive != null && primitive.isString) {
-        "$RULES_FILE: $rule.$key is required and must be a string"
+        "$file: $rule.$key is required and must be a string"
     }
     return primitive.content
 }
 
-private fun checkPointer(pointer: String, rule: String) =
+private fun checkPointer(pointer: String, file: String, rule: String) =
     check(pointer.startsWith("/")) {
-        "$RULES_FILE: $rule must be a JSON pointer starting with /, not '$pointer'"
+        "$file: $rule must be a JSON pointer starting with /, not '$pointer'"
     }
 
 /**
  * An RFC 6901 pointer split into its reference tokens, `~1` decoded to `/` and `~0` to `~`. The
  * leading slash is the document itself, which no rule may name, so the list is never empty.
  */
-private fun String.segments(): List<String> =
+internal fun String.segments(): List<String> =
     removePrefix("/").split("/").map { it.replace("~1", "/").replace("~0", "~") }
 
 /** Whether a segment selects this key or index: `*` takes any of them. */
-private fun String.selects(key: String) = this == "*" || this == key
+internal fun String.selects(key: String) = this == "*" || this == key
 
 /**
  * The element with whatever [segments] names removed; a pointer that matches nothing changes it.

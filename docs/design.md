@@ -35,13 +35,14 @@ Data directory `~/.peashoot/` (override with `PEASHOOT_HOME`):
 - `events.jsonl`: append-only event lines.
 - `gource.log`: written only when the Gource formatter is enabled.
 - `rules.json`: the active matching rule set, copied from the bundled default on first start.
+- `redact.json`: the redaction rules cassette export applies, written from the bundled default on first start (section 6).
 - `token`: control API bearer token, generated on first start, owner-only file permissions. The app reads it from this file; there is no pairing flow.
 - `peashoot.toml`: configuration.
 
 Configuration keys (TOML, with `PEASHOOT_`-prefixed environment overrides for the ones CI needs):
 - `port` (default 8787), `bind` (default 127.0.0.1, not changeable to a non-loopback address in v1).
 - `surfaces.anthropic.upstream` (default `https://api.anthropic.com`), `surfaces.openai.upstream` (default `https://api.openai.com`). Pointing the OpenAI surfaces at Ollama's OpenAI-compatible endpoint is the free local test setup.
-- `routes.<name>.mode` in `record | replay | passthrough`, `routes.<name>.strict` (bool), `routes.<name>.cassette` (name). Default route per surface, mode `record`.
+- `routes.<name>.mode` in `record | replay | passthrough`, `routes.<name>.strict` (bool), `routes.<name>.cassette` (name). Default route per surface, mode `record`. The environment sets the default route: `PEASHOOT_MODE`, `PEASHOOT_STRICT` (`true | false`), and `PEASHOOT_CASSETTE` (a cassette file, imported on start under its base name, which becomes the route's cassette). `PEASHOOT_PORT` and `PEASHOOT_ANTHROPIC_UPSTREAM` set the port and upstream. An invalid value stops the proxy with a message naming the variable.
 - `resume.windowSeconds` (default 300), `resume.maxBufferedExchanges` (default 100), `resume.pingIntervalSeconds` (default 15; SSE comment lines emitted while an upstream is silent, so byte-counting watchdogs stay alive).
 - `replay.cadence` in `instant | recorded` (default `instant`), `replay.repeatPolicy` in `inOrder | latest` (default `inOrder`).
 - `secretHeaders`: list, default `authorization`, `x-api-key`. Never stored.
@@ -86,12 +87,18 @@ Cassette file. JSONL, one record per exchange:
 
 ```json
 {"v":1,"fingerprint":"...",
- "request":{"method":"POST","path":"/v1/messages","headers":{"content-type":"application/json"},"body":{}},
- "response":{"status":200,"headers":{},"frames":[{"t":0,"raw":"event: message_start\ndata: {}\n\n"}]},
+ "request":{"method":"POST","path":"/v1/messages","headers":{"content-type":["application/json"]},"body":{}},
+ "response":{"status":200,"headers":{"content-type":["text/event-stream"]},"frames":[{"t":0,"raw":"event: message_start\ndata: {}\n\n"}]},
  "meta":{"client":"claude-code","model":"...","usage":{},"stopReason":"end_turn","recordedAt":"2026-09-12T10:00:00Z"}}
 ```
 
-Non-streaming responses carry `"body"` instead of `"frames"`. Export applies the redaction rules and returns a preview first (`dryRun`). Import inserts records tagged with the cassette name. Secret headers were dropped at capture, so no export can contain them.
+Non-streaming responses carry `"body"` instead of `"frames"`; a response is a stream when its content type is `text/event-stream`. Header values are lists, as the store keeps them (`{"content-type":["application/json"]}`), since a response may repeat a header. Request headers are the ones the rule set keeps; response headers are all of them. Secret headers were dropped at capture, and export drops them again by name, so even a rule set that keeps one cannot export it. A request body that is a JSON object is written as that object; any other body as a string. Frames keep their text and offsets, so a replayed response is byte-equal to the recording, redactions aside. `meta` is read from the frames the way the event line reads them; `recordedAt` is when the request arrived. A record whose `v` is not 1 fails the whole import, naming its line.
+
+Export is `proxy export <name> [--dry-run] [--session <id>]`, which writes `cassettes/<name>.jsonl` with every stored exchange oldest first, or only that session's. Import is `proxy import <file>`: the records are tagged with the file's base name and replace every row that name already had, in one transaction, so importing on every start is idempotent. Imported rows keep the recorded fingerprint and take the recorded time as their arrival. A route with a cassette replays only that cassette's rows; a route without one replays any row, as before. The control API (#15) calls the same functions.
+
+Redaction. `redact.json` is a list of `{pointer, pattern, replacement}` rules, the shape of a `replace` rule in `rules.json`, parsed and validated by the same code. A pointer names strings in the request body, with `*` for any key or index. The empty pointer, RFC 6901's whole document, names every string in the request body at any depth and also the response text: each frame's raw text, or the whole body. A pointer cannot reach into the response because a stream is SSE text, not one JSON document. The default is one whole-document rule replacing API-key-shaped strings (`sk-` and 20 or more key characters, which covers `sk-ant-…` and `sk-proj-…`) with `[REDACTED]`. A dry run lists each hit, the exchange id, where it was (`request /messages/0/content/0/text`, `response frame 3`), the text matched, and what it becomes, and writes nothing. The stored fingerprint is exported verbatim, so a redacted request still replays. A key a provider streams split across two deltas is whole in neither frame, and no rule matches it.
+
+Schema. Before v1 the tables are created if absent and never altered, so the `cassette` column means a fresh database: a store opened on a database without it refuses to start and says so, rather than failing every insert.
 
 Matching. Normalized request = rules applied to (method, path, kept headers, JSON body). Fingerprint = SHA-256 over canonical JSON (sorted keys, no insignificant whitespace, numbers as written). Three rule types, stored in `rules.json`:
 - `keepHeaders`: allowlist. Default: `content-type`, `anthropic-version`, `anthropic-beta`, `openai-beta`. All attribution headers are therefore ignored.
@@ -198,6 +205,6 @@ Resume always matches on the normalized fingerprint. Spike 1 decides whether a r
 - Secret headers are never stored, not even locally.
 - Bodies and error bodies are forwarded unmodified; the proxy inspects, never rewrites. A body the proxy cannot carry is refused, never truncated.
 - Whole responses are never buffered before relaying; pings are forwarded; silent upstreams get SSE comment pings so Claude Code's 300-second watchdog is not tripped by the proxy.
-- Body redaction runs at cassette export with a preview.
+- Body redaction runs at cassette export with a preview; the stored recording is never rewritten.
 - Farm labels are off by default; the "show paths" toggle draws a visible badge.
 - The control API binds to loopback only in v1.

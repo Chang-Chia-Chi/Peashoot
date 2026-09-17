@@ -240,7 +240,7 @@ private fun toolsJson(tools: List<ToolCall>): JsonArray = buildJsonArray {
     }
 }
 
-private fun usageJson(usage: Usage?): JsonElement =
+internal fun usageJson(usage: Usage?): JsonElement =
     if (usage == null) JsonNull
     else
         buildJsonObject {

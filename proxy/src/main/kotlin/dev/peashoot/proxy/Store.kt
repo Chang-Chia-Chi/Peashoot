@@ -73,6 +73,11 @@ class Store(home: Path) : AutoCloseable {
             db.useHandle<Exception> {
                 // One statement per execute: sqlite-jdbc runs no more than that.
                 it.execute(SCHEMA)
+                // Otherwise every recording fails at insert, each one a WARN line nobody reads.
+                check("cassette" in it.createQuery(COLUMNS).mapTo(String::class.java).list()) {
+                    "${home.resolve("peashoot.db")} predates cassettes: move it aside for a fresh " +
+                        "one, since before v1 a schema change means a fresh database"
+                }
                 it.execute(INDEX)
                 it.execute(FINGERPRINT_INDEX)
                 it.execute(EVENT_SCHEMA)
@@ -81,30 +86,45 @@ class Store(home: Path) : AutoCloseable {
             }
         }
 
-    suspend fun put(exchange: Exchange, frames: List<Frame>): Unit = io { handle ->
-        // Only a sourced exchange is persisted; one without a response is a programming error.
-        val response = checkNotNull(exchange.response) { "exchange ${exchange.id} has no response" }
-        val (body, bodyRef) = inlineOrSpill(exchange.request.body)
-        val (framesInline, framesRef) = inlineOrSpill(frames.toJson().toByteArray())
-        val columns =
-            linkedMapOf(
-                "id" to exchange.id,
-                "received_at" to exchange.receivedAt.toEpochMilli(),
-                "fingerprint" to exchange.fingerprint,
-                "route" to exchange.route,
-                "mode" to exchange.mode.name,
-                "method" to exchange.request.method,
-                "path" to exchange.request.path,
-                "request_headers" to exchange.request.headers.toJson(),
-                "request_body" to body,
-                "request_body_ref" to bodyRef,
-                "status" to response.status,
-                "response_headers" to response.headers.toJson(),
-                "frames" to framesInline,
-                "frames_ref" to framesRef,
-                "client_disconnected" to exchange.clientDisconnected,
-            )
-        handle.createUpdate(INSERT).bindMap(columns).execute()
+    /**
+     * Stores [recordings]; live ones have no [cassette]. A cassette's recordings replace every row
+     * it already had, in one transaction, so importing the same file on every start leaves it once.
+     * A replaced row's spill file stays: it is named by its content, and a re-import reuses it.
+     */
+    suspend fun put(recordings: List<Recorded>, cassette: String? = null): Unit = io { handle ->
+        handle.useTransaction<Exception> { tx ->
+            if (cassette != null) {
+                tx.createUpdate(DELETE_CASSETTE).bind("cassette", cassette).execute()
+            }
+            recordings.forEach { (exchange, frames) ->
+                // Only a sourced exchange is persisted; one without a response is a programming
+                // error.
+                val response =
+                    checkNotNull(exchange.response) { "exchange ${exchange.id} has no response" }
+                val (body, bodyRef) = inlineOrSpill(exchange.request.body)
+                val (framesInline, framesRef) = inlineOrSpill(frames.toJson().toByteArray())
+                val columns =
+                    linkedMapOf(
+                        "id" to exchange.id,
+                        "received_at" to exchange.receivedAt.toEpochMilli(),
+                        "fingerprint" to exchange.fingerprint,
+                        "route" to exchange.route,
+                        "mode" to exchange.mode.name,
+                        "method" to exchange.request.method,
+                        "path" to exchange.request.path,
+                        "request_headers" to exchange.request.headers.toJson(),
+                        "request_body" to body,
+                        "request_body_ref" to bodyRef,
+                        "status" to response.status,
+                        "response_headers" to response.headers.toJson(),
+                        "frames" to framesInline,
+                        "frames_ref" to framesRef,
+                        "client_disconnected" to exchange.clientDisconnected,
+                        "cassette" to cassette,
+                    )
+                tx.createUpdate(INSERT).bindMap(columns).execute()
+            }
+        }
     }
 
     suspend fun get(id: String): Recorded? = io { handle ->
@@ -116,17 +136,24 @@ class Store(home: Path) : AutoCloseable {
             .orElse(null)
     }
 
-    /** Newest first; only the recordings of [fingerprint] when one is given. */
-    suspend fun list(limit: Int = DEFAULT_LIMIT, fingerprint: String? = null): List<Recorded> =
-        io { handle ->
-            val where = if (fingerprint == null) "" else "WHERE fingerprint = :fingerprint"
-            handle
-                .createQuery("$SELECT $where ORDER BY received_at DESC, id DESC LIMIT :limit")
-                .bind("limit", limit)
-                .apply { if (fingerprint != null) bind("fingerprint", fingerprint) }
-                .map { rows, _ -> rows.toRecorded() }
-                .list()
-        }
+    /** Newest first; only the recordings of [fingerprint], and of [cassette], when given. */
+    suspend fun list(
+        limit: Int = DEFAULT_LIMIT,
+        fingerprint: String? = null,
+        cassette: String? = null,
+    ): List<Recorded> = io { handle ->
+        val filters =
+            mapOf("fingerprint" to fingerprint, "cassette" to cassette).filterValues { it != null }
+        val where =
+            if (filters.isEmpty()) ""
+            else filters.keys.joinToString(" AND ", "WHERE ") { "$it = :$it" }
+        handle
+            .createQuery("$SELECT $where ORDER BY received_at DESC, id DESC LIMIT :limit")
+            .bind("limit", limit)
+            .bindMap(filters)
+            .map { rows, _ -> rows.toRecorded() }
+            .list()
+    }
 
     /** One event line, as the deriver built it: the object is the row's body, verbatim. */
     suspend fun putEvent(event: JsonObject): Unit = io { handle ->
@@ -228,22 +255,26 @@ class Store(home: Path) : AutoCloseable {
                 response_headers TEXT NOT NULL,
                 frames BLOB,
                 frames_ref TEXT,
-                client_disconnected INTEGER NOT NULL
+                client_disconnected INTEGER NOT NULL,
+                cassette TEXT
             )"""
+        /** The columns the table has, which a database made before the last one added lacks. */
+        const val COLUMNS = "SELECT name FROM pragma_table_info('exchange')"
         /**
-         * Names the same 15 columns as [SCHEMA] and [put]'s map; RecorderTest's round trip is the
+         * Names the same 16 columns as [SCHEMA] and [put]'s map; RecorderTest's round trip is the
          * check when one is added.
          */
         const val INSERT =
             """INSERT INTO exchange (
                 id, received_at, fingerprint, route, mode, method, path, request_headers,
                 request_body, request_body_ref, status, response_headers, frames, frames_ref,
-                client_disconnected
+                client_disconnected, cassette
             ) VALUES (
                 :id, :received_at, :fingerprint, :route, :mode, :method, :path, :request_headers,
                 :request_body, :request_body_ref, :status, :response_headers, :frames, :frames_ref,
-                :client_disconnected
+                :client_disconnected, :cassette
             )"""
+        const val DELETE_CASSETTE = "DELETE FROM exchange WHERE cassette = :cassette"
         /** Matches the order [list] asks for, so newest-first needs no sort. */
         const val INDEX =
             """CREATE INDEX IF NOT EXISTS exchange_received_at_id

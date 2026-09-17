@@ -47,7 +47,7 @@ class Recorder(private val store: Store) : Interceptor {
         val frames = buffers.remove(exchange.id) ?: return
         withContext(NonCancellable) {
             try {
-                store.put(exchange, frames)
+                store.put(listOf(Recorded(exchange, frames)))
             } catch (e: IOException) {
                 log.warn("exchange {} not recorded: {}", exchange.id, e.toString())
             } catch (e: JdbiException) {

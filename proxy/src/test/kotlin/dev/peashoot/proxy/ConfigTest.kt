@@ -121,6 +121,75 @@ class ConfigTest {
     }
 
     @Test
+    fun `the environment sets the default route's mode, strict flag, and cassette, and the port`() {
+        val home = Files.createTempDirectory("peashoot-home")
+        home
+            .resolve("peashoot.toml")
+            .writeText(
+                """
+                [routes.default]
+                mode = "record"
+                cassette = "nightly"
+                """
+                    .trimIndent()
+            )
+        assertEquals(
+            Route(Mode.RECORD, cassette = "nightly"),
+            loadConfig(home, env()).routes[DEFAULT_ROUTE],
+        )
+        val cassette = home.resolve("ci.jsonl").also { it.writeText("") }
+
+        val config =
+            loadConfig(
+                home,
+                env(
+                    "PEASHOOT_MODE" to "replay",
+                    "PEASHOOT_STRICT" to "true",
+                    "PEASHOOT_CASSETTE" to "$cassette",
+                    "PEASHOOT_PORT" to "4321",
+                ),
+            )
+
+        assertEquals(
+            mapOf(DEFAULT_ROUTE to Route(Mode.REPLAY, strict = true, cassette = "ci")),
+            config.routes,
+        )
+        assertEquals(cassette, config.cassetteFile)
+        assertEquals(4321, config.port)
+    }
+
+    @Test
+    fun `an invalid environment value is refused, naming the variable`() {
+        val home = Files.createTempDirectory("peashoot-home")
+        listOf(
+                "PEASHOOT_MODE" to "fast",
+                "PEASHOOT_STRICT" to "yes",
+                "PEASHOOT_CASSETTE" to "${home.resolve("missing.jsonl")}",
+                "PEASHOOT_PORT" to "http",
+            )
+            .forEach { (name, value) ->
+                val error =
+                    assertFailsWith<IllegalStateException> { loadConfig(home, env(name to value)) }
+                assertContains(error.message.orEmpty(), name)
+                assertContains(error.message.orEmpty(), value)
+            }
+    }
+
+    @Test
+    fun `first start writes the redaction file, and a malformed one is refused naming the rule`() {
+        val home = Files.createTempDirectory("peashoot-home")
+        loadConfig(home, env())
+        assertContains(home.resolve("redact.json").readText(), "[REDACTED]")
+
+        home
+            .resolve("redact.json")
+            .writeText("""[{"pointer":"/x","pattern":"(","replacement":""}]""")
+
+        val message = assertFailsWith<IllegalStateException> { loadConfig(home, env()) }.message
+        assertContains(message.orEmpty(), "redact.json: [0].pattern")
+    }
+
+    @Test
     fun `an unknown repeat policy is refused, naming the ones there are`() {
         val home = Files.createTempDirectory("peashoot-home")
         home
