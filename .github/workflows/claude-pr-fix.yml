@@ -4,12 +4,13 @@ on:
   issue_comment:
     types: [created]
 
-# The fix job pushes to the PR branch, so it needs contents: write. Nothing here
-# needs an OIDC token.
+# The fix job pushes to the PR branch, so it needs contents: write. The OIDC token is
+# how the action authenticates to Anthropic (this repo holds no API-key secret).
 permissions:
   contents: write
   pull-requests: write
   issues: write
+  id-token: write
 
 jobs:
   fix:
@@ -32,7 +33,8 @@ jobs:
 
       - uses: anthropics/claude-code-action@2261fcfc88e7de1b55f179edd588805e12de71f2 # v1.0.228
         with:
-          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          # No anthropic_api_key: the repo holds no such secret, so the action
+          # authenticates with the OIDC token above.
           prompt: |
             You are fixing issues on a pull request for a Kotlin project (Ktor proxy
             plus a Compose for Desktop app).

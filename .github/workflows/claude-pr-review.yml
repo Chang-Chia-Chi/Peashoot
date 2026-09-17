@@ -6,10 +6,12 @@ on:
     branches: [main]
 
 # This job reads a fork's code and only ever writes comments, so it gets no write
-# access to the repository contents and no OIDC token.
+# access to the repository contents. The OIDC token is how the action authenticates
+# to Anthropic (this repo holds no API-key secret); without it the job cannot start.
 permissions:
   contents: read
   pull-requests: write
+  id-token: write
 
 jobs:
   review:
@@ -45,7 +47,8 @@ jobs:
 
       - uses: anthropics/claude-code-action@2261fcfc88e7de1b55f179edd588805e12de71f2 # v1.0.228
         with:
-          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          # No anthropic_api_key: the repo holds no such secret, so the action
+          # authenticates with the OIDC token above.
           trigger_phrase: ""
           prompt: |
             You are reviewing a pull request for a Kotlin project (Ktor proxy plus a
