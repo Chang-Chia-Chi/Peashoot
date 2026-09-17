@@ -8,11 +8,14 @@ import dev.peashoot.core.Mode
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.cio.CIO
 import io.ktor.client.request.post
+import io.ktor.client.request.preparePost
 import io.ktor.client.request.setBody
 import io.ktor.client.statement.HttpResponse
+import io.ktor.client.statement.bodyAsChannel
 import io.ktor.client.statement.bodyAsText
 import io.ktor.http.ContentType
 import io.ktor.http.HttpHeaders
+import io.ktor.utils.io.readLine
 import java.nio.file.Files
 import java.nio.file.Path
 import kotlin.io.path.readLines
@@ -117,27 +120,51 @@ class ReplayTest {
         }
 
     @Test
-    fun `recorded cadence waits out each frame's recorded offset`() = runBlocking {
+    fun `recorded cadence holds each frame to its recorded offset`() = runBlocking {
         Store(home()).use { store ->
             FakeUpstream().use { upstream ->
-                upstream.reply = {
-                    streamReply(frames) { index -> if (index == frames.lastIndex) delay(GAP_MS) }
-                }
+                // One gap, early: a replay that waited each frame's whole offset rather than the
+                // gap since the last would wait it once per later frame and blow the upper bound.
+                upstream.reply = { streamReply(frames) { index -> if (index == 1) delay(GAP_MS) } }
                 record(store, upstream)
-                val offsets = store.list().single().frames.map { it.offsetMillis }
-                assertTrue(offsets.last() >= GAP_MS, "the recording holds the gap: $offsets")
+                // Replay serves the first frame at once, so each offset counts from the first.
+                val recorded = store.list().single().frames.map { it.offsetMillis }
+                val offsets = recorded.map { it - recorded.first() }
+                // The fake's flush timing shaves some of the pause off; what replay must hold is
+                // the
+                // gap as recorded, whatever it came to.
+                assertTrue(offsets[1] >= GAP_MS / 2, "the recording holds a gap: $recorded")
 
                 val config = config(upstream, Mode.REPLAY).copy(replayCadence = Cadence.RECORDED)
                 ProxyServer(config, listOf(Replay(store, config))).use { proxy ->
-                    val start = TimeSource.Monotonic.markNow()
-                    assertEquals(frames.joinToString(""), post(proxy).bodyAsText())
-                    val elapsed = start.elapsedNow().inWholeMilliseconds
-                    assertTrue(elapsed >= offsets.last(), "took $elapsed ms for $offsets")
-                    assertTrue(elapsed < offsets.last() + SLACK_MS, "took $elapsed ms")
+                    val arrivals = arrivals(proxy)
+                    assertEquals(offsets.size, arrivals.size)
+                    offsets.zip(arrivals).forEach { (offset, arrival) ->
+                        assertTrue(arrival >= offset, "frame at $offset ms came at $arrival ms")
+                    }
+                    assertTrue(arrivals.last() < offsets.last() + SLACK_MS, "$arrivals")
                 }
             }
         }
     }
+
+    /** When each frame of the response finished arriving, in ms since the request was sent. */
+    private suspend fun arrivals(proxy: ProxyServer): List<Long> =
+        HttpClient(CIO).use { client ->
+            val start = TimeSource.Monotonic.markNow()
+            client
+                .preparePost("${proxy.url}/v1/messages") { setBody(REQUEST) }
+                .execute { response ->
+                    val channel = response.bodyAsChannel()
+                    buildList {
+                        while (true) {
+                            val line = channel.readLine() ?: break
+                            // A blank line ends an SSE frame.
+                            if (line.isEmpty()) add(start.elapsedNow().inWholeMilliseconds)
+                        }
+                    }
+                }
+        }
 
     @Test
     fun `identical recordings replay in recorded order, and the last repeats once exhausted`() =
@@ -230,8 +257,11 @@ class ReplayTest {
 
     private companion object {
         const val REQUEST = """{"model":"claude-sonnet-4-5","messages":[]}"""
-        const val GAP_MS = 150L
-        /** Generous: a loaded CI machine is slow, never early. */
-        const val SLACK_MS = 3_000L
+        const val GAP_MS = 300L
+        /**
+         * A loaded CI machine is slow, never early; well under what a per-frame whole-offset wait
+         * would add over the fixture's 12 frames.
+         */
+        const val SLACK_MS = 1_000L
     }
 }
