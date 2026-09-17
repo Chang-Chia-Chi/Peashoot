@@ -1,0 +1,1 @@
+{"model":"claude-sonnet-4-5","max_tokens":256,"stream":true,"tools":[{"name":"Bash","description":"Run a shell command","input_schema":{"type":"object","properties":{"command":{"type":"string"}},"required":["command"]}}],"messages":[{"role":"user","content":"Use the Bash tool to run: echo peashoot"}]}

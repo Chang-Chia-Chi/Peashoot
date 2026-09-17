@@ -129,7 +129,7 @@ private fun ContentType.isTextBody(): Boolean {
  * only a stream is ever sent a keep-alive comment; a declaration we cannot parse is neither, so a
  * source that lies about itself still gets its completion.
  */
-private fun Headers.declaresEventStream(): Boolean =
+internal fun Headers.declaresEventStream(): Boolean =
     this[HttpHeaders.ContentType]?.toContentTypeOrNull()?.match(ContentType.Text.EventStream) ==
         true
 

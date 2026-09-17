@@ -30,13 +30,14 @@ class Replay(private val store: Store, private val config: ProxyConfig) : Interc
     override suspend fun onRequest(exchange: Exchange): FrameSource? {
         val fingerprint = exchange.fingerprint
         if (exchange.mode != Mode.REPLAY || fingerprint == null) return null
-        val hit = recording(fingerprint)
+        val route = config.routes.getValue(exchange.route)
+        val hit = recording(fingerprint, route.cassette)
         return when {
             hit != null -> {
                 exchange.replayHit = true
                 replaySource(hit)
             }
-            config.routes.getValue(exchange.route).strict ->
+            route.strict ->
                 Refusal(
                     HttpStatusCode.Conflict.value,
                     "replay_miss",
@@ -47,19 +48,19 @@ class Replay(private val store: Store, private val config: ProxyConfig) : Interc
     }
 
     /**
-     * The recording the policy picks, or null for a miss. A store that cannot be read is a miss
-     * too, logged, rather than a throw the chain contract forbids.
+     * The recording the policy picks, only from [cassette] when the route names one, or null for a
+     * miss. A store that cannot be read is a miss too, logged, rather than a throw the chain
+     * contract forbids.
      *
      * ponytail: in order reads every recording of the fingerprint to serve one. Upgrade: an OFFSET
      * query on the fingerprint index, if a cassette ever repeats one request hundreds of times.
      */
-    private suspend fun recording(fingerprint: String): Recorded? =
+    private suspend fun recording(fingerprint: String, cassette: String?): Recorded? =
         try {
             when (config.repeatPolicy) {
-                RepeatPolicy.LATEST ->
-                    store.list(limit = 1, fingerprint = fingerprint).firstOrNull()
+                RepeatPolicy.LATEST -> store.list(limit = 1, fingerprint, cassette).firstOrNull()
                 RepeatPolicy.IN_ORDER -> {
-                    val oldestFirst = store.list(Int.MAX_VALUE, fingerprint).asReversed()
+                    val oldestFirst = store.list(Int.MAX_VALUE, fingerprint, cassette).asReversed()
                     // Advanced only on a hit, so a lenient miss leaves the new recording first.
                     if (oldestFirst.isEmpty()) null
                     else {

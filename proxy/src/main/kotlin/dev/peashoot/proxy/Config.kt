@@ -3,10 +3,13 @@ package dev.peashoot.proxy
 import dev.peashoot.core.DEFAULT_PRICES
 import dev.peashoot.core.Mode
 import dev.peashoot.core.Price
+import dev.peashoot.core.REDACT_FILE
 import dev.peashoot.core.RULES_FILE
+import dev.peashoot.core.Redaction
 import dev.peashoot.core.Rules
 import java.nio.file.Files
 import java.nio.file.Path
+import kotlin.io.path.nameWithoutExtension
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
 import org.tomlj.Toml
@@ -17,8 +20,11 @@ const val CONFIG_FILE = "peashoot.toml"
 
 const val DEFAULT_ROUTE = "default"
 
-/** What a route does, and whether a replay miss on it fails rather than asking the upstream. */
-data class Route(val mode: Mode, val strict: Boolean = false)
+/**
+ * What a route does, whether a replay miss on it fails rather than asking the upstream, and the
+ * cassette a replay serves from: only that cassette's recordings when named, any when not.
+ */
+data class Route(val mode: Mode, val strict: Boolean = false, val cassette: String? = null)
 
 /** How fast a replay serves its frames: all at once, or at the offsets they were recorded at. */
 enum class Cadence {
@@ -61,6 +67,13 @@ data class ProxyConfig(
      * /rules/test` will write it back.
      */
     val rules: Rules = Rules.DEFAULT,
+    /** What a cassette export strips, read from [REDACT_FILE]. */
+    val redaction: Redaction = Redaction.DEFAULT,
+    /**
+     * `PEASHOOT_CASSETTE`: imported on start under its base name, which the default route then
+     * replays from, so a CI job needs the file and no database.
+     */
+    val cassetteFile: Path? = null,
 ) {
     /** [secretHeaders] lower-cased once, since header names compare case-insensitively. */
     val lowercaseSecretHeaders: Set<String> = secretHeaders.map(String::lowercase).toSet()
@@ -82,11 +95,18 @@ fun loadConfig(home: Path, env: (String) -> String? = System::getenv): ProxyConf
     Files.createDirectories(home)
     val file = home.resolve(CONFIG_FILE)
     val defaults = ProxyConfig()
-    if (Files.notExists(file)) Files.writeString(file, defaults.toToml())
     val rulesFile = home.resolve(RULES_FILE)
-    if (Files.notExists(rulesFile)) Files.writeString(rulesFile, Rules.defaultJson())
+    val redactFile = home.resolve(REDACT_FILE)
+    mapOf(
+            file to defaults::toToml,
+            rulesFile to Rules::defaultJson,
+            redactFile to Redaction::defaultJson,
+        )
+        .forEach { (path, text) -> if (Files.notExists(path)) Files.writeString(path, text()) }
     val toml = Toml.parse(file)
     check(!toml.hasErrors()) { "$file: " + toml.errors().joinToString { it.toString() } }
+    val cassetteFile = env("PEASHOOT_CASSETTE")?.let(Path::of)
+    val routes = defaults.routes + toml.getTable("routes")?.routes().orEmpty()
     return ProxyConfig(
         port =
             env("PEASHOOT_PORT")?.let {
@@ -103,7 +123,8 @@ fun loadConfig(home: Path, env: (String) -> String? = System::getenv): ProxyConf
                 ?.toList()
                 ?.map { it as? String ?: error("secretHeaders must be a list of strings, not $it") }
                 ?.toSet() ?: defaults.secretHeaders,
-        routes = defaults.routes + toml.getTable("routes")?.routes().orEmpty(),
+        routes =
+            routes + (DEFAULT_ROUTE to routes.getValue(DEFAULT_ROUTE).withEnv(env, cassetteFile)),
         pricing = DEFAULT_PRICES + toml.getTable("pricing")?.prices().orEmpty(),
         replayCadence = toml.choice("replay.cadence") ?: defaults.replayCadence,
         repeatPolicy = toml.choice("replay.repeatPolicy") ?: defaults.repeatPolicy,
@@ -111,9 +132,29 @@ fun loadConfig(home: Path, env: (String) -> String? = System::getenv): ProxyConf
         // A rule file that cannot be read stops the proxy: every fingerprint would be wrong, and
         // a wrong fingerprint is a silently missed replay rather than a visible failure.
         rules = Rules.parse(Files.readString(rulesFile)),
+        // Read at start though only an export uses it: a broken file is found before the export
+        // that would have leaked what it meant to strip.
+        redaction = Redaction.parse(Files.readString(redactFile)),
         pingInterval = toml.pingInterval(defaults.pingInterval),
+        cassetteFile = cassetteFile,
     )
 }
+
+/** The default route with `PEASHOOT_MODE`, `PEASHOOT_STRICT`, and `PEASHOOT_CASSETTE` on top. */
+private fun Route.withEnv(env: (String) -> String?, cassetteFile: Path?): Route =
+    Route(
+        mode = env("PEASHOOT_MODE")?.let { parseMode(it, "PEASHOOT_MODE") } ?: mode,
+        strict =
+            env("PEASHOOT_STRICT")?.let {
+                it.toBooleanStrictOrNull()
+                    ?: error("PEASHOOT_STRICT must be true or false, not $it")
+            } ?: strict,
+        cassette = cassetteFile?.nameWithoutExtension ?: cassette,
+    )
+
+private fun parseMode(raw: String, key: String): Mode =
+    Mode.entries.firstOrNull { it.name.equals(raw, ignoreCase = true) }
+        ?: error("$key must be record, replay, or passthrough, not $raw")
 
 /** Any positive TOML number of seconds, or the default when the file says nothing. */
 private fun TomlParseResult.pingInterval(default: Duration): Duration =
@@ -145,8 +186,9 @@ private fun Enum<*>.spelled(): String =
 /** The file written on first start: the defaults, in the shape a hand edit keeps. */
 private fun ProxyConfig.toToml(): String = buildString {
     appendLine(
-        "# Peashoot. PEASHOOT_PORT and PEASHOOT_ANTHROPIC_UPSTREAM override port and upstream."
+        "# Peashoot. PEASHOOT_PORT and PEASHOOT_ANTHROPIC_UPSTREAM override port and upstream;"
     )
+    appendLine("# PEASHOOT_MODE, PEASHOOT_STRICT, and PEASHOOT_CASSETTE, the default route.")
     appendLine("port = $port")
     appendLine("secretHeaders = [${secretHeaders.joinToString { "\"$it\"" }}]")
     appendLine()
@@ -179,6 +221,8 @@ private fun ProxyConfig.toToml(): String = buildString {
         appendLine("[routes.$name]")
         appendLine("mode = \"${route.mode.spelled()}\"")
         appendLine("strict = ${route.strict}")
+        appendLine("# cassette = \"name\" replays only what `proxy import` tagged with that name.")
+        route.cassette?.let { appendLine("cassette = \"$it\"") }
     }
 }
 
@@ -209,10 +253,9 @@ private fun TomlTable.routes(): Map<String, Route> =
             "routes.$name: routing is not wired yet; only the '$DEFAULT_ROUTE' route exists"
         }
         val modeString = getString(listOf(name, "mode")) ?: error("routes.$name.mode is required")
-        val mode =
-            Mode.entries.firstOrNull { it.name.equals(modeString, ignoreCase = true) }
-                ?: error(
-                    "routes.$name.mode must be record, replay, or passthrough, not $modeString"
-                )
-        Route(mode, strict = getBoolean(listOf(name, "strict")) ?: false)
+        Route(
+            parseMode(modeString, "routes.$name.mode"),
+            strict = getBoolean(listOf(name, "strict")) ?: false,
+            cassette = getString(listOf(name, "cassette")),
+        )
     }
