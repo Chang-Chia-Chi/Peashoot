@@ -5,6 +5,7 @@ import dev.peashoot.core.Frame
 import dev.peashoot.core.Messages
 import dev.peashoot.core.Mode
 import dev.peashoot.core.Redacted
+import dev.peashoot.core.Route
 import java.nio.file.Files
 import java.nio.file.Path
 import java.time.DateTimeException
@@ -46,7 +47,7 @@ suspend fun exportCassette(store: Store, config: ProxyConfig, session: String?):
     val hits = linkedMapOf<String, List<Redacted>>()
     val lines =
         store
-            .list(Int.MAX_VALUE, live = true)
+            .list(Int.MAX_VALUE, ExchangeQuery(live = true))
             .asReversed()
             .filter { session == null || it.exchange.client.session == session }
             .map { recorded ->
@@ -164,7 +165,7 @@ private fun String.toRecorded(secrets: Set<String>): Recorded {
                 },
             ),
             route = DEFAULT_ROUTE,
-            mode = Mode.RECORD,
+            routing = Route(Mode.RECORD),
             receivedAt = recordedAt?.let(Instant::parse) ?: Instant.now(),
         )
     exchange.fingerprint = record["fingerprint"].string("fingerprint")

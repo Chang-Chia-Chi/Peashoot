@@ -30,7 +30,8 @@ class Replay(private val store: Store, private val config: ProxyConfig) : Interc
     override suspend fun onRequest(exchange: Exchange): FrameSource? {
         val fingerprint = exchange.fingerprint
         if (exchange.mode != Mode.REPLAY || fingerprint == null) return null
-        val route = config.routes.getValue(exchange.route)
+        // The route as the request arrived under it, never as the table says now.
+        val route = exchange.routing
         val hit = recording(fingerprint, route.cassette)
         return when {
             hit != null -> {
@@ -57,10 +58,11 @@ class Replay(private val store: Store, private val config: ProxyConfig) : Interc
      */
     private suspend fun recording(fingerprint: String, cassette: String?): Recorded? =
         try {
+            val query = ExchangeQuery(fingerprint = fingerprint, cassette = cassette)
             when (config.repeatPolicy) {
-                RepeatPolicy.LATEST -> store.list(limit = 1, fingerprint, cassette).firstOrNull()
+                RepeatPolicy.LATEST -> store.list(limit = 1, query).firstOrNull()
                 RepeatPolicy.IN_ORDER -> {
-                    val oldestFirst = store.list(Int.MAX_VALUE, fingerprint, cassette).asReversed()
+                    val oldestFirst = store.list(Int.MAX_VALUE, query).asReversed()
                     // Advanced only on a hit, so a lenient miss leaves the new recording first.
                     if (oldestFirst.isEmpty()) null
                     else {

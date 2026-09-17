@@ -3,6 +3,7 @@ package dev.peashoot.proxy
 import dev.peashoot.core.DEFAULT_PRICES
 import dev.peashoot.core.Mode
 import dev.peashoot.core.Price
+import dev.peashoot.core.Route
 import java.nio.file.Files
 import java.nio.file.Path
 import kotlin.io.path.readText
@@ -172,6 +173,24 @@ class ConfigTest {
                 assertContains(error.message.orEmpty(), name)
                 assertContains(error.message.orEmpty(), value)
             }
+    }
+
+    @Test
+    fun `the host is loopback by default, and a non-loopback one is refused from file or env`() {
+        val home = Files.createTempDirectory("peashoot-home")
+        assertEquals("127.0.0.1", loadConfig(home, env()).host)
+        assertContains(home.resolve("peashoot.toml").readText(), "host = \"127.0.0.1\"")
+        assertEquals("localhost", loadConfig(home, env("PEASHOOT_HOST" to "localhost")).host)
+        listOf("0.0.0.0", "192.0.2.1", "no-such-host.invalid").forEach { host ->
+            val error =
+                assertFailsWith<IllegalStateException> {
+                    loadConfig(home, env("PEASHOOT_HOST" to host))
+                }
+            assertContains(error.message.orEmpty(), host)
+        }
+        home.resolve("peashoot.toml").writeText("host = \"0.0.0.0\"\n")
+        assertFailsWith<IllegalStateException> { loadConfig(home, env()) }
+        assertEquals("::1", loadConfig(home, env("PEASHOOT_HOST" to "::1")).host)
     }
 
     @Test

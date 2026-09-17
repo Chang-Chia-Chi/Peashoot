@@ -6,9 +6,11 @@ import dev.peashoot.core.Price
 import dev.peashoot.core.REDACT_FILE
 import dev.peashoot.core.RULES_FILE
 import dev.peashoot.core.Redaction
+import dev.peashoot.core.Route
 import dev.peashoot.core.Rules
 import java.nio.file.Files
 import java.nio.file.Path
+import java.util.concurrent.atomic.AtomicReference
 import kotlin.io.path.nameWithoutExtension
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
@@ -21,10 +23,31 @@ const val CONFIG_FILE = "peashoot.toml"
 const val DEFAULT_ROUTE = "default"
 
 /**
- * What a route does, whether a replay miss on it fails rather than asking the upstream, and the
- * cassette a replay serves from: only that cassette's recordings when named, any when not.
+ * The routes as they are now: the config's at start, then whatever `PUT /routes/{name}` set. The
+ * relay reads it once per request and the control API writes it, so a change applies to the next
+ * request. Memory only: a restart goes back to the file and the environment.
  */
-data class Route(val mode: Mode, val strict: Boolean = false, val cassette: String? = null)
+class RouteTable(initial: Map<String, Route>) {
+    private val current = AtomicReference(initial)
+
+    val all: Map<String, Route>
+        get() = current.get()
+
+    operator fun get(name: String): Route = current.get().getValue(name)
+
+    /**
+     * Replaces the route [name] and says so, or leaves the table alone and returns false when there
+     * is no such route: nothing adds one until routing arrives.
+     */
+    fun put(name: String, route: Route): Boolean {
+        var known = false
+        current.updateAndGet { routes ->
+            known = name in routes
+            if (known) routes + (name to route) else routes
+        }
+        return known
+    }
+}
 
 /** How fast a replay serves its frames: all at once, or at the offsets they were recorded at. */
 enum class Cadence {
@@ -41,6 +64,8 @@ enum class RepeatPolicy {
 
 data class ProxyConfig(
     val port: Int = 8787,
+    /** The listen address. Loopback only: the control API reads and steers all traffic. */
+    val host: String = "127.0.0.1",
     val anthropicUpstream: String = "https://api.anthropic.com",
     /** Debug: append every raw upstream response to this file, for building fixtures. */
     val dumpFrames: Path? = null,
@@ -107,11 +132,16 @@ fun loadConfig(home: Path, env: (String) -> String? = System::getenv): ProxyConf
     check(!toml.hasErrors()) { "$file: " + toml.errors().joinToString { it.toString() } }
     val cassetteFile = env("PEASHOOT_CASSETTE")?.let(Path::of)
     val routes = defaults.routes + toml.getTable("routes")?.routes().orEmpty()
+    val host = listOfNotNull(env("PEASHOOT_HOST"), toml.getString("host"), defaults.host).first()
+    // Refused here too, so a bad file fails before anything else starts; the server binds to what
+    // its own call of this returns.
+    loopbackAddress(host)
     return ProxyConfig(
         port =
             env("PEASHOOT_PORT")?.let {
                 it.toIntOrNull() ?: error("PEASHOOT_PORT must be a port number, not $it")
             } ?: toml.getLong("port")?.toInt() ?: defaults.port,
+        host = host,
         anthropicUpstream =
             env("PEASHOOT_ANTHROPIC_UPSTREAM")
                 ?: toml.getString("surfaces.anthropic.upstream")
@@ -153,8 +183,7 @@ private fun Route.withEnv(env: (String) -> String?, cassetteFile: Path?): Route 
     )
 
 private fun parseMode(raw: String, key: String): Mode =
-    Mode.entries.firstOrNull { it.name.equals(raw, ignoreCase = true) }
-        ?: error("$key must be record, replay, or passthrough, not $raw")
+    Mode.of(raw) ?: error("$key must be record, replay, or passthrough, not $raw")
 
 /** Any positive TOML number of seconds, or the default when the file says nothing. */
 private fun TomlParseResult.pingInterval(default: Duration): Duration =
@@ -189,7 +218,9 @@ private fun ProxyConfig.toToml(): String = buildString {
         "# Peashoot. PEASHOOT_PORT and PEASHOOT_ANTHROPIC_UPSTREAM override port and upstream;"
     )
     appendLine("# PEASHOOT_MODE, PEASHOOT_STRICT, and PEASHOOT_CASSETTE, the default route.")
+    appendLine("# PEASHOOT_HOST overrides host, which must be a loopback address.")
     appendLine("port = $port")
+    appendLine("host = \"$host\"")
     appendLine("secretHeaders = [${secretHeaders.joinToString { "\"$it\"" }}]")
     appendLine()
     appendLine("[surfaces.anthropic]")
@@ -219,7 +250,7 @@ private fun ProxyConfig.toToml(): String = buildString {
             "# mode is record, replay, or passthrough; a strict replay route answers a miss 409."
         )
         appendLine("[routes.$name]")
-        appendLine("mode = \"${route.mode.spelled()}\"")
+        appendLine("mode = \"${route.mode.spelling}\"")
         appendLine("strict = ${route.strict}")
         appendLine("# cassette = \"name\" replays only what `proxy import` tagged with that name.")
         route.cassette?.let { appendLine("cassette = \"$it\"") }

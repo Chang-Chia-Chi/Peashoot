@@ -4,6 +4,7 @@ import dev.peashoot.core.Exchange
 import dev.peashoot.core.Frame
 import dev.peashoot.core.FrameParser
 import dev.peashoot.core.Mode
+import dev.peashoot.core.Route
 import dev.peashoot.core.Rules
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.cio.CIO
@@ -138,7 +139,11 @@ class CassetteTest {
                 upstream.received.clear()
 
                 Store(target).use { store ->
-                    assertEquals(2, store.list(cassette = "demo").size, "importing twice is once")
+                    assertEquals(
+                        2,
+                        store.list(query = ExchangeQuery(cassette = "demo")).size,
+                        "importing twice is once",
+                    )
                     val route = Route(Mode.REPLAY, strict = true, cassette = "demo")
                     val config = config(upstream, route)
                     ProxyServer(config, listOf(Replay(store, config), Recorder(store))).use { proxy
@@ -250,7 +255,7 @@ class CassetteTest {
                 Exchange(
                     Exchange.Request("POST", "/v1/messages", headers, "{}".encodeToByteArray()),
                     DEFAULT_ROUTE,
-                    Mode.RECORD,
+                    Route(Mode.RECORD),
                 )
             exchange.fingerprint = "planted"
             exchange.response = Exchange.Response(200, headers)
@@ -311,7 +316,7 @@ class CassetteTest {
                 command(listOf("import", "$file"), home, noEnv),
             )
             Store(home).use { store ->
-                val stored = store.list(cassette = "leaky").single().exchange
+                val stored = store.list(query = ExchangeQuery(cassette = "leaky")).single().exchange
                 for (headers in
                     listOf(stored.request.headers, checkNotNull(stored.response).headers)) {
                     assertEquals(null, headers[HttpHeaders.Authorization])

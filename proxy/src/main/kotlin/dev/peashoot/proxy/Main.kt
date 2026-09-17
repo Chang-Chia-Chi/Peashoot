@@ -120,13 +120,15 @@ private fun serve(): Unit = runBlocking {
             )
         }
         val gource = if (config.gourceEnabled) GourceLog(home.resolve(GOURCE_FILE)) else null
+        // One route table and one feed, shared by the chain and the control API.
+        val control = ControlApi(store, home, RouteTable(config.routes))
         val chain =
             listOf(
                 Replay(store, config),
                 Recorder(store),
-                Deriver(store, home.resolve(EVENTS_FILE), config.pricing, gource),
+                Deriver(store, home.resolve(EVENTS_FILE), config.pricing, gource, control.feed),
             )
-        val server = ProxyServer(config, chain)
+        val server = ProxyServer(config, chain, control)
         // `use` unwinds only if the server fails to start. Ktor's own shutdown hook stops only the
         // engine, and awaitCancellation never returns, so on SIGINT/SIGTERM this hook is what
         // closes the upstream client and then the connection pool.
@@ -138,10 +140,14 @@ private fun serve(): Unit = runBlocking {
                 }
             )
         log.info(
-            "Peashoot listening on {}, relaying to {}, data in {}",
+            "Peashoot listening on {}, relaying to {}, data in {}, control API at {}{}/v1 " +
+                "with the token in {}",
             server.url,
             config.anthropicUpstream,
             home,
+            server.url,
+            CONTROL_PREFIX,
+            home.resolve(TOKEN_FILE),
         )
         awaitCancellation()
     }
