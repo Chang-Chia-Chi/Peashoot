@@ -46,6 +46,13 @@ class Exchange(
      */
     var response: Response? = null
 
+    /**
+     * What identifies this request under the active rule set: set at classify, before any
+     * interceptor is asked, and read back from the row for a stored exchange. Null only between
+     * receipt and classify, which no interceptor ever sees.
+     */
+    var fingerprint: String? = null
+
     /** The client went away mid-stream. */
     var clientDisconnected: Boolean = false
 

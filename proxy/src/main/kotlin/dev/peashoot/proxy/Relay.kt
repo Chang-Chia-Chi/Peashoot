@@ -166,6 +166,16 @@ class Relay(
                 route = DEFAULT_ROUTE,
                 mode = config.routes.getValue(DEFAULT_ROUTE),
             )
+        // Classify: what this request is, before anyone is asked to answer it. Every interceptor
+        // sees it, so it is set before the chain rather than by whoever needs it first.
+        exchange.fingerprint =
+            config.rules.fingerprint(
+                exchange.request.method,
+                exchange.request.path,
+                exchange.request.headers,
+                exchange.request.json,
+                body,
+            )
         var cancelled = false
         try {
             // Every interceptor hears the request; the first source offered wins. mapNotNull is

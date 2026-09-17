@@ -29,7 +29,7 @@ ANTHROPIC_BASE_URL=http://localhost:8787 claude
 
 ## Configuration
 
-The data directory holds `peashoot.db` (the store), `bodies/` (request bodies and frame lists over 64 KB, named by SHA-256), `gource.log` (written only when the Gource formatter is on), and `peashoot.toml`, written with defaults on first start: port, upstream, secret headers, the Gource flag, the keep-alive ping interval, and the mode of each route (`record`, `replay`, or `passthrough`). Environment variables override the file:
+The data directory holds `peashoot.db` (the store), `bodies/` (request bodies and frame lists over 64 KB, named by SHA-256), `gource.log` (written only when the Gource formatter is on), `rules.json` (what makes two requests the same request: a header allowlist, ignored JSON pointers, and regex replacements, written with defaults on first start and meant to be edited; reducing it to `{}` is exact matching), and `peashoot.toml`, written with defaults on first start: port, upstream, secret headers, the Gource flag, the keep-alive ping interval, and the mode of each route (`record`, `replay`, or `passthrough`). Environment variables override the file:
 
 | Variable | Default | Meaning |
 |---|---|---|

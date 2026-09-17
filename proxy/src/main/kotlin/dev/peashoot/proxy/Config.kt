@@ -3,11 +3,14 @@ package dev.peashoot.proxy
 import dev.peashoot.core.DEFAULT_PRICES
 import dev.peashoot.core.Mode
 import dev.peashoot.core.Price
+import dev.peashoot.core.RULES_FILE
+import dev.peashoot.core.Rules
 import java.nio.file.Files
 import java.nio.file.Path
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
 import org.tomlj.Toml
+import org.tomlj.TomlParseResult
 import org.tomlj.TomlTable
 
 const val CONFIG_FILE = "peashoot.toml"
@@ -32,6 +35,12 @@ data class ProxyConfig(
      * client so byte-counting watchdogs stay alive. `resume.pingIntervalSeconds` in the file.
      */
     val pingInterval: Duration = 15.seconds,
+    /**
+     * What makes two requests the same request, read from [RULES_FILE]. Its own file rather than a
+     * table in the config: it is the one thing here meant to be edited as data, and #11's `POST
+     * /rules/test` will write it back.
+     */
+    val rules: Rules = Rules.DEFAULT,
 ) {
     /** [secretHeaders] lower-cased once, since header names compare case-insensitively. */
     val lowercaseSecretHeaders: Set<String> = secretHeaders.map(String::lowercase).toSet()
@@ -54,6 +63,8 @@ fun loadConfig(home: Path, env: (String) -> String? = System::getenv): ProxyConf
     val file = home.resolve(CONFIG_FILE)
     val defaults = ProxyConfig()
     if (Files.notExists(file)) Files.writeString(file, defaults.toToml())
+    val rulesFile = home.resolve(RULES_FILE)
+    if (Files.notExists(rulesFile)) Files.writeString(rulesFile, Rules.defaultJson())
     val toml = Toml.parse(file)
     check(!toml.hasErrors()) { "$file: " + toml.errors().joinToString { it.toString() } }
     return ProxyConfig(
@@ -75,19 +86,23 @@ fun loadConfig(home: Path, env: (String) -> String? = System::getenv): ProxyConf
         routes = defaults.routes + toml.getTable("routes")?.routes().orEmpty(),
         pricing = DEFAULT_PRICES + toml.getTable("pricing")?.prices().orEmpty(),
         gourceEnabled = toml.getBoolean("gource.enabled") ?: defaults.gourceEnabled,
-        pingInterval =
-            when (val raw = toml.get("resume.pingIntervalSeconds")) {
-                null -> defaults.pingInterval
-                is Number -> {
-                    check(raw.toDouble() > 0) {
-                        "resume.pingIntervalSeconds must be positive, not $raw"
-                    }
-                    raw.toDouble().seconds
-                }
-                else -> error("resume.pingIntervalSeconds must be a number, not $raw")
-            },
+        // A rule file that cannot be read stops the proxy: every fingerprint would be wrong, and
+        // a wrong fingerprint is a silently missed replay rather than a visible failure.
+        rules = Rules.parse(Files.readString(rulesFile)),
+        pingInterval = toml.pingInterval(defaults.pingInterval),
     )
 }
+
+/** Any positive TOML number of seconds, or the default when the file says nothing. */
+private fun TomlParseResult.pingInterval(default: Duration): Duration =
+    when (val raw = get("resume.pingIntervalSeconds")) {
+        null -> default
+        is Number -> {
+            check(raw.toDouble() > 0) { "resume.pingIntervalSeconds must be positive, not $raw" }
+            raw.toDouble().seconds
+        }
+        else -> error("resume.pingIntervalSeconds must be a number, not $raw")
+    }
 
 /** The file written on first start: the defaults, in the shape a hand edit keeps. */
 private fun ProxyConfig.toToml(): String = buildString {
