@@ -49,6 +49,16 @@ class RouteTable(initial: Map<String, Route>) {
     }
 }
 
+/**
+ * The config as it runs now: the file's and the environment's at start, then whatever `PUT /config`
+ * and `PUT /rules` left. The relay reads it once per request, so a new rule set or upstream applies
+ * to the next request; everything the chain and the server read at start needs a restart, which is
+ * what `PUT /config` answers with. Memory only: a restart reads the file and the environment again.
+ */
+class LiveConfig(initial: ProxyConfig) {
+    @Volatile var current: ProxyConfig = initial
+}
+
 /** How fast a replay serves its frames: all at once, or at the offsets they were recorded at. */
 enum class Cadence {
     INSTANT,
@@ -207,7 +217,7 @@ private inline fun <reified T : Enum<T>> TomlParseResult.choice(key: String): T?
 }
 
 /** `IN_ORDER` as the file writes it: `inOrder`. */
-private fun Enum<*>.spelled(): String =
+internal fun Enum<*>.spelled(): String =
     name.lowercase().split('_').let { words ->
         words.first() + words.drop(1).joinToString("") { it.replaceFirstChar(Char::uppercase) }
     }

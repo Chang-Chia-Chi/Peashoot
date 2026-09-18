@@ -90,6 +90,10 @@ internal fun Route.controlRoutes(api: ControlApi?, pingInterval: Duration) {
             exchanges(api)
             sessions(api)
             routeTable(api)
+            rules(api)
+            cassettes(api)
+            configuration(api)
+            shutdown(api)
         }
     }
     route("{...}") {
@@ -118,7 +122,7 @@ private fun Route.health(api: ControlApi) {
  * or a parse failure of ours is a 500 that says nothing but where to look, since its message is
  * about our internals. Once the response has begun, the failure is the engine's to end.
  */
-private fun Route.endpoint(
+internal fun Route.endpoint(
     method: HttpMethod,
     path: String,
     body: suspend RoutingContext.() -> Unit,

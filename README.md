@@ -57,9 +57,15 @@ curl -N -H "Authorization: Bearer $TOKEN" "http://localhost:8787/_peashoot/v1/ev
 curl -H "Authorization: Bearer $TOKEN" "http://localhost:8787/_peashoot/v1/exchanges?client=claude-code&limit=10"
 curl -X PUT -H "Authorization: Bearer $TOKEN" -d '{"mode":"replay","strict":true}' \
   http://localhost:8787/_peashoot/v1/routes/default
+curl -X POST -H "Authorization: Bearer $TOKEN" -d "{\"rules\":$(cat rules.json),\"lastN\":50}" \
+  http://localhost:8787/_peashoot/v1/rules/test
+curl -X POST -H "Authorization: Bearer $TOKEN" -d '{"name":"nightly"}' \
+  "http://localhost:8787/_peashoot/v1/cassettes/export?dryRun=true"
 ```
 
 `/events` is a server-sent event feed of the event lines, each with its id; `Last-Event-ID`, or `since` when the header is absent, backfills what came after that id. A reader that falls far behind is cut off and picks up where it left off when it reconnects. `/exchanges` pages newest first with `cursor` and filters by `session` and `client`; `/exchanges/{id}?frames=true` adds the frames. `/sessions` is the spend per session and agent. `/routes` shows each route, and a `PUT` changes one for the next request without a restart; the change is held in memory, so a restart goes back to `peashoot.toml` and the environment. Errors are `application/problem+json` objects with `type`, `title`, `detail`, and `status`.
+
+`/rules` serves and replaces `rules.json`, validated the way the start validates it, and the new rules fingerprint the next request without a restart. `POST /rules/test` answers what a candidate rule set would do to the last N recordings before you save it: `collisions` are exchanges that would share a fingerprint and do not now, `splits` are exchanges that share one now and would not. `/cassettes` lists what is in `cassettes/` and what the store has imported, and `POST /cassettes/export` (with `?dryRun=true` for the redaction preview alone) and `POST /cassettes/import` are the CLI's export and import over HTTP. `GET /config` is the running config, never the token; `PUT /config` replaces the keys it names, rewrites `peashoot.toml`, applies the routes, upstream, and secret headers to the next request, and lists the rest as `restartRequired` — `port`, `host`, `replay`, `resume`, `gource`, and `pricing` are read once at start, and the environment still wins over the file when it does. `POST /shutdown` answers, then stops the proxy.
 
 ## Replay: the second run costs nothing
 

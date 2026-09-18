@@ -4,7 +4,6 @@ import java.nio.file.Files
 import java.nio.file.Path
 import kotlin.io.path.nameWithoutExtension
 import kotlin.system.exitProcess
-import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.runBlocking
 import org.slf4j.LoggerFactory
 
@@ -81,7 +80,7 @@ private suspend fun export(
         }
     }
     requireNotNull(name) { USAGE }
-    val export = exportCassette(store, config, session)
+    val export = exportCassette(store, config, listOfNotNull(session))
     val redactions = export.hits.values.sumOf { it.size }
     if (dryRun) {
         val preview =
@@ -100,7 +99,7 @@ private suspend fun export(
  * A match as a preview shows it: a preview lands in terminals and CI logs, and what a rule matched
  * is usually the secret it exists to strip. Half of a short match at most.
  */
-private fun masked(match: String): String =
+internal fun masked(match: String): String =
     "${match.take(minOf(SHOWN_OF_MATCH, match.length / 2))}... (${match.length} chars)"
 
 /** The data directory, its config, the store, and the server, until the process is stopped. */
@@ -120,8 +119,8 @@ private fun serve(): Unit = runBlocking {
             )
         }
         val gource = if (config.gourceEnabled) GourceLog(home.resolve(GOURCE_FILE)) else null
-        // One route table and one feed, shared by the chain and the control API.
-        val control = ControlApi(store, home, RouteTable(config.routes))
+        // One route table, one config, and one feed, shared by the chain and the control API.
+        val control = ControlApi(store, home, RouteTable(config.routes), LiveConfig(config))
         val chain =
             listOf(
                 Replay(store, config),
@@ -129,8 +128,8 @@ private fun serve(): Unit = runBlocking {
                 Deriver(store, home.resolve(EVENTS_FILE), config.pricing, gource, control.feed),
             )
         val server = ProxyServer(config, chain, control)
-        // `use` unwinds only if the server fails to start. Ktor's own shutdown hook stops only the
-        // engine, and awaitCancellation never returns, so on SIGINT/SIGTERM this hook is what
+        // `use` unwinds if the server fails to start, and when the control API is asked to stop.
+        // Ktor's own shutdown hook stops only the engine, so on SIGINT/SIGTERM this hook is what
         // closes the upstream client and then the connection pool.
         Runtime.getRuntime()
             .addShutdownHook(
@@ -149,6 +148,10 @@ private fun serve(): Unit = runBlocking {
             CONTROL_PREFIX,
             home.resolve(TOKEN_FILE),
         )
-        awaitCancellation()
+        // `POST /shutdown` completes this once its answer is written; nothing else does, so every
+        // other way out is still the shutdown hook's. Returning here unwinds both `use` blocks.
+        control.stopping.await()
+        log.info("stopping: the control API was asked to")
+        server.close()
     }
 }

@@ -15,6 +15,7 @@ import java.util.Base64
 import java.util.EnumSet
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.time.TimeSource
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.channels.ReceiveChannel
 import kotlinx.serialization.json.JsonObject
@@ -44,18 +45,27 @@ internal const val FEED_BUFFER = 1024
 private val log = LoggerFactory.getLogger("dev.peashoot.proxy")
 
 /**
- * What the control API serves from: the store, the route table the relay reads, the live event feed
- * the deriver publishes to, and the token every call but health must carry. The table and the feed
- * are made where the chain is, and handed to both.
+ * What the control API serves from: the store, the data directory, the route table and the config
+ * the relay reads, the live event feed the deriver publishes to, and the token every call but
+ * health must carry. The table, the config, and the feed are made where the chain is, and handed to
+ * both. [env] is how a config `PUT` reloads: the same environment the start read.
  */
 class ControlApi(
     val store: Store,
-    home: Path,
+    val home: Path,
     val routes: RouteTable,
+    val live: LiveConfig,
     val feed: EventFeed = EventFeed(),
+    val env: (String) -> String? = System::getenv,
 ) {
     internal val started = TimeSource.Monotonic.markNow()
     private val expected = "Bearer ${loadToken(home)}".toByteArray()
+
+    /**
+     * Completed by `POST /shutdown`, so the answer goes out before anything stops: whoever started
+     * the server waits on this and then closes it, which is what ends the process.
+     */
+    val stopping = CompletableDeferred<Unit>()
 
     /**
      * Compared in constant time, so a wrong guess learns nothing from how long the refusal took.
