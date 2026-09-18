@@ -1,0 +1,67 @@
+name: Claude PR Fix
+
+on:
+  issue_comment:
+    types: [created]
+
+# The fix job pushes to the PR branch, so it needs contents: write. The OIDC token is
+# how the action authenticates to Anthropic (this repo holds no API-key secret).
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+  id-token: write
+
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    # Only when someone who can already push comments "@claude fix" on a PR: this job
+    # runs an agent with repository write access, so a drive-by comment must not start it.
+    if: |
+      github.event.issue.pull_request &&
+      contains(github.event.comment.body, '@claude fix') &&
+      github.event.comment.user.login != 'claude[bot]' &&
+      (github.event.comment.author_association == 'OWNER' ||
+       github.event.comment.author_association == 'MEMBER' ||
+       github.event.comment.author_association == 'COLLABORATOR')
+    steps:
+      # Pinned to a commit: a tag can be moved, and this action runs with write access.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+
+      - uses: anthropics/claude-code-action@2261fcfc88e7de1b55f179edd588805e12de71f2 # v1.0.228
+        with:
+          # No anthropic_api_key: the repo holds no such secret, so the action
+          # authenticates with the OIDC token above.
+          prompt: |
+            You are fixing issues on a pull request for a Kotlin project (Ktor proxy
+            plus a Compose for Desktop app).
+
+            Steps:
+            1. Read the full PR diff against main.
+            2. Read all review comments and feedback on this PR.
+            3. Identify high-value fixes that are within the PR's scope.
+            4. Apply only targeted, minimal fixes.
+            5. Do NOT refactor unrelated code or broaden the PR scope.
+            6. Do NOT add features beyond what the PR intended.
+            7. Preserve architecture and module boundaries.
+            8. Run ./gradlew ktfmtFormat and then ./gradlew build as separate commands.
+            9. Commit fixes with clear messages describing what was fixed and why.
+            10. Push fixes to the PR branch.
+
+            Constraints:
+            - Only fix issues relevant to this PR
+            - Prefer root-cause fixes over workarounds
+            - Do not weaken security or trust boundaries
+            - Never change the gates (detekt, ktfmt, compiler flags, Kover, ArchUnit,
+              hooks, workflows) and never add @Suppress or a baseline entry
+            - Keep changes minimal and traceable
+            - If a fix would significantly expand scope, leave a comment instead
+          # Tool limits belong here, in the CLI's own --allowedTools: the action's
+          # additional_permissions input is for GitHub scopes ("actions: read") and
+          # refuses a tool pattern. These are the commands this job actually needs.
+          claude_args: >-
+            --model claude-sonnet-4-6 --max-turns 10
+            --allowedTools "Read,Glob,Grep,Edit,Write,Bash(./gradlew:*),Bash(git status:*),Bash(git diff:*),Bash(git log:*),Bash(git show:*),Bash(git fetch:*),Bash(git add:*),Bash(git commit:*),Bash(git push:*),Bash(gh pr view:*),Bash(gh pr diff:*)"
