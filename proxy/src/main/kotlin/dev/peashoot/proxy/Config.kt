@@ -120,10 +120,6 @@ data class ProxyConfig(
     val upstreamBase: String = anthropicUpstream.trimEnd('/')
 }
 
-/** The data directory: `PEASHOOT_HOME`, else `.peashoot` under the user's home. */
-fun homeDir(env: (String) -> String? = System::getenv): Path =
-    env("PEASHOOT_HOME")?.let(Path::of) ?: Path.of(System.getProperty("user.home"), ".peashoot")
-
 /**
  * Creates the directory and a default config file on first start, then loads the file with the
  * environment on top for the keys CI needs. The file is rendered from [ProxyConfig]'s own defaults,

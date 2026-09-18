@@ -1,5 +1,6 @@
 package dev.peashoot.proxy
 
+import dev.peashoot.core.TOKEN_FILE
 import java.nio.file.FileAlreadyExistsException
 import java.nio.file.Files
 import java.nio.file.Path
@@ -21,9 +22,6 @@ import kotlinx.coroutines.channels.ReceiveChannel
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.serialization.json.JsonObject
 import org.slf4j.LoggerFactory
-
-/** The control API's bearer token, in the data directory. */
-const val TOKEN_FILE = "token"
 
 /** Where the control API lives on the proxy's own port; nothing under it is ever relayed. */
 const val CONTROL_PREFIX = "/_peashoot"

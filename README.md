@@ -67,6 +67,41 @@ curl -X POST -H "Authorization: Bearer $TOKEN" -d '{"name":"nightly"}' \
 
 `/rules` serves and replaces `rules.json`, validated the way the start validates it, and the new rules fingerprint the next request without a restart. `POST /rules/test` answers what a candidate rule set would do to the last N recordings before you save it: `collisions` are exchanges that would share a fingerprint and do not now, `splits` are exchanges that share one now and would not. `/cassettes` lists what is in `cassettes/` and what the store has imported, and `POST /cassettes/export` (with `?dryRun=true` for the redaction preview alone) and `POST /cassettes/import` are the CLI's export and import over HTTP. `GET /config` is the running config, never the token; `PUT /config` replaces the keys it names, leaf by leaf, rewrites `peashoot.toml`, applies the routes and the upstream to the next request, and lists the rest as `restartRequired` — `port`, `host`, `secretHeaders`, `replay`, `resume`, `gource`, and `pricing` are read once at start. `secretHeaders` is on that list on purpose: a running proxy keeps dropping the headers it started with, so no call can make it store a credential. Anything an environment variable overrides comes back as `environmentWins`, because a restart will not pick that key up from the file either. `POST /shutdown` answers, then stops the proxy.
 
+## The app
+
+A Compose for Desktop window over the control API. It is a skeleton: health, the connection state, and a plain list of event lines. The farm comes later.
+
+```
+./gradlew :proxy:installDist    # the launcher the app starts when nothing answers
+./gradlew :app:run
+```
+
+It reads the bearer token from the data directory (`PEASHOOT_HOME`, else `~/.peashoot`) and talks to `http://127.0.0.1:8787`, or to `PEASHOOT_PORT` when that is set. It speaks HTTP only and never opens the database.
+
+With nothing answering on the port, the app starts a proxy itself: the launcher packaged beside the app first, then `proxy/build/install/proxy/bin/proxy`. A proxy the app started is stopped when the window closes, launcher script and JVM both; one that was already running is left alone. When neither launcher is there the window says so, and where it looked, instead of waiting.
+
+The feed reconnects with `Last-Event-ID`, backing off up to five seconds, so a dropped connection or a restarted proxy costs no event lines. A token the proxy refuses ends the feed with the reason on screen rather than retrying forever.
+
+### Live events from a Claude Code session
+
+1. `./gradlew :proxy:installDist`, then `./gradlew :app:run`, and wait for `connected to http://127.0.0.1:8787` at the top of the window.
+2. In another terminal, point Claude Code at the proxy:
+
+   ```
+   ANTHROPIC_BASE_URL=http://localhost:8787 claude -p "Name three vegetables that grow well in shade."
+   ```
+
+3. Lines appear at the top of the list while the request runs: `exchange.started` when the request is heard and `exchange.completed` when the answer ends, each with its feed id, its timestamp, and its exchange id. The uptime beside the version keeps ticking.
+4. With the window still open, stop the proxy and start it again. The status line goes to `no proxy at http://127.0.0.1:8787` and then back to `connected`, and the ids carry on from where they stopped: nothing that happened in between is missing.
+
+### A local image
+
+```
+./gradlew :app:createDistributable
+```
+
+writes a runnable application image to `app/build/compose/binaries/main/app/`. `packageMsi`, `packageDmg`, and `packageDeb` build installers from it. Nothing is released or tagged yet, and the image does not yet carry a proxy launcher of its own, so it attaches to a proxy that is already running or starts one from a development build beside it.
+
 ## Replay: the second run costs nothing
 
 A route in `replay` mode answers every request it has a recording for straight from the store, with the recorded status, headers, and frames, byte for byte, and never calls the provider. Two requests are the same request when `rules.json` gives them the same fingerprint. In `peashoot.toml`:
