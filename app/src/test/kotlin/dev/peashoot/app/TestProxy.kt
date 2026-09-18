@@ -12,6 +12,7 @@ import java.nio.file.Files
 import java.nio.file.Path
 import java.time.Instant
 import kotlin.io.path.readText
+import kotlin.time.Duration.Companion.milliseconds
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
@@ -22,6 +23,9 @@ import kotlinx.serialization.json.put
 /** How long any wait in these tests gets before it is a failure rather than a slow machine. */
 internal const val PATIENCE = 10_000L
 
+/** How long a silent feed waits before its keep-alive, short enough for a test to sit through. */
+private const val PING_MS = 200L
+
 /**
  * A real proxy on a real port, with the control API the app talks to and nothing else: the tests
  * put event lines into the store and onto the feed exactly as the deriver does, because what is
@@ -30,8 +34,14 @@ internal const val PATIENCE = 10_000L
  */
 internal class TestProxy(val home: Path) : AutoCloseable {
     val store = Store(home)
-    private val config = ProxyConfig(port = freePort(), host = "127.0.0.1")
-    val url = "http://127.0.0.1:${config.port}"
+    // A short ping so an idle spell in a test still writes the keep-alive comments a real feed
+    // writes: a client that cannot skip them would break on the quiet, not on the traffic.
+    private val config =
+        ProxyConfig(port = freePort(), host = "127.0.0.1", pingInterval = PING_MS.milliseconds)
+    val port: Int
+        get() = config.port
+
+    val url = "http://127.0.0.1:$port"
 
     private var api = newApi()
     private var server = ProxyServer(config, control = api)
@@ -58,6 +68,13 @@ internal class TestProxy(val home: Path) : AutoCloseable {
         return store.putEvent(event).also { api.feed.publish(it, event) }
     }
 
+    /**
+     * A line straight onto the feed, bypassing the store, which only accepts the shape this version
+     * of the proxy writes. A later proxy may put anything on a line, and the window has to survive
+     * reading it.
+     */
+    fun publish(id: Long, event: JsonObject) = api.feed.publish(id, event)
+
     override fun close() {
         stop()
         store.close()
@@ -67,7 +84,7 @@ internal class TestProxy(val home: Path) : AutoCloseable {
 }
 
 /** A port nothing holds right now: the proxy takes it, gives it up, and takes it again. */
-private fun freePort(): Int = ServerSocket(0).use { it.localPort }
+internal fun freePort(): Int = ServerSocket(0).use { it.localPort }
 
 /**
  * A proxy and a fresh data directory for one test. `runBlocking`, not `runTest`: every wait here is

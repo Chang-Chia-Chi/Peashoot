@@ -78,9 +78,9 @@ A Compose for Desktop window over the control API. It is a skeleton: health, the
 
 It reads the bearer token from the data directory (`PEASHOOT_HOME`, else `~/.peashoot`) and talks to `http://127.0.0.1:8787`, or to `PEASHOOT_PORT` when that is set. It speaks HTTP only and never opens the database.
 
-With nothing answering on the port, the app starts a proxy itself: the launcher packaged beside the app first, then `proxy/build/install/proxy/bin/proxy`. A proxy the app started is stopped when the window closes, launcher script and JVM both; one that was already running is left alone. When neither launcher is there the window says so, and where it looked, instead of waiting.
+With nothing answering on the port, the app starts a proxy itself, on the same port it is looking at: `peashoot.jar` if there is one, else `proxy/build/install/proxy/bin/proxy`, packaged copies first. A proxy the app started is stopped when the window closes, script and JVM both; one that was already running is left alone, and so is a port held by anything else, since a second proxy could not bind it anyway. When there is nothing to start, the window says so and where it looked, instead of waiting.
 
-The feed reconnects with `Last-Event-ID`, backing off up to five seconds, so a dropped connection or a restarted proxy costs no event lines. A token the proxy refuses ends the feed with the reason on screen rather than retrying forever.
+The feed reconnects with `Last-Event-ID`, waiting 250 ms and doubling to five seconds, so a dropped connection, a restarted proxy, or a killed one costs no event lines and repeats none: it resumes from the last line it actually showed you. A token the proxy refuses ends the feed with the reason on screen rather than retrying forever.
 
 ### Live events from a Claude Code session
 
@@ -92,7 +92,7 @@ The feed reconnects with `Last-Event-ID`, backing off up to five seconds, so a d
    ```
 
 3. Lines appear at the top of the list while the request runs: `exchange.started` when the request is heard and `exchange.completed` when the answer ends, each with its feed id, its timestamp, and its exchange id. The uptime beside the version keeps ticking.
-4. With the window still open, stop the proxy and start it again. The status line goes to `no proxy at http://127.0.0.1:8787` and then back to `connected`, and the ids carry on from where they stopped: nothing that happened in between is missing.
+4. With the window still open, stop the proxy and start it again — `Ctrl-C` it, or kill it outright, either works. The status line goes to `no proxy at http://127.0.0.1:8787` and then back to `connected`, and the ids carry on from where they stopped: nothing that happened in between is missing, and nothing you had already seen comes back a second time.
 
 ### A local image
 

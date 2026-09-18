@@ -1,4 +1,5 @@
 import com.ncorti.ktfmt.gradle.KtfmtExtension
+import dev.detekt.gradle.extensions.DetektExtension
 import org.gradle.api.tasks.testing.logging.TestExceptionFormat
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 import org.jetbrains.kotlin.gradle.dsl.KotlinJvmProjectExtension
@@ -45,6 +46,12 @@ subprojects {
         targetCompatibility = JavaVersion.VERSION_21
     }
     extensions.configure<KtfmtExtension> { kotlinLangStyle() }
+    // Still detekt's defaults, still no baseline: the file names one option on one rule, and
+    // `buildUponDefaultConfig` keeps every other default in force. See config/detekt/detekt.yml.
+    extensions.configure<DetektExtension> {
+        buildUponDefaultConfig.set(true)
+        config.setFrom(rootProject.file("config/detekt/detekt.yml"))
+    }
 
     dependencies { "testImplementation"(kotlinTest) }
 

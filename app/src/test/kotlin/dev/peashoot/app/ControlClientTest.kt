@@ -5,6 +5,7 @@ import kotlin.test.Test
 import kotlin.test.assertContains
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertIs
 import kotlin.test.assertTrue
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -18,13 +19,34 @@ import kotlinx.coroutines.launch
  */
 class ControlClientTest {
     @Test
-    fun `health parses the version, the uptime, and the mode of every route`() =
+    fun `a probe parses the version, the uptime, and the mode of every route`() =
         withTestProxy { proxy ->
             ControlClient(proxy.url, { proxy.token }).use { client ->
-                val health = client.health()
+                val health = assertIs<Probe.Healthy>(client.probe()).health
                 assertTrue(health.version.isNotEmpty(), "a version")
                 assertTrue(health.uptimeSeconds >= 0, "an uptime")
                 assertEquals(mapOf("default" to "record"), health.routes)
+            }
+        }
+
+    @Test
+    fun `a probe tells a port nothing holds from a port something else holds`() =
+        withTestProxy { proxy ->
+            // Nothing listening: the only answer that lets the app start a proxy of its own.
+            ControlClient("http://127.0.0.1:${freePort()}", { proxy.token }).use { client ->
+                assertIs<Probe.Silent>(client.probe())
+            }
+            // Something is there and it is not us. A proxy started here could not bind the port,
+            // and would sit unreachable until the window closed, or orphaned if it did not.
+            Impostor("500 Internal Server Error", "boom").use { other ->
+                ControlClient(other.url, { proxy.token }).use { client ->
+                    assertContains(assertIs<Probe.Foreign>(client.probe()).detail, "500")
+                }
+            }
+            Impostor("200 OK", """{"hello":"not peashoot"}""").use { other ->
+                ControlClient(other.url, { proxy.token }).use { client ->
+                    assertContains(assertIs<Probe.Foreign>(client.probe()).detail, "not Peashoot")
+                }
             }
         }
 
@@ -72,6 +94,30 @@ class ControlClientTest {
                     // line was dropped and nothing the first connection had was sent twice.
                     assertEquals(listOf(before, live, whileDown, after), seen.lines.map { it.id })
                     seen.stop()
+                }
+            }
+        }
+
+    @Test
+    fun `a feed cut mid-stream resumes from the last line it delivered, not from where it began`() =
+        withTestProxy { proxy ->
+            val first = proxy.emit("exchange.started")
+            Wire(proxy.port).use { wire ->
+                ControlClient(wire.url, { proxy.token }).use { client ->
+                    coroutineScope {
+                        val seen = Seen(this, client, since = 0)
+                        seen.await(lines = 1)
+                        val live = proxy.emit("exchange.completed")
+                        seen.await(lines = 2)
+                        // A reset, not an orderly close: the read throws where a graceful stop
+                        // would have ended the stream, and that is the path that forgot its place.
+                        wire.crash()
+                        until { seen.states.any { !it.connected } }
+                        val afterCrash = proxy.emit("exchange.started")
+                        seen.await(lines = 3)
+                        assertEquals(listOf(first, live, afterCrash), seen.lines.map { it.id })
+                        seen.stop()
+                    }
                 }
             }
         }

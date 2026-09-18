@@ -1,3 +1,4 @@
+import dev.detekt.gradle.extensions.DetektExtension
 import org.jetbrains.compose.desktop.application.dsl.TargetFormat
 
 // Compose for Desktop app: control client, farm reducer, renderer. It speaks the control API over
@@ -16,7 +17,13 @@ dependencies {
     // stopping and starting again. Tests only: nothing in `main` knows the proxy is Kotlin.
     "testImplementation"(project(":proxy"))
     "testRuntimeOnly"(libs.slf4j.simple)
+    // The Compose rule set, here alone because this is the only module with a composable in it.
+    "detektPlugins"(libs.compose.rules.detekt)
 }
+
+// Added to the root config rather than replacing it: the other modules have no Compose rules on
+// their detekt classpath, and a `Compose:` block they cannot resolve would fail their own run.
+extensions.configure<DetektExtension> { config.from(rootProject.file("config/detekt/compose.yml")) }
 
 compose.desktop {
     application {

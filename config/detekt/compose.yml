@@ -1,0 +1,77 @@
+# The Compose rule set (mrmans0n/compose-rules), added to `app` alone because it is the only
+# module with a composable in it. Tier 2 of docs/research/code-quality-environment.md named the
+# trigger as "when the `app` module exists and detekt is on"; #15 is that.
+#
+# The rule set has to be listed to be on: a rule detekt has no config entry for stays off. This is
+# the upstream block as their detekt page publishes it, with two rules left off for the reasons
+# below and nothing else changed.
+Compose:
+  ComposableAnnotationNaming:
+    active: true
+  ComposableNaming:
+    active: true
+  ComposableParamOrder:
+    active: true
+  CompositionLocalAllowlist:
+    active: true
+  CompositionLocalNaming:
+    active: true
+  ContentEmitterReturningValues:
+    active: true
+  ContentTrailingLambda:
+    active: true
+  ContentSlotReused:
+    active: true
+  DefaultsVisibility:
+    active: true
+  LambdaParameterEventTrailing:
+    active: true
+  LambdaParameterInRestartableEffect:
+    active: true
+  # Off upstream, and off here for the same reason plus one of our own: the window uses Material 2
+  # on purpose, because it ships inside the Compose Desktop artifact and Material 3 does not.
+  Material2:
+    active: false
+  ModifierClickableOrder:
+    active: true
+  ModifierComposed:
+    active: true
+  ModifierMissing:
+    active: true
+  ModifierNaming:
+    active: true
+  ModifierNotUsedAtRoot:
+    active: true
+  ModifierReused:
+    active: true
+  ModifierWithoutDefault:
+    active: true
+  MultipleEmitters:
+    active: true
+  MutableParams:
+    active: true
+  MutableStateAutoboxing:
+    active: true
+  MutableStateParam:
+    active: true
+  ParameterNaming:
+    active: true
+  PreviewAnnotationNaming:
+    active: true
+  # Off upstream: it wants a `Preview` suffix that the Android tooling convention does not use.
+  PreviewNaming:
+    active: false
+  PreviewPublic:
+    active: true
+  RememberMissing:
+    active: true
+  RememberContentMissing:
+    active: true
+  # Off upstream: it needs type resolution to tell a stable collection from an unstable one, and
+  # the `detekt` task this build runs has none.
+  UnstableCollections:
+    active: false
+  ViewModelForwarding:
+    active: true
+  ViewModelInjection:
+    active: true

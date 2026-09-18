@@ -2,6 +2,7 @@
 [versions]
 archunit = "1.5.0"
 compose = "1.12.0"
+compose-rules = "0.6.6"
 detekt = "2.0.0-alpha.6"
 hikaricp = "6.3.0"
 jdbi = "3.49.3"
@@ -18,6 +19,7 @@ ulid-creator = "5.2.3"
 
 [libraries]
 archunit-junit5 = { module = "com.tngtech.archunit:archunit-junit5", version.ref = "archunit" }
+compose-rules-detekt = { module = "io.nlopez.compose.rules:detekt", version.ref = "compose-rules" }
 hikaricp = { module = "com.zaxxer:HikariCP", version.ref = "hikaricp" }
 jdbi3-core = { module = "org.jdbi:jdbi3-core", version.ref = "jdbi" }
 kotlin-test = { module = "org.jetbrains.kotlin:kotlin-test", version.ref = "kotlin" }
