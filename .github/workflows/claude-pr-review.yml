@@ -14,11 +14,30 @@ permissions:
   id-token: write
 
 jobs:
+  # A job's `if` cannot read secrets, so this one reads them and says whether the
+  # action has anything to sign in with. Without it, every PR wears a red check
+  # for a credential this repository may simply not have.
+  credentials:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      configured: ${{ steps.probe.outputs.configured }}
+    steps:
+      - id: probe
+        env:
+          CONFIGURED: ${{ secrets.ANTHROPIC_API_KEY != '' || secrets.CLAUDE_CODE_OAUTH_TOKEN != '' }}
+        run: |
+          echo "configured=$CONFIGURED" >> "$GITHUB_OUTPUT"
+          [ "$CONFIGURED" = "true" ] ||
+            echo "::notice::No ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN; skipping the Claude review."
+
   review:
+    needs: credentials
     runs-on: ubuntu-latest
     timeout-minutes: 30
     # Skip reviews triggered by Claude's own commits to prevent loops
     if: |
+      needs.credentials.outputs.configured == 'true' &&
       github.event.pull_request.user.login != 'claude[bot]' &&
       github.event.sender.login != 'claude[bot]' &&
       !contains(github.event.pull_request.title, '[skip-review]')
@@ -47,8 +66,9 @@ jobs:
 
       - uses: anthropics/claude-code-action@2261fcfc88e7de1b55f179edd588805e12de71f2 # v1.0.228
         with:
-          # No anthropic_api_key: the repo holds no such secret, so the action
-          # authenticates with the OIDC token above.
+          # Whichever of the two the repository has; the job does not start without one.
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           trigger_phrase: ""
           prompt: |
             You are reviewing a pull request for a Kotlin project (Ktor proxy plus a
