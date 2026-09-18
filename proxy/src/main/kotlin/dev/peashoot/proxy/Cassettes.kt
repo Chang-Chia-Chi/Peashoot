@@ -36,20 +36,27 @@ private const val VERSION = 1
 class Export(val jsonl: String, val count: Int, val hits: Map<String, List<Redacted>>)
 
 /**
- * Every live recording, oldest first, or only [session]'s, as cassette records with the redaction
- * rules applied. An imported cassette's rows are left out: they are already some cassette's. The
- * fingerprint is kept as recorded, so a redacted request still replays.
+ * Every live recording, oldest first, as cassette records with the redaction rules applied. Each of
+ * [sessions] and [ids] narrows that when it is given, and both given narrows by both. An imported
+ * cassette's rows are left out: they are already some cassette's. The fingerprint is kept as
+ * recorded, so a redacted request still replays.
  *
  * ponytail: every recording is held in memory at once. Upgrade: page through the store and stream
  * lines to the file, if a cassette ever outgrows a heap.
  */
-suspend fun exportCassette(store: Store, config: ProxyConfig, session: String?): Export {
+suspend fun exportCassette(
+    store: Store,
+    config: ProxyConfig,
+    sessions: Collection<String> = emptyList(),
+    ids: Collection<String> = emptyList(),
+): Export {
     val hits = linkedMapOf<String, List<Redacted>>()
     val lines =
         store
             .list(Int.MAX_VALUE, ExchangeQuery(live = true))
             .asReversed()
-            .filter { session == null || it.exchange.client.session == session }
+            .filter { sessions.isEmpty() || it.exchange.client.session in sessions }
+            .filter { ids.isEmpty() || it.exchange.id in ids }
             .map { recorded ->
                 val found = mutableListOf<Redacted>()
                 val line = recorded.toRecord(config, found).toString()

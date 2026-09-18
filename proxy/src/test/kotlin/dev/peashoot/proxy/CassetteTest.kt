@@ -262,7 +262,7 @@ class CassetteTest {
             store.put(listOf(Recorded(exchange, listOf(Frame("{}", 0)))))
 
             command(listOf("export", "demo"), source, noEnv)
-            val exported = exportCassette(store, keepingSecrets, session = null).jsonl
+            val exported = exportCassette(store, keepingSecrets).jsonl
             for (text in listOf(source.resolve("cassettes/demo.jsonl").readText(), exported)) {
                 listOf("authorization", "x-api-key", AUTH_CANARY, API_CANARY).forEach {
                     assertFalse(it in text.lowercase(), "$it in $text")

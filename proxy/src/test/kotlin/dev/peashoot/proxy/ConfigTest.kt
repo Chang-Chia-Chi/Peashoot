@@ -318,6 +318,25 @@ class ConfigTest {
     }
 
     @Test
+    fun `a port no socket could take is refused, from the file or the environment`() {
+        // 5000000000 truncates to a plausible int, and 99999 binds nothing: both would have run
+        // to the first bind and died there, long after the config was called good.
+        listOf("65536", "99999", "5000000000", "-1").forEach { port ->
+            val home = Files.createTempDirectory("peashoot-home")
+            home.resolve("peashoot.toml").writeText("port = $port")
+
+            val fromFile = assertFailsWith<IllegalStateException> { loadConfig(home, env()) }
+            assertContains(fromFile.message.orEmpty(), "port")
+
+            val fromEnv =
+                assertFailsWith<IllegalStateException> {
+                    loadConfig(home, env("PEASHOOT_PORT" to port))
+                }
+            assertContains(fromEnv.message.orEmpty(), "port")
+        }
+    }
+
+    @Test
     fun `a malformed rule file is refused at startup, naming the rule`() {
         val home = Files.createTempDirectory("peashoot-home")
         home.resolve("rules.json").writeText("""{"ignorePointers":["metadata"]}""")

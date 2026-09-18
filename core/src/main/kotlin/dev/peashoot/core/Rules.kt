@@ -109,6 +109,19 @@ data class Rules(
         return MessageDigest.getInstance("SHA-256").digest(canonical.toByteArray()).toHexString()
     }
 
+    /** The rule set in the shape [RULES_FILE] holds it, which is also what `GET /rules` serves. */
+    fun toJson(): JsonObject = buildJsonObject {
+        putJsonArray("keepHeaders") { keepHeaders.sorted().forEach { add(JsonPrimitive(it)) } }
+        putJsonArray("ignorePointers") { ignorePointers.forEach { add(JsonPrimitive(it)) } }
+        put("replace", replace.toJson())
+    }
+
+    /**
+     * [toJson] as [RULES_FILE] is written: indented, because the whole point of the patterns being
+     * data is that someone can read them.
+     */
+    fun toJsonText(): String = PRETTY.encodeToString(JsonObject.serializer(), toJson())
+
     companion object {
         /**
          * What ships. The header allowlist is what a provider actually reads; everything else, the
@@ -173,21 +186,8 @@ data class Rules(
             )
         }
 
-        /**
-         * The file written on first start: the defaults, in the shape a hand edit keeps. Indented,
-         * because the whole point of the patterns being data is that someone can read them.
-         */
-        fun defaultJson(): String = PRETTY.encodeToString(JsonObject.serializer(), defaultObject())
-
-        private fun defaultObject(): JsonObject = buildJsonObject {
-            putJsonArray("keepHeaders") {
-                DEFAULT.keepHeaders.sorted().forEach { add(JsonPrimitive(it)) }
-            }
-            putJsonArray("ignorePointers") {
-                DEFAULT.ignorePointers.forEach { add(JsonPrimitive(it)) }
-            }
-            put("replace", DEFAULT.replace.toJson())
-        }
+        /** The file written on first start: the defaults, in the shape a hand edit keeps. */
+        fun defaultJson(): String = DEFAULT.toJsonText()
     }
 }
 

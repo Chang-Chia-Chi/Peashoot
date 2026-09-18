@@ -145,7 +145,11 @@ private suspend fun List<Interceptor>.complete(exchange: Exchange, status: Int?)
  * upstream is, and a failure to reach it is a proxy error, never a provider one.
  */
 class Relay(
-    private val config: ProxyConfig,
+    /**
+     * Read at the top of every request, so what `PUT /config` can change without a restart, the
+     * rule set among it, applies to the next request rather than the next start.
+     */
+    private val live: LiveConfig,
     private val upstream: HttpClient,
     private val interceptors: List<Interceptor>,
     /**
@@ -156,6 +160,14 @@ class Relay(
     /** Read once per request, so a route change applies to the next one. */
     private val routes: RouteTable,
 ) {
+    /**
+     * The config this request runs under. A change between two reads within one request can only
+     * pick a fresh upstream or ping interval for work not yet started; what a recording must keep
+     * consistent is its route, and the exchange carries that.
+     */
+    private val config: ProxyConfig
+        get() = live.current
+
     suspend fun handle(call: ApplicationCall) {
         val body = call.receive<ByteArray>()
         val exchange =

@@ -11,14 +11,9 @@ import io.ktor.client.engine.cio.CIO
 import io.ktor.client.request.get
 import io.ktor.client.request.head
 import io.ktor.client.request.header
-import io.ktor.client.request.post
 import io.ktor.client.request.prepareGet
-import io.ktor.client.request.request
-import io.ktor.client.request.setBody
-import io.ktor.client.statement.HttpResponse
 import io.ktor.client.statement.bodyAsChannel
 import io.ktor.client.statement.bodyAsText
-import io.ktor.http.ContentType
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpMethod
 import io.ktor.utils.io.ByteReadChannel
@@ -33,14 +28,12 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import kotlin.io.path.listDirectoryEntries
 import kotlin.io.path.readText
-import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertContains
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
-import kotlin.time.Duration.Companion.milliseconds
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
@@ -57,111 +50,6 @@ import kotlinx.serialization.json.put
 
 /** The control API on the proxy's own port: token, health, events, exchanges, sessions, routes. */
 class ControlApiTest {
-    private class Proxy(
-        val home: Path,
-        val store: Store,
-        val upstream: FakeUpstream,
-        val server: ProxyServer,
-        val control: ControlApi,
-    ) {
-        val token: String = home.resolve(TOKEN_FILE).readText()
-        val base = "${server.url}/_peashoot/v1"
-    }
-
-    /**
-     * A proxy with the whole v1 chain and its control API, relaying to a fake upstream; [first]
-     * interceptors run ahead of the chain.
-     */
-    private fun withProxy(
-        route: Route = Route(Mode.RECORD),
-        buffer: Int = FEED_BUFFER,
-        first: (ControlApi) -> List<Interceptor> = { emptyList() },
-        block: suspend Proxy.() -> Unit,
-    ) = runBlocking {
-        val home = Files.createTempDirectory("peashoot-home")
-        Store(home).use { store ->
-            FakeUpstream().use { upstream ->
-                val config =
-                    ProxyConfig(
-                        port = 0,
-                        anthropicUpstream = upstream.url,
-                        pingInterval = PING.milliseconds,
-                        routes = mapOf(DEFAULT_ROUTE to route),
-                    )
-                val control = ControlApi(store, home, RouteTable(config.routes), EventFeed(buffer))
-                val chain =
-                    first(control) +
-                        listOf(
-                            Replay(store, config),
-                            Recorder(store),
-                            Deriver(store, home.resolve(EVENTS_FILE), feed = control.feed),
-                        )
-                ProxyServer(config, chain, control).use { server ->
-                    Proxy(home, store, upstream, server, control).block()
-                }
-            }
-        }
-    }
-
-    /** A request to any path on the proxy's port, spelled exactly as given. */
-    private suspend fun Proxy.raw(method: HttpMethod, path: String, token: String?) =
-        client.request("${server.url}$path") {
-            this.method = method
-            token?.let { header(HttpHeaders.Authorization, "Bearer $it") }
-        }
-
-    private fun appLog(): List<String> =
-        Files.readAllLines(Path.of(System.getProperty("peashoot.test.appLog")))
-
-    /** No request timeout: a feed stays open for as long as a test reads it. */
-    private val client = HttpClient(CIO) { engine { requestTimeout = 0 } }
-
-    @AfterTest fun closeClient() = client.close()
-
-    private suspend fun Proxy.call(
-        method: HttpMethod,
-        path: String,
-        body: String? = null,
-        token: String? = this.token,
-    ): HttpResponse =
-        client.request("$base$path") {
-            this.method = method
-            token?.let { header(HttpHeaders.Authorization, "Bearer $it") }
-            body?.let { setBody(it) }
-        }
-
-    private suspend fun Proxy.json(path: String): JsonObject =
-        call(HttpMethod.Get, path).let {
-            assertEquals(200, it.status.value, it.bodyAsText())
-            Json.parseToJsonElement(it.bodyAsText()).jsonObject
-        }
-
-    private suspend fun Proxy.relay(body: String, headers: Map<String, String> = emptyMap()) =
-        client
-            .post("${server.url}/v1/messages") {
-                headers.forEach { (name, value) -> header(name, value) }
-                setBody(body)
-            }
-            .let { it.status.value to it.bodyAsText() }
-
-    private suspend fun Proxy.awaitRecordings(count: Int) =
-        withTimeout(5_000) { while (store.list().size < count) delay(20) }
-
-    private suspend fun Proxy.awaitEvents(count: Int) =
-        withTimeout(5_000) { while (store.events().size < count) delay(20) }
-
-    private suspend fun assertProblem(response: HttpResponse, status: Int) {
-        val text = response.bodyAsText()
-        assertEquals(status, response.status.value, text)
-        assertEquals(
-            ContentType.Application.ProblemJson,
-            ContentType.parse(response.headers[HttpHeaders.ContentType]!!).withoutParameters(),
-        )
-        val problem = Json.parseToJsonElement(text).jsonObject
-        assertEquals(setOf("type", "title", "detail", "status"), problem.keys, text)
-        assertEquals(status, problem.getValue("status").jsonPrimitive.int)
-    }
-
     @Test
     fun `a missing or wrong token gets a 401 problem on everything except health`() = withProxy {
         val guarded =
@@ -172,6 +60,16 @@ class ControlApiTest {
                 HttpMethod.Get to "/sessions",
                 HttpMethod.Get to "/routes",
                 HttpMethod.Put to "/routes/default",
+                HttpMethod.Get to "/rules",
+                HttpMethod.Put to "/rules",
+                HttpMethod.Post to "/rules/test",
+                HttpMethod.Get to "/cassettes",
+                HttpMethod.Post to "/cassettes/export",
+                HttpMethod.Post to "/cassettes/import",
+                HttpMethod.Get to "/config",
+                HttpMethod.Put to "/config",
+                // A shutdown nobody may ask for without the token: the server is still up after.
+                HttpMethod.Post to "/shutdown",
             )
         val unknown =
             listOf(
@@ -551,7 +449,9 @@ class ControlApiTest {
     fun `a bracketed IPv6 loopback host binds and serves`() = runBlocking {
         ProxyServer(ProxyConfig(port = 0, host = "[::1]")).use { server ->
             assertTrue(server.url.startsWith("http://[0:0:0:0:0:0:0:1]:"), server.url)
-            assertEquals(200, client.head("${server.url}/api/hello").status.value)
+            HttpClient(CIO).use { client ->
+                assertEquals(200, client.head("${server.url}/api/hello").status.value)
+            }
         }
     }
 
@@ -620,7 +520,6 @@ class ControlApiTest {
 
     private companion object {
         const val REQUEST = """{"model":"claude-sonnet-4-5","messages":[]}"""
-        const val PING = 200L
         const val STARTS = 8
         /**
          * Enough lines that a one-line buffer cannot hold them while the reader writes them out.

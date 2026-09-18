@@ -43,6 +43,9 @@ class ProxyServer(
     /** Resolved and checked once, then bound as it is, so the check and the bind cannot differ. */
     private val address = loopbackAddress(config.host)
 
+    /** The control API's when there is one, so `PUT /config` and the relay share one config. */
+    private val live = control?.live ?: LiveConfig(config)
+
     private val upstream =
         HttpClient(ClientCIO) {
             // Streams outlive the engine's 15 s default; 0 disables the per-request timeout.
@@ -52,7 +55,7 @@ class ProxyServer(
     private val server: EmbeddedServer<*, *> =
         embeddedServer(Netty, port = config.port, host = address.hostAddress) {
                 val routes = control?.routes ?: RouteTable(config.routes)
-                relayModule(config, upstream, interceptors, routes, control)
+                relayModule(live, upstream, interceptors, routes, control)
             }
             .start(wait = false)
 
@@ -89,13 +92,15 @@ internal fun loopbackAddress(host: String): InetAddress {
 }
 
 fun Application.relayModule(
-    config: ProxyConfig,
+    /** Read once per request, so a config `PUT` reaches the next one. */
+    live: LiveConfig,
     upstream: HttpClient,
     interceptors: List<Interceptor>,
     /** Read once per request; the control API's own when there is one. */
     routes: RouteTable,
     control: ControlApi? = null,
 ) {
+    val config = live.current
     install(CallLogging) {
         disableDefaultColors()
     } // method, path, status, duration; never headers or bodies
@@ -117,7 +122,7 @@ fun Application.relayModule(
     }
     // The application is the scope every exchange's stream runs in, so a client that leaves does
     // not take its stream with it, and server stop ends them all.
-    val relay = Relay(config, upstream, interceptors, this, routes)
+    val relay = Relay(live, upstream, interceptors, this, routes)
     routing {
         // Claude Code's reachability probe; answered here, never relayed.
         head("/api/hello") { call.respond(HttpStatusCode.OK) }
