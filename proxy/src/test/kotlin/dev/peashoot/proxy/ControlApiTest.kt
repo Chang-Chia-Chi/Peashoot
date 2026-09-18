@@ -61,8 +61,15 @@ class ControlApiTest {
                 HttpMethod.Get to "/routes",
                 HttpMethod.Put to "/routes/default",
                 HttpMethod.Get to "/rules",
+                HttpMethod.Put to "/rules",
+                HttpMethod.Post to "/rules/test",
                 HttpMethod.Get to "/cassettes",
+                HttpMethod.Post to "/cassettes/export",
+                HttpMethod.Post to "/cassettes/import",
                 HttpMethod.Get to "/config",
+                HttpMethod.Put to "/config",
+                // A shutdown nobody may ask for without the token: the server is still up after.
+                HttpMethod.Post to "/shutdown",
             )
         val unknown =
             listOf(

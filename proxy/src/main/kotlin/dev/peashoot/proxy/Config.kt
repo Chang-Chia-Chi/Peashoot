@@ -20,6 +20,9 @@ import org.tomlj.TomlTable
 
 const val CONFIG_FILE = "peashoot.toml"
 
+/** The highest port a socket takes; 0 asks the system for a free one, as the tests bind. */
+private const val MAX_PORT = 65535L
+
 const val DEFAULT_ROUTE = "default"
 
 /**
@@ -146,11 +149,16 @@ fun loadConfig(home: Path, env: (String) -> String? = System::getenv): ProxyConf
     // Refused here too, so a bad file fails before anything else starts; the server binds to what
     // its own call of this returns.
     loopbackAddress(host)
+    // Read and checked as a Long, beside the host: 5000000000 truncates into a plausible port and
+    // 99999 is one nothing can bind, so either would pass for a config and kill the start that
+    // tried to use it. 0 is the one special value: it asks the system for a free port.
+    val port =
+        env("PEASHOOT_PORT")?.let {
+            it.toLongOrNull() ?: error("PEASHOOT_PORT must be a port number, not $it")
+        } ?: toml.getLong("port") ?: defaults.port.toLong()
+    check(port in 0..MAX_PORT) { "port must be 0 to $MAX_PORT, not $port" }
     return ProxyConfig(
-        port =
-            env("PEASHOOT_PORT")?.let {
-                it.toIntOrNull() ?: error("PEASHOOT_PORT must be a port number, not $it")
-            } ?: toml.getLong("port")?.toInt() ?: defaults.port,
+        port = port.toInt(),
         host = host,
         anthropicUpstream =
             env("PEASHOOT_ANTHROPIC_UPSTREAM")

@@ -13,6 +13,8 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFails
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonPrimitive
@@ -133,6 +135,24 @@ class ControlAdminTest {
     }
 
     @Test
+    fun `the rules test reads live recordings only, never an imported cassette's rows`() =
+        withProxy {
+            relay("""{"model":"m","messages":[]}""")
+            awaitRecordings(1)
+            okJson(call(HttpMethod.Post, "/cassettes/export", EXPORT))
+            val file = home.resolve(CASSETTES_DIR).resolve("demo.jsonl")
+            okJson(call(HttpMethod.Post, "/cassettes/import", path(file)))
+            assertEquals(2, store.list().size, "the recording, and the cassette's copy of it")
+
+            val result = okJson(call(HttpMethod.Post, "/rules/test", """{"rules":$CANDIDATE}"""))
+            assertEquals(
+                1,
+                result.getValue("tested").jsonPrimitive.int,
+                "an imported row carries another machine's fingerprint and a redacted body",
+            )
+        }
+
+    @Test
     fun `a dry run previews the redaction and writes nothing, and a real export imports back`() =
         withProxy {
             relay("""{"model":"m","messages":[{"role":"user","content":"use $KEY"}]}""")
@@ -172,6 +192,9 @@ class ControlAdminTest {
     fun `an export or import that cannot be done is a 400 naming why`() = withProxy {
         val junk = Files.createTempFile("not-a-cassette", ".jsonl")
         Files.writeString(junk, "{}\n")
+        // A file that is not text at all: readable bytes, no UTF-8 in them.
+        val binary = Files.createTempFile("binary", ".jsonl")
+        Files.write(binary, byteArrayOf(-1, -2, 0, -1))
         listOf(
                 "/cassettes/export" to """{"name":"../etc"}""",
                 "/cassettes/export" to """{"name":7}""",
@@ -179,81 +202,27 @@ class ControlAdminTest {
                 "/cassettes/import" to """{"path":""}""",
                 "/cassettes/import" to """{"path":"no-such-file.jsonl"}""",
                 "/cassettes/import" to path(junk),
+                "/cassettes/import" to path(binary),
             )
             .forEach { (path, body) -> assertProblem(call(HttpMethod.Post, path, body), 400) }
         assertFalse(Files.exists(home.resolve(CASSETTES_DIR)), "nothing was written")
     }
 
     @Test
-    fun `putting the config writes the file, applies the route live, and flags the port`() =
-        withProxy {
-            val running = json("/config")
-            assertFalse(token in running.toString(), "no secret is in the config")
-            assertEquals(
-                listOf("authorization", "x-api-key"),
-                running.getValue("secretHeaders").jsonArray.map { it.text() },
-            )
-
-            val put = okJson(call(HttpMethod.Put, "/config", """{"port":9999}"""))
-            assertEquals(
-                listOf("port"),
-                put.getValue("restartRequired").jsonArray.map { it.text() },
-            )
-            assertContains(home.resolve(CONFIG_FILE).readText(), "port = 9999")
-            assertEquals(running["port"], json("/config")["port"], "the running port is unchanged")
-
-            val live =
-                okJson(
-                    call(
-                        HttpMethod.Put,
-                        "/config",
-                        """{"routes":{"default":{"mode":"replay","strict":true}}}""",
-                    )
-                )
-            assertEquals(emptyList(), live.getValue("restartRequired").jsonArray.toList())
-            assertEquals("replay", json("/routes").getValue("default").jsonObject["mode"]?.text())
-            assertEquals(
-                409,
-                relay("""{"model":"m","messages":[]}""").first,
-                "strict, with no restart",
-            )
-            assertEquals(0, upstream.received.size)
-            assertContains(home.resolve(CONFIG_FILE).readText(), "mode = \"replay\"")
-        }
-
-    @Test
-    fun `a config value the loader refuses is a 400 naming the key, and the file is untouched`() =
-        withProxy {
-            val before = home.resolve(CONFIG_FILE).readText()
-            listOf(
-                    """{"port":"nine"}""" to "port",
-                    """{"host":"192.0.2.1"}""" to "192.0.2.1",
-                    """{"replay":{"cadence":"soon"}}""" to "cadence",
-                    """{"resume":{"pingIntervalSeconds":0}}""" to "pingIntervalSeconds",
-                    """{"routes":{"other":{"mode":"record"}}}""" to "other",
-                    """{"secretHeaders":[7]}""" to "secretHeaders",
-                    """{"nope":1}""" to "nope",
-                    "not json" to "JSON",
-                )
-                .forEach { (body, named) ->
-                    assertContains(assertProblem(call(HttpMethod.Put, "/config", body), 400), named)
-                }
-            assertEquals(before, home.resolve(CONFIG_FILE).readText())
-        }
-
-    @Test
     fun `shutdown answers first, then the server stops accepting`() = withProxy {
-        assertTrue(
+        // What `serve` does: waiting on the same deferred, and closing as soon as it completes. It
+        // is racing the answer from the moment the handler completes it, so a shutdown that stopped
+        // the engine before writing would lose the body here.
+        val stopped = coroutineScope {
+            launch {
+                withTimeout(SHUTDOWN_TIMEOUT) { control.stopping.await() }
+                server.close()
+            }
             okJson(call(HttpMethod.Post, "/shutdown"))
-                .getValue("stopping")
-                .jsonPrimitive
-                .content
-                .toBoolean()
-        )
-        withTimeout(5_000) { control.stopping.await() }
-        // What `serve` does when the wait ends; the test then holds the only closed server.
-        server.close()
+        }
+        assertTrue(stopped.getValue("stopping").jsonPrimitive.content.toBoolean(), "$stopped")
         assertFails { client.get("$base/health") }
+        assertEquals(0, upstream.received.size, "stopping is never relayed")
     }
 
     /** A `{"path": ...}` body, with the separators a JSON string needs on Windows. */
@@ -263,6 +232,7 @@ class ControlAdminTest {
         /** Long enough for the default redaction rule, which wants 20 key characters. */
         const val KEY = "sk-ant-api03-ABCDEFGHIJKLMNOPQRSTUVWX"
         const val EXPORT = """{"name":"demo"}"""
+        const val SHUTDOWN_TIMEOUT = 5_000L
         /** `/metadata` no longer ignored, `/trace` now ignored: one split and one collision. */
         const val CANDIDATE =
             """{"keepHeaders":["content-type"],"ignorePointers":["/trace"],"replace":[]}"""

@@ -226,11 +226,7 @@ private suspend fun ByteWriteChannel.send(text: String) {
 private fun Route.exchanges(api: ControlApi) {
     endpoint(HttpMethod.Get, "exchanges") {
         val params = call.request.queryParameters
-        val limit =
-            params["limit"]?.let { raw ->
-                raw.toIntOrNull()?.takeIf { it in 1..MAX_EXCHANGES_LIMIT }
-                    ?: badRequest("limit must be 1 to $MAX_EXCHANGES_LIMIT, not $raw")
-            } ?: DEFAULT_EXCHANGES_LIMIT
+        val limit = bounded("limit", params["limit"])
         val cursor =
             params["cursor"]?.also {
                 if (api.store.get(it, frames = false) == null) badRequest("no exchange $it")

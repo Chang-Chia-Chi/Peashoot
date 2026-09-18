@@ -54,6 +54,8 @@ internal class Proxy(
 internal fun withProxy(
     route: Route = Route(Mode.RECORD),
     buffer: Int = FEED_BUFFER,
+    /** What the proxy's own environment says; nothing, unless a test is about an override. */
+    env: (String) -> String? = { null },
     first: (ControlApi) -> List<Interceptor> = { emptyList() },
     block: suspend Proxy.() -> Unit,
 ) = runBlocking {
@@ -61,7 +63,7 @@ internal fun withProxy(
     Store(home).use { store ->
         FakeUpstream().use { upstream ->
             val config =
-                loadConfig(home) { null }
+                loadConfig(home, env)
                     .copy(
                         port = 0,
                         anthropicUpstream = upstream.url,
@@ -75,7 +77,7 @@ internal fun withProxy(
                     RouteTable(config.routes),
                     LiveConfig(config),
                     EventFeed(buffer),
-                    env = { null },
+                    env = env,
                 )
             val chain =
                 first(control) +

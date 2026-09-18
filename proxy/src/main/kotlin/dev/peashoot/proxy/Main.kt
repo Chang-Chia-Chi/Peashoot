@@ -80,7 +80,7 @@ private suspend fun export(
         }
     }
     requireNotNull(name) { USAGE }
-    val export = exportCassette(store, config, listOfNotNull(session))
+    val export = exportCassette(store, config, sessions = listOfNotNull(session))
     val redactions = export.hits.values.sumOf { it.size }
     if (dryRun) {
         val preview =

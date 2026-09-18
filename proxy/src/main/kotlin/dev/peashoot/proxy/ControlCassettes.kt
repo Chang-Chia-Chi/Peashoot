@@ -2,6 +2,7 @@ package dev.peashoot.proxy
 
 import io.ktor.http.HttpMethod
 import io.ktor.server.routing.Route
+import java.io.IOException
 import java.nio.file.Files
 import java.nio.file.Path
 import kotlin.io.path.listDirectoryEntries
@@ -24,7 +25,16 @@ internal fun Route.cassettes(api: ControlApi) {
     endpoint(HttpMethod.Post, "cassettes/import") {
         val body = call.bodyObject()
         val file = refusing { Path.of(body["path"].string("path")) }
-        val count = refusing { importCassette(api.store, api.live.current, file) }
+        val count = runCatching {
+            importCassette(api.store, api.live.current, file)
+        }
+            .getOrElse { failure ->
+                // A file the caller named that cannot be read, or holds no text: theirs to
+                // fix, like a record the format does not allow, and not a failure of ours.
+                if (failure is IOException) {
+                    badRequest("$file cannot be read as a cassette: ${failure.message}")
+                } else refuse(failure)
+            }
         log.info("imported {} exchanges from {}", count, file)
         call.json(
             buildJsonObject {
@@ -56,8 +66,8 @@ private fun Route.export(api: ControlApi) =
             exportCassette(
                 api.store,
                 api.live.current,
-                body.ids("sessionIds"),
-                body.ids("exchangeIds"),
+                sessions = body.ids("sessionIds"),
+                ids = body.ids("exchangeIds"),
             )
         }
         val dryRun = call.request.queryParameters["dryRun"] == "true"
