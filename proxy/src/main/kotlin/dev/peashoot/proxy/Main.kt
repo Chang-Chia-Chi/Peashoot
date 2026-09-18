@@ -1,5 +1,7 @@
 package dev.peashoot.proxy
 
+import dev.peashoot.core.TOKEN_FILE
+import dev.peashoot.core.homeDir
 import java.nio.file.Files
 import java.nio.file.Path
 import kotlin.io.path.nameWithoutExtension

@@ -1,0 +1,12 @@
+# The only relaxation of detekt's defaults in this repo, approved for #15.
+#
+# Compose names composables in PascalCase. It is not a style preference: the Compose rule set in
+# compose.yml enforces it (ComposableNaming), tooling reads it, and every Compose codebase and
+# sample follows it, so a camelCase composable is the thing that looks wrong. detekt's default
+# FunctionNaming has no exemption for it.
+#
+# Everything else falls through to detekt's defaults, which `buildUponDefaultConfig` keeps in
+# force: this file names one option on one rule, and nothing here loosens anything else.
+naming:
+  FunctionNaming:
+    ignoreAnnotated: ['Composable']
