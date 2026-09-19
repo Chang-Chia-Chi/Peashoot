@@ -13,7 +13,7 @@ kover = "0.9.9"
 ktfmt-plugin = "0.27.0"
 ktor = "3.5.2"
 slf4j = "2.0.19"
-sqlite-jdbc = "3.49.1.0"
+sqlite-jdbc = "3.53.4.0"
 tomlj = "1.1.1"
 ulid-creator = "5.2.3"
 
