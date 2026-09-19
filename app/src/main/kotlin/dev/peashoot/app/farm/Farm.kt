@@ -1,11 +1,7 @@
 package dev.peashoot.app.farm
 
-import dev.peashoot.core.EDIT_TOOLS
 import dev.peashoot.core.text
-import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.JsonPrimitive
-import kotlinx.serialization.json.intOrNull
 
 /**
  * The names a villager can have, short enough to sit under a sprite. Which one a villager gets is
@@ -49,16 +45,35 @@ internal val VILLAGER_NAMES =
 private const val ROOT_FIELD = "."
 
 /** The one tool that only looks, which is an inspection rather than growth. */
-private const val READ = "Read"
+internal const val READ = "Read"
 
 /**
  * What a villager is doing. [IDLE] is only where one starts: its first line sets it walking or
- * coming home, and nothing in the feed says a walk home has ended, which takes a clock (#18).
+ * coming home, and nothing in the feed ends a walk home. [tick] retires a villager whose session
+ * has gone quiet rather than idling it, so an idle one is what the renderer (#20) would need.
  */
 enum class Activity {
     IDLE,
     WALKING_TO_WELL,
+    /** Rate-limited: resting at the well rather than walking home, until the retry comes. */
+    RESTING,
     RETURNING,
+}
+
+/** The sky over the whole farm: the latest line that said anything about it wins. */
+enum class Weather {
+    CLEAR,
+    RAIN,
+    STORM,
+    LIGHTNING,
+}
+
+/** The palette's season, which only a clock can know: see [tick]. */
+enum class Season {
+    WINTER,
+    SPRING,
+    SUMMER,
+    AUTUMN,
 }
 
 /** How far a crop has come. It stops at [RIPE]; nothing takes a crop backwards. */
@@ -90,6 +105,31 @@ data class Villager(
     val water: Int = 0,
     /** The exchanges of this villager that have started and not completed. */
     val inFlight: Set<String> = emptySet(),
+    val stamina: Stamina = Stamina(),
+    /** Buckets spilled: turns whose client left before the answer arrived. */
+    val spills: Int = 0,
+)
+
+/**
+ * A villager's stamina, which is the provider's rate-limit remaining. Raw, as the headers said it:
+ * the line carries no limit, so [peakTokens] is the most this villager has been told it had, which
+ * is the only whole a bar can be a fraction of.
+ */
+data class Stamina(
+    val remainingTokens: Long? = null,
+    val remainingRequests: Long? = null,
+    val peakTokens: Long? = null,
+)
+
+/** What the turns have dropped off: one produce per turn, and what the turns are known to cost. */
+data class ShippingBin(
+    val produce: Int = 0,
+    val ledger: Double = 0.0,
+    /**
+     * Completions that reported usage and no cost, so the ledger can say why it is quieter than the
+     * day. A refusal or an overload reported neither, and is not one of these.
+     */
+    val unpriced: Int = 0,
 )
 
 /**
@@ -129,6 +169,22 @@ data class FarmState(
      * it will answer to (#20) is one switch, not one per crop.
      */
     val labelsHidden: Boolean = true,
+    val weather: Weather = Weather.CLEAR,
+    /** Spring until the first [tick]: an event line cannot know the month. */
+    val season: Season = Season.SPRING,
+    /** Replay is night. */
+    val night: Boolean = false,
+    val bin: ShippingBin = ShippingBin(),
+    /** What each session has run up today, keyed by session; [tick] ends the quiet ones. */
+    val days: Map<String, Day> = emptyMap(),
+    /**
+     * The cards ended days have left, for the window to show and then take away (#20).
+     *
+     * ponytail: nothing takes one away yet, so this grows by one small card per session per day for
+     * as long as the window is open. Upgrade: the renderer dismisses them; cap it here only if a
+     * window is ever left open for months.
+     */
+    val pendingCards: List<EndOfDayCard> = emptyList(),
 )
 
 /**
@@ -142,15 +198,16 @@ fun FarmState.parentOf(villager: Villager): Villager? =
 
 /**
  * The farm after one event line. Pure: no clock, no randomness, nothing but the line's own fields,
- * so the same feed always replays to the same farm. A line this cannot use — a field missing, a
- * field of a shape it did not expect, an event name a later proxy invented — gives back the state
- * it was handed, because the window must not lose the farm over one strange line.
- * `exchange.client_gone` is one of those for now; it becomes lightning with #18.
+ * so the same feed always replays to the same farm. Everything time can say is [tick]'s. A line
+ * this cannot use — a field missing, a field of a shape it did not expect, an event name a later
+ * proxy invented — gives back the state it was handed, because the window must not lose the farm
+ * over one strange line.
  */
 fun reduce(state: FarmState, event: JsonObject): FarmState =
     when (event["event"].text()) {
         "exchange.started" -> started(state, event)
         "exchange.completed" -> completed(state, event)
+        "exchange.client_gone" -> clientGone(state, event)
         else -> state
     }
 
@@ -164,18 +221,25 @@ private fun started(state: FarmState, event: JsonObject): FarmState {
     val villager = villagerOf(state, session, event)
     // ponytail: the feed says nothing between started and completed, so the wait at the well is the
     // tail of the walk; the renderer shows waiting once the sprite arrives (#20). Upgrade: a
-    // WAITING_AT_WELL activity, if a tick ever reaches the reducer (#18's clock).
+    // WAITING_AT_WELL activity, which `tick` could set from how long ago the walk began.
     val walking =
         villager.copy(activity = Activity.WALKING_TO_WELL, inFlight = villager.inFlight + exchange)
     val queue =
         if (villager.id in state.wellQueue) state.wellQueue else state.wellQueue + villager.id
-    return state.copy(villagers = state.villagers + (villager.id to walking), wellQueue = queue)
+    return state.copy(
+        villagers = state.villagers + (villager.id to walking),
+        wellQueue = queue,
+        night = nightAfter(state.night, event),
+        days = state.days.heard(villager.session, event),
+    )
 }
 
 /**
- * The turn ended: its tools plant and grow, and its output tokens are water. The villager only
- * leaves the well once nothing of its own is still out there. A completed line for a villager never
- * seen still makes one, because the app can connect in the middle of a turn.
+ * The turn ended: its tools plant and grow, its output tokens are water, and what the line says
+ * about the sky, the bin and this key's rate limit is the farm's. The villager only leaves the well
+ * once nothing of its own is still out there — and a 429 leaves it there resting, since the turn is
+ * not done but nothing of it can go on either. A completed line for a villager never seen still
+ * makes one, because the app can connect in the middle of a turn.
  */
 private fun completed(state: FarmState, event: JsonObject): FarmState {
     val session = event["session"].text() ?: return state
@@ -186,17 +250,55 @@ private fun completed(state: FarmState, event: JsonObject): FarmState {
     // (`ControlClient.events`). Upgrade: remember completed ids, if a feed ever redelivers.
     val remaining = event["exchangeId"].text()?.let { villager.inFlight - it } ?: villager.inFlight
     val home = remaining.isEmpty()
+    val resting = status(event) == TOO_MANY_REQUESTS
+    val weather = weatherOf(event)
+    // A rest carries nothing, and neither does a turn whose client left: that bucket is spilled,
+    // which is the lightning the sky is showing. The provider billed those tokens all the same, so
+    // the day's card still counts them.
+    val spilled = resting || weather == Weather.LIGHTNING
     val back =
         villager.copy(
-            activity = if (home) Activity.RETURNING else villager.activity,
-            water = villager.water + outputTokens(event),
+            activity =
+                when {
+                    !home -> villager.activity
+                    resting -> Activity.RESTING
+                    else -> Activity.RETURNING
+                },
+            water = villager.water + if (spilled) 0 else outputTokens(event),
             inFlight = remaining,
+            stamina = villager.stamina.after(event),
         )
     return state.copy(
         villagers = state.villagers + (villager.id to back),
         fields = touched(state.fields, event),
-        wellQueue = if (home) state.wellQueue - villager.id else state.wellQueue,
+        // Resting is resting *at the well*: the villager keeps its place until a turn really ends,
+        // and is given one if the refusal is the first this window heard of it.
+        wellQueue =
+            when {
+                !home -> state.wellQueue
+                !resting -> state.wellQueue - villager.id
+                villager.id in state.wellQueue -> state.wellQueue
+                else -> state.wellQueue + villager.id
+            },
+        weather = weather,
+        night = nightAfter(state.night, event),
+        bin = state.bin.shipped(event),
+        days = state.days.heard(session, event),
     )
+}
+
+/**
+ * The client left mid-stream: lightning, and the bucket that turn was filling spills. Whose bucket
+ * is only knowable through the exchange id, because this line carries no `agent`; an exchange
+ * nobody here holds — a window that connected mid-stream — turns the sky and nothing else.
+ */
+private fun clientGone(state: FarmState, event: JsonObject): FarmState {
+    val exchange = event["exchangeId"].text()
+    val spiller = state.villagers.values.firstOrNull { exchange != null && exchange in it.inFlight }
+    val villagers =
+        spiller?.let { state.villagers + (it.id to it.copy(spills = it.spills + 1)) }
+            ?: state.villagers
+    return state.copy(villagers = villagers, weather = Weather.LIGHTNING)
 }
 
 /**
@@ -215,17 +317,12 @@ private fun villagerOf(state: FarmState, session: String, event: JsonObject): Vi
 }
 
 /** `String.hashCode` is specified, so the same id picks the same name on every JVM. */
-private fun nameFor(id: String): String = VILLAGER_NAMES[id.hashCode().mod(VILLAGER_NAMES.size)]
-
-/** Water is what the turn reported as output; a turn that reported no usage carried none. */
-private fun outputTokens(event: JsonObject): Int =
-    ((event["usage"] as? JsonObject)?.get("output") as? JsonPrimitive)?.intOrNull ?: 0
+internal fun nameFor(id: String): String = VILLAGER_NAMES[id.hashCode().mod(VILLAGER_NAMES.size)]
 
 /** Every path the turn's tools named, in the order the turn named them. */
 private fun touched(fields: Map<String, Field>, event: JsonObject): Map<String, Field> {
     val ts = event["ts"].text()
-    val tools = (event["tools"] as? JsonArray)?.filterIsInstance<JsonObject>().orEmpty()
-    return tools.fold(fields) { grown, tool -> grown.touch(tool, ts) }
+    return tools(event).fold(fields) { grown, tool -> grown.touch(tool, ts) }
 }
 
 /**
@@ -237,10 +334,8 @@ private fun touched(fields: Map<String, Field>, event: JsonObject): Map<String, 
  * searched it, changes nothing.
  */
 private fun Map<String, Field>.touch(tool: JsonObject, ts: String?): Map<String, Field> {
-    val path = tool["path"].text()?.replace('\\', '/')
+    val path = touchedPath(tool) ?: return this
     val name = tool["name"].text()
-    val touches = name == READ || name in EDIT_TOOLS
-    if (path == null || !touches) return this
     val directory = path.substringBeforeLast('/', ROOT_FIELD)
     val field = this[directory] ?: Field(label = directory, crops = emptyMap())
     val crop = field.crops[path]

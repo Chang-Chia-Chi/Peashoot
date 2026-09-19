@@ -24,8 +24,13 @@ import androidx.compose.ui.window.Window
 import androidx.compose.ui.window.application
 import dev.peashoot.app.farm.FarmState
 import dev.peashoot.app.farm.reduce
+import dev.peashoot.app.farm.tick
 import dev.peashoot.core.homeDir
 import java.nio.file.Path
+import java.time.Duration
+import java.time.Instant
+import java.time.ZoneId
+import java.util.Locale
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -45,6 +50,20 @@ private const val HEALTH_MS = 2_000L
 
 /** 10 seconds for a JVM to start and bind: "within a few seconds", with room for a cold disk. */
 private const val PROXY_TRIES = 50
+
+/**
+ * How often the farm is told the time: often enough that a day ends while the window is watched.
+ */
+private const val TICK_MS = 5_000L
+
+/**
+ * How long a session must be quiet before its day ends.
+ *
+ * ponytail: a fixed window, where `docs/design.md` names an `idleSessionMinutes` config key. No
+ * code reads that key yet and the app parses no TOML (see the `ponytail:` on [proxyPort]). Upgrade:
+ * ask the control API's `GET /config` for it, once #23 gives the app a config client and a key.
+ */
+private const val IDLE_MINUTES = 30L
 
 fun main() = application {
     val model = remember { AppModel() }
@@ -100,6 +119,7 @@ class AppModel(private val home: Path = homeDir(), private val port: Int = proxy
             if (!ensureProxy(client)) return
             coroutineScope {
                 val polling = launch { pollHealth(client) }
+                val ticking = launch { tickFarm() }
                 client.events(lastId).collect { feed ->
                     when (feed) {
                         is Feed.State -> status = feed.detail
@@ -107,8 +127,9 @@ class AppModel(private val home: Path = homeDir(), private val port: Int = proxy
                     }
                 }
                 // The feed only ends when another attempt could not help, so there is nothing
-                // left to poll for; without this the scope would wait on the poller for ever.
+                // left to poll for, or to age; without this the scope would wait on them for ever.
                 polling.cancel()
+                ticking.cancel()
             }
         }
     }
@@ -160,6 +181,22 @@ class AppModel(private val home: Path = homeDir(), private val port: Int = proxy
         }
     }
 
+    /**
+     * The one place the farm hears a clock: the reducer itself never asks what time it is.
+     *
+     * This and [add] both read [farm] and write it back, from two coroutines. That is safe only
+     * because both run on the one thread [watch] was called on — the window's, or a test's
+     * `runBlocking` — and neither suspends between the read and the write. Move either onto another
+     * dispatcher and each will lose the other's updates.
+     */
+    private suspend fun tickFarm() {
+        while (true) {
+            delay(TICK_MS)
+            farm =
+                tick(farm, Instant.now(), Duration.ofMinutes(IDLE_MINUTES), ZoneId.systemDefault())
+        }
+    }
+
     private fun add(line: Feed.Line) {
         lastId = line.id
         farm = reduce(farm, line.event)
@@ -181,7 +218,11 @@ private fun describe(line: Feed.Line): String {
 /** The farm in one line, until there is a farm to look at (#19). */
 private fun summary(farm: FarmState): String {
     val crops = farm.fields.values.sumOf { it.crops.size }
-    return "farm: ${farm.villagers.size} villagers, ${farm.wellQueue.size} at the well, $crops crops"
+    val sky = farm.weather.name.lowercase(Locale.ROOT)
+    val ledger = String.format(Locale.ROOT, "%.2f", farm.bin.ledger)
+    return "farm: ${farm.villagers.size} villagers, ${farm.wellQueue.size} at the well, " +
+        "$crops crops, $sky, ${if (farm.night) "night" else "day"}, " +
+        "bin ${farm.bin.produce} / $$ledger"
 }
 
 // Block bodies, not expression bodies, throughout: without type resolution the Compose rules
