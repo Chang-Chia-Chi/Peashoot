@@ -16,6 +16,8 @@ dependencies {
     // A real proxy on a real socket is the only honest test of a feed that must survive one
     // stopping and starting again. Tests only: nothing in `main` knows the proxy is Kotlin.
     "testImplementation"(project(":proxy"))
+    // The reducer's package lives beside the window, so only a rule can keep Compose out of it.
+    "testImplementation"(libs.archunit.junit5)
     "testRuntimeOnly"(libs.slf4j.simple)
     // The Compose rule set, here alone because this is the only module with a composable in it.
     "detektPlugins"(libs.compose.rules.detekt)

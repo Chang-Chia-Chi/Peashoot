@@ -18,6 +18,13 @@ data class Usage(val input: Int, val output: Int, val cacheRead: Int, val cacheW
  */
 data class ToolCall(val name: String, val path: String?, val command: String?)
 
+/**
+ * The tools that change the file they name; every other tool that names one only looked at it. Here
+ * because the Gource log and the farm both turn on it, and two copies of the list would be one new
+ * edit tool away from disagreeing about what was modified.
+ */
+val EDIT_TOOLS = setOf("Edit", "MultiEdit", "Write", "NotebookEdit")
+
 /** One tool_result block in the request's last message; name from the tool_use it answers. */
 data class ToolResult(val name: String?, val bytes: Int)
 

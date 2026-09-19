@@ -1,5 +1,6 @@
 package dev.peashoot.proxy
 
+import dev.peashoot.core.EDIT_TOOLS
 import dev.peashoot.core.ToolCall
 import java.io.IOException
 import java.nio.file.Files
@@ -28,9 +29,6 @@ private const val USER_LENGTH = 8
  */
 private const val ADDED = "A"
 private const val MODIFIED = "M"
-
-/** The tools that change a file. Everything else that names one only looked at it. */
-private val EDIT_TOOLS = setOf("Edit", "MultiEdit", "Write", "NotebookEdit")
 
 /**
  * Far enough apart to read in motion: green looks, teal searches, orange edits, red creates. A tool
