@@ -22,6 +22,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Window
 import androidx.compose.ui.window.application
+import dev.peashoot.app.farm.FarmState
+import dev.peashoot.app.farm.reduce
 import dev.peashoot.core.homeDir
 import java.nio.file.Path
 import kotlinx.coroutines.coroutineScope
@@ -63,8 +65,9 @@ private fun proxyPort(env: (String) -> String? = System::getenv): Int =
 
 /**
  * What the window shows and the one thing that fills it: health as it is polled, the feed's lines
- * newest first, and whatever the connection is doing. The farm reducer replaces this (#17); until
- * then the window is a plain list, and everything worth testing is in [ControlClient].
+ * newest first, the farm every line has been folded into, and whatever the connection is doing. The
+ * renderer (#19, #20) replaces the list with the farm it is drawn from; everything worth testing is
+ * in [ControlClient] and in [reduce], neither of which needs a window.
  */
 class AppModel(private val home: Path = homeDir(), private val port: Int = proxyPort()) {
     private val url = "http://127.0.0.1:$port"
@@ -76,6 +79,10 @@ class AppModel(private val home: Path = homeDir(), private val port: Int = proxy
         private set
 
     val lines = mutableStateListOf<String>()
+
+    /** Every line the window has heard, folded into one farm. */
+    var farm by mutableStateOf(FarmState())
+        private set
 
     /** Only ever a proxy this app started: one that was already up belongs to whoever ran it. */
     private var owned: OwnedProxy? = null
@@ -155,6 +162,7 @@ class AppModel(private val home: Path = homeDir(), private val port: Int = proxy
 
     private fun add(line: Feed.Line) {
         lastId = line.id
+        farm = reduce(farm, line.event)
         lines.add(0, describe(line))
         while (lines.size > MAX_LINES) lines.removeAt(lines.lastIndex)
     }
@@ -170,6 +178,12 @@ private fun describe(line: Feed.Line): String {
     return "${line.id}  ${field("ts")}  ${field("event")}  ${field("exchangeId")}"
 }
 
+/** The farm in one line, until there is a farm to look at (#19). */
+private fun summary(farm: FarmState): String {
+    val crops = farm.fields.values.sumOf { it.crops.size }
+    return "farm: ${farm.villagers.size} villagers, ${farm.wellQueue.size} at the well, $crops crops"
+}
+
 // Block bodies, not expression bodies, throughout: without type resolution the Compose rules
 // cannot tell what an expression-bodied composable returns, so `= Column { … }` puts a composable
 // outside ComposableNaming and its neighbours rather than past them.
@@ -179,6 +193,7 @@ private fun Dashboard(model: AppModel) {
         Column(Modifier.fillMaxSize().padding(all = 12.dp)) {
             Text(model.status, style = MaterialTheme.typography.subtitle1)
             HealthLines(model.health)
+            Text(summary(model.farm))
             Divider(Modifier.padding(vertical = 8.dp))
             Text("events, newest first", style = MaterialTheme.typography.caption)
             EventLines(model.lines)
