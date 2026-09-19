@@ -15,7 +15,7 @@ ktor = "3.5.2"
 slf4j = "2.0.19"
 sqlite-jdbc = "3.49.1.0"
 tomlj = "1.1.1"
-ulid-creator = "5.2.3"
+ulid-creator = "5.2.4"
 
 [libraries]
 archunit-junit5 = { module = "com.tngtech.archunit:archunit-junit5", version.ref = "archunit" }
