@@ -164,32 +164,51 @@ class FarmTest {
     fun `a line the reducer cannot use leaves the farm as it was`() {
         val states = replay("odd-lines.jsonl")
         assertEquals(7, states.size)
-        // `event` as an object, an unknown event name, a client_gone, and a null session: each
-        // changes nothing at all, tools and all.
-        states.drop(1).take(4).forEach { assertEquals(states[0], it) }
+        // `event` as an object and an unknown event name change nothing at all, tools and all.
+        assertEquals(states[0], states[1])
+        assertEquals(states[0], states[2])
+        // A client_gone is lightning and one spilled bucket, on the villager whose in-flight
+        // exchange it names, and nothing else (#18).
+        assertEquals(
+            states[0].copy(
+                weather = Weather.LIGHTNING,
+                villagers = mapOf(ECHO to states[0].villager(ECHO).copy(spills = 1)),
+            ),
+            states[3],
+        )
+        // A null session is a line with no villager to be about.
+        assertEquals(states[3], states[4])
         // `tools` as a string and `usage` null: the villager still comes home, carrying nothing.
         assertEquals(Activity.RETURNING, states[5].villager(ECHO).activity)
         assertEquals(0, states[5].villager(ECHO).water)
         assertTrue(states[5].crops().isEmpty())
-        // No exchangeId, a tool with no path, a path that is an object, a tool that is a string.
-        assertEquals(states[5], states[6])
+        // No exchangeId, a tool with no path, a path that is an object, a tool that is a string:
+        // nothing about the farm changes but what the turn itself adds to the bin and to the day.
+        assertEquals(states[5].copy(bin = states[6].bin, days = states[6].days), states[6])
+        // Both turns ended; only the second reported usage with no cost, which is what unpriced
+        // means. The first reported nothing at all, so there was nothing to price.
+        assertEquals(ShippingBin(produce = 2, ledger = 0.0, unpriced = 1), states[6].bin)
         assertEquals(1, states.last().villagers.size)
     }
 }
 
-/** The state after each line of a fixture, in order, as `docs/spec.md`'s seam describes it. */
-private fun replay(file: String): List<FarmState> =
+/**
+ * The state after each line of a fixture, in order, as `docs/spec.md`'s seam describes it. Internal
+ * rather than private because [SignalsTest] and [DayTest] replay the same way: one loader keeps the
+ * three files reading the fixtures alike.
+ */
+internal fun replay(file: String): List<FarmState> =
     events(file).runningFold(FarmState()) { state, event -> reduce(state, event) }.drop(1)
 
-private fun events(file: String): List<JsonObject> =
+internal fun events(file: String): List<JsonObject> =
     checkNotNull(FarmTest::class.java.getResourceAsStream("/farm/$file")) { file }
         .bufferedReader()
         .use { it.readLines() }
         .filter { it.isNotBlank() }
         .map { Json.parseToJsonElement(it).jsonObject }
 
-private fun FarmState.villager(id: String): Villager = villagers.getValue(id)
+internal fun FarmState.villager(id: String): Villager = villagers.getValue(id)
 
-private fun FarmState.crops(): List<Crop> = fields.values.flatMap { it.crops.values }
+internal fun FarmState.crops(): List<Crop> = fields.values.flatMap { it.crops.values }
 
-private fun FarmState.crop(path: String): Crop? = crops().firstOrNull { it.label == path }
+internal fun FarmState.crop(path: String): Crop? = crops().firstOrNull { it.label == path }
