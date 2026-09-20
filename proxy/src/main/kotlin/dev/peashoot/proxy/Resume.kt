@@ -275,8 +275,10 @@ class Resume(
         inFlight[exchange.id] = asked
         claimable[exchange.id] = asked
         // A claim made on the engine's word can be ahead of the upstream's first byte: wait for
-        // the response it is about to have, or for the word that it never had one.
-        val response = original.awaited()
+        // the response it is about to have, or for the word that it never had one. Only the
+        // claiming path waits; a cursor did its own waiting inside `cursor` and has already been
+        // answered or missed.
+        val response = if (cursor == null) original.awaited() else null
         return cursor
             ?: if (original == null || response == null) null
             else served(exchange, original, response, original.answer.frames())
