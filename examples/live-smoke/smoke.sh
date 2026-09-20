@@ -155,27 +155,29 @@ gained() {
 
 trap cleanup EXIT
 
-providers=()
+# A word list and not an array: the names hold no spaces, and `${#array[@]}` on an empty array is
+# an unbound variable under `set -u` in the bash macOS still ships.
+providers=
 if [ -n "${ANTHROPIC_API_KEY:-}" ]; then
   keyfile anthropic x-api-key "$ANTHROPIC_API_KEY"
-  providers+=(anthropic)
+  providers="$providers anthropic"
 else
   echo "::notice::ANTHROPIC_API_KEY is not set; skipping the Anthropic Messages surface"
 fi
 if [ -n "${OPENAI_API_KEY:-}" ]; then
   keyfile openai authorization "Bearer $OPENAI_API_KEY"
-  providers+=(openai-chat openai-responses)
+  providers="$providers openai-chat openai-responses"
 else
   echo "::notice::OPENAI_API_KEY is not set; skipping both OpenAI surfaces"
 fi
-if [ ${#providers[@]} -eq 0 ]; then
+if [ -z "$providers" ]; then
   echo "::notice::no provider key is set, so there is nothing to smoke"
   exit 0
 fi
 
 echo "== recording against the real providers =="
 start record
-for provider in "${providers[@]}"; do
+for provider in $providers; do
   before=$(completed "$provider" '"usage":{')
   status=$(call "$provider")
   expect2xx "$provider (record)" "$status"
@@ -202,7 +204,7 @@ TOML
 
 echo "== replaying with the providers unreachable =="
 start replay
-for provider in "${providers[@]}"; do
+for provider in $providers; do
   before=$(completed "$provider" '"replayHit":true')
   status=$(call "$provider")
   expect2xx "$provider (replay)" "$status"
@@ -216,4 +218,4 @@ if [ -n "$out" ]; then
   cp "$events" "$out"
   echo "event lines left in $out"
 fi
-echo "live smoke passed for: ${providers[*]}"
+echo "live smoke passed for:$providers"
