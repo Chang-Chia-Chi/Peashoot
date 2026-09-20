@@ -39,7 +39,6 @@ import dev.peashoot.app.farm.tick
 import dev.peashoot.app.render.FarmCanvas
 import dev.peashoot.core.homeDir
 import java.nio.file.Path
-import java.time.Duration
 import java.time.Instant
 import java.time.ZoneId
 import java.util.Locale
@@ -67,16 +66,6 @@ private const val PROXY_TRIES = 50
  * How often the farm is told the time: often enough that a day ends while the window is watched.
  */
 private const val TICK_MS = 5_000L
-
-/**
- * How long a session must be quiet before its day ends.
- *
- * ponytail: still a fixed window. #23 gave the app a config client, and there is nothing to ask:
- * `docs/design.md`'s config list names `idleSessionMinutes`, but no `ProxyConfig` field holds it,
- * `GET /config` does not answer it, and no code anywhere reads it. What is missing is the key on
- * the proxy's side. Upgrade: add it there, and then one read through [ControlPlaneModel] here.
- */
-private const val IDLE_MINUTES = 30L
 
 /**
  * The window's tabs, farm first: the farm is the point, the lines are how to check it, and the
@@ -234,6 +223,10 @@ class AppModel(private val home: Path = homeDir(), private val port: Int = proxy
     /**
      * The one place the farm hears a clock: the reducer itself never asks what time it is.
      *
+     * How long quiet is long enough is the proxy's `idleSessionMinutes`, read afresh each tick off
+     * [ControlPlaneModel] — so a value put on the proxy moves the boundary on the next tick, and a
+     * proxy that has not answered yet, or cannot, leaves it where that panel's fallback puts it.
+     *
      * This and [add] both read [farm] and write it back, from two coroutines. That is safe only
      * because both run on the one thread [watch] was called on — the window's, or a test's
      * `runBlocking` — and neither suspends between the read and the write. Move either onto another
@@ -242,8 +235,7 @@ class AppModel(private val home: Path = homeDir(), private val port: Int = proxy
     private suspend fun tickFarm() {
         while (true) {
             delay(TICK_MS)
-            farm =
-                tick(farm, Instant.now(), Duration.ofMinutes(IDLE_MINUTES), ZoneId.systemDefault())
+            farm = tick(farm, Instant.now(), control.idleAfter, ZoneId.systemDefault())
         }
     }
 

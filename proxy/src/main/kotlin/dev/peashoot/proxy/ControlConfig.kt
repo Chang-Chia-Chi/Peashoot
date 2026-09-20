@@ -169,6 +169,9 @@ internal fun ProxyConfig.toJson(routes: Map<String, Routing> = this.routes): Jso
             putJsonObject("openai") { put("upstream", openaiUpstream) }
         }
         put("secretHeaders", JsonArray(secretHeaders.map(::JsonPrimitive)))
+        // Not in [RESTART_REQUIRED] and not in [keepingRunning]: nothing in this process reads it,
+        // so there is nothing here a restart could change. A put is live the moment it is served.
+        put("idleSessionMinutes", idleSessionMinutes)
         put("routes", routesJson(routes))
         putJsonObject("replay") {
             put("cadence", replayCadence.spelled())

@@ -27,6 +27,14 @@ const val CONFIG_FILE = "peashoot.toml"
 /** The highest port a socket takes; 0 asks the system for a free one, as the tests bind. */
 private const val MAX_PORT = 65535L
 
+/**
+ * The longest idle window a day boundary can mean: a day. Past that the card is not about a day at
+ * all. Nothing here is about overflow — the field is an `Int`, far from any of it: what keeps a
+ * larger number from truncating into a plausible one is that the file is read as a `Long` and
+ * checked against this before it is narrowed.
+ */
+private const val MAX_IDLE_MINUTES = 1440L
+
 const val DEFAULT_ROUTE = "default"
 
 /**
@@ -122,6 +130,15 @@ data class ProxyConfig(
      * replays from, so a CI job needs the file and no database.
      */
     val cassetteFile: Path? = null,
+    /**
+     * How long a session must be quiet before the app ends its day with a card. The one key here
+     * nothing in this process reads: it belongs to the traffic the proxy sees rather than to the
+     * window watching it, so it is configured beside its neighbours and served on `GET /config`.
+     *
+     * Bounded 1 to [MAX_IDLE_MINUTES] at load: zero or less ends every session's day on the app's
+     * every tick, which is a card that means nothing, and longer than a day is not an end of day.
+     */
+    val idleSessionMinutes: Int = 30,
 ) {
     /** [secretHeaders] lower-cased once, since header names compare case-insensitively. */
     val lowercaseSecretHeaders: Set<String> = secretHeaders.map(String::lowercase).toSet()
@@ -173,6 +190,13 @@ fun loadConfig(home: Path, env: (String) -> String? = System::getenv): ProxyConf
             it.toLongOrNull() ?: error("PEASHOOT_PORT must be a port number, not $it")
         } ?: toml.getLong("port") ?: defaults.port.toLong()
     check(port in 0..MAX_PORT) { "port must be 0 to $MAX_PORT, not $port" }
+    // Read and checked as a Long beside the port, and for the same reason: a number of minutes
+    // larger than an Int would truncate into a plausible one. No environment override — nothing in
+    // CI runs the window this is for, and a variable nobody reads is one more thing to keep true.
+    val idleMinutes = toml.getLong("idleSessionMinutes") ?: defaults.idleSessionMinutes.toLong()
+    check(idleMinutes in 1..MAX_IDLE_MINUTES) {
+        "idleSessionMinutes must be 1 to $MAX_IDLE_MINUTES, not $idleMinutes"
+    }
     return ProxyConfig(
         port = port.toInt(),
         host = host,
@@ -203,6 +227,7 @@ fun loadConfig(home: Path, env: (String) -> String? = System::getenv): ProxyConf
         redaction = Redaction.parse(Files.readString(redactFile)),
         pingInterval = toml.pingInterval(defaults.pingInterval),
         cassetteFile = cassetteFile,
+        idleSessionMinutes = idleMinutes.toInt(),
     )
 }
 
@@ -262,6 +287,10 @@ private fun ProxyConfig.toToml(): String = buildString {
     appendLine("port = $port")
     appendLine("host = \"$host\"")
     appendLine("secretHeaders = [${secretHeaders.joinToString { "\"$it\"" }}]")
+    appendLine()
+    // A bare key, so it is written before the first table header rather than inside one.
+    appendLine("# A session quiet this long ends its day with a card in the app: 1 to a day.")
+    appendLine("idleSessionMinutes = $idleSessionMinutes")
     appendLine()
     appendLine("[surfaces.anthropic]")
     appendLine("upstream = \"$anthropicUpstream\"")

@@ -16,6 +16,7 @@ import io.ktor.http.contentType
 import java.net.ServerSocket
 import java.nio.file.Files
 import java.nio.file.Path
+import java.time.Duration
 import kotlin.test.Test
 import kotlin.test.assertContains
 import kotlin.test.assertEquals
@@ -415,6 +416,29 @@ class ControlPlaneTest {
                 model.detach()
                 model.reload()
                 assertEquals("there is no proxy to ask", model.note)
+            }
+        }
+
+    /**
+     * The farm's day boundary, over the real socket: it is the proxy's `idleSessionMinutes`, it is
+     * the fallback until the proxy has answered, and a value put on the proxy is the one the next
+     * read brings back. Nothing here asks the window what it believes — the value is put through
+     * the control API and read back through the same one the farm reads.
+     */
+    @Test
+    fun `the idle window is the proxy's, and the fallback until the proxy has answered`() =
+        withTestProxy { proxy ->
+            withControl(proxy) { model, client ->
+                assertEquals(Duration.ofMinutes(30), model.idleAfter, "before any answer")
+                until { model.config != null && !model.busy }
+                assertEquals(Duration.ofMinutes(30), model.idleAfter, "what the proxy serves")
+
+                client.send(HttpMethod.Put, "/config", """{"idleSessionMinutes":45}""").getOrThrow()
+                model.reload()
+                until { model.config.orEmpty().contains("45") && !model.busy }
+
+                assertEquals(Duration.ofMinutes(45), model.idleAfter)
+                assertContains(model.config.orEmpty(), "\"idleSessionMinutes\": 45")
             }
         }
 }
