@@ -243,8 +243,10 @@ class Relay(
             return
         }
         // The target starts with `/` (relayModule refuses others), so it can only extend the path.
+        // Which provider it extends is the surface's, so an OpenAI request reaches the OpenAI
+        // upstream — a local one, when the config points it at an OpenAI-compatible server.
         val statement =
-            upstream.prepareRequest(config.upstreamBase + call.request.uri) {
+            upstream.prepareRequest(config.upstreamBase(exchange.surface) + call.request.uri) {
                 method = call.request.httpMethod
                 headers.appendAll(call.request.headers.without(notForwardedToUpstream))
                 if (body.isNotEmpty() || requestContentType != null)

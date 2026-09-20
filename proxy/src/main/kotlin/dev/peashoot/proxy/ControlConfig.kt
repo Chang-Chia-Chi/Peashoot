@@ -166,6 +166,7 @@ internal fun ProxyConfig.toJson(routes: Map<String, Routing> = this.routes): Jso
         put("host", host)
         putJsonObject("surfaces") {
             putJsonObject("anthropic") { put("upstream", anthropicUpstream) }
+            putJsonObject("openai") { put("upstream", openaiUpstream) }
         }
         put("secretHeaders", JsonArray(secretHeaders.map(::JsonPrimitive)))
         put("routes", routesJson(routes))

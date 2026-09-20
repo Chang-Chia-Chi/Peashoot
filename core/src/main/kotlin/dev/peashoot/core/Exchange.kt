@@ -66,6 +66,14 @@ class Exchange(
     val client: Client by lazy { Client.detect(request.headers, request.json) }
 
     /**
+     * Which provider API this request belongs to: the path decides, and the headers where two
+     * surfaces share a path. Derived rather than carried, because the method, path, and headers it
+     * reads are all kept by the store: a row rebuilt years later answers the surface it ran under,
+     * and no column, no cassette field, and no fresh database were needed to say so.
+     */
+    val surface: Surface by lazy { surfaceOf(request.path, request.headers) }
+
+    /**
      * Set once, by the source before its first frame or by the proxy-failure path; null only
      * between receipt and the source.
      */

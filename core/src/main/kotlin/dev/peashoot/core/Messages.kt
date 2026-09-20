@@ -32,17 +32,20 @@ data class ToolResult(val name: String?, val bytes: Int)
 data class RateLimit(val remainingTokens: Long?, val remainingRequests: Long?, val resetAt: String?)
 
 /** The Anthropic Messages surface: its request shape and its frame grammar. */
-object Messages {
-    const val SURFACE = "anthropic-messages"
+object Messages : Surface {
+    override val name = "anthropic-messages"
 
+    /** Its own path and the token count beside it; the model listing is nobody's alone. */
+    override fun owns(path: String): Boolean = path.startsWith(PATH)
+
+    override fun reader(): FrameReader = Reader()
+
+    private const val PATH = "/v1/messages"
     private const val BETA = "anthropic-beta"
     private const val TOKENS_REMAINING = "anthropic-ratelimit-tokens-remaining"
     private const val REQUESTS_REMAINING = "anthropic-ratelimit-requests-remaining"
     private const val TOKENS_RESET = "anthropic-ratelimit-tokens-reset"
     private const val REQUESTS_RESET = "anthropic-ratelimit-requests-reset"
-
-    /** The request's `model`, or null. */
-    fun model(json: JsonObject?): String? = json?.get("model").text()
 
     /**
      * The text of the first message whose role is user: a string content verbatim, an array content
@@ -69,7 +72,7 @@ object Messages {
      * tool_use with the same id in the message before it; bytes is the UTF-8 length of the block's
      * `content` as JSON text, so a string content counts its own bytes and an absent content is 0.
      */
-    fun toolResults(json: JsonObject?): List<ToolResult> {
+    override fun toolResults(json: JsonObject?): List<ToolResult> {
         val messages = messages(json)
         val last = messages.lastOrNull() as? JsonObject ?: return emptyList()
         val names = toolNames(messages.getOrNull(messages.size - 2))
@@ -79,43 +82,39 @@ object Messages {
     }
 
     /** Subscription traffic: any `anthropic-beta` value mentions oauth. */
-    fun isOAuth(headers: Headers): Boolean =
+    override fun isOAuth(headers: Headers): Boolean =
         headers.getAll(BETA).orEmpty().any { it.contains("oauth", ignoreCase = true) }
 
-    /**
-     * Null when the provider sent none of the three headers; a non-numeric value is a null field.
-     */
-    fun rateLimit(headers: Headers): RateLimit? {
-        val tokens = headers[TOKENS_REMAINING]
-        val requests = headers[REQUESTS_REMAINING]
-        val reset = headers[TOKENS_RESET] ?: headers[REQUESTS_RESET]
-        if (tokens == null && requests == null && reset == null) return null
-        return RateLimit(tokens?.toLongOrNull(), requests?.toLongOrNull(), reset)
-    }
+    override fun rateLimit(headers: Headers): RateLimit? =
+        rateLimitOf(
+            headers[TOKENS_REMAINING],
+            headers[REQUESTS_REMAINING],
+            headers[TOKENS_RESET] ?: headers[REQUESTS_RESET],
+        )
 
     /**
-     * Reads a response's frames as they arrive and accumulates what the event line reports. Never
-     * throws: a frame it cannot parse leaves everything as it was, so a cut or malformed stream
-     * still reports whatever arrived before it.
+     * One response's events. A tool call is opened by its `content_block_start`, filled by the
+     * `input_json_delta`s that follow, and closed by its `content_block_stop`, all keyed by the
+     * block index; a non-streaming body says all of it in one frame instead.
      */
-    class Reader {
-        var model: String? = null
+    class Reader : FrameReader {
+        override var model: String? = null
             private set
 
-        var usage: Usage? = null
+        override var usage: Usage? = null
             private set
 
-        var stopReason: String? = null
+        override var stopReason: String? = null
             private set
 
         /** Closed tool calls, in the order the response opened them. */
-        val tools: List<ToolCall>
+        override val tools: List<ToolCall>
             get() = closed
 
         private val closed = mutableListOf<ToolCall>()
         private val open = mutableMapOf<Int, OpenTool>()
 
-        fun read(frame: Frame) {
+        override fun read(frame: Frame) {
             val event = frame.event
             val json =
                 jsonObjectOrNull(if (event == null) frame.raw else sseData(frame.raw)) ?: return
@@ -206,7 +205,8 @@ internal fun jsonObjectOrNull(text: String): JsonObject? =
         null
     }
 
-private fun toolCall(name: String, input: JsonObject?): ToolCall =
+/** A tool call as the event line carries it: what it was called, and what it named. */
+internal fun toolCall(name: String, input: JsonObject?): ToolCall =
     ToolCall(
         name,
         path =
@@ -217,7 +217,7 @@ private fun toolCall(name: String, input: JsonObject?): ToolCall =
     )
 
 /** The `data:` lines of one SSE block, their prefix and one optional space removed. */
-private fun sseData(raw: String): String =
+internal fun sseData(raw: String): String =
     raw.splitToSequence('\n')
         .filter { it.startsWith("data:") }
         .joinToString("\n") { it.removePrefix("data:").removePrefix(" ").trimEnd('\r') }
@@ -240,7 +240,7 @@ private fun toolNames(message: JsonElement?): Map<String, String> =
         .toMap()
 
 /** A string content is its own bytes; anything else is the bytes of its JSON text. */
-private fun contentBytes(content: JsonElement?): Int {
+internal fun contentBytes(content: JsonElement?): Int {
     if (content == null) return 0
     val text = (content as? JsonPrimitive)?.takeIf { it.isString }?.content ?: content.toString()
     return text.utf8Length()
@@ -251,4 +251,4 @@ private fun String.utf8Length(): Int = toByteArray().size
 /** A JSON string, or null for anything else: a number, a bool, JSON null, an object, an array. */
 fun JsonElement?.text(): String? = (this as? JsonPrimitive)?.takeIf { it.isString }?.content
 
-private fun JsonElement?.int(): Int? = (this as? JsonPrimitive)?.intOrNull
+internal fun JsonElement?.int(): Int? = (this as? JsonPrimitive)?.intOrNull
