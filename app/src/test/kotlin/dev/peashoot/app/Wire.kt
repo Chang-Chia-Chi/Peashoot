@@ -4,6 +4,7 @@ import java.net.ServerSocket
 import java.net.Socket
 import java.util.Collections
 import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * A socket in front of the proxy that can be cut the way a killed process cuts one: a reset rather
@@ -105,3 +106,66 @@ internal class Impostor(private val status: String, private val body: String) : 
         }
     }
 }
+
+/**
+ * A provider that is not a provider: one fixed 200 to every request, and a count of how many it was
+ * asked for. The count is the point. A route in replay mode serves from the store and never asks
+ * the upstream, so the same request answered twice with this number moving once is the difference a
+ * mode switch makes, seen from outside the proxy rather than read back out of its config.
+ *
+ * Its own class and not [Impostor] because this one reads the request to the end before it answers:
+ * a relayed POST carries a body, and a server that replies and closes on a body still being written
+ * hands the proxy a broken pipe where the test wanted an answer.
+ */
+internal class Upstream(private val body: String) : AutoCloseable {
+    private val listener = ServerSocket(0)
+    private val threads = Executors.newCachedThreadPool { Thread(it).apply { isDaemon = true } }
+
+    /** How many requests have reached it. Written on its own threads, read from the test's. */
+    val calls = AtomicInteger()
+
+    val url = "http://127.0.0.1:${listener.localPort}"
+
+    init {
+        threads.submit(::serve)
+    }
+
+    override fun close() {
+        runCatching { listener.close() }
+        threads.shutdownNow()
+    }
+
+    private fun serve() {
+        while (!listener.isClosed) {
+            val socket = runCatching { listener.accept() }.getOrNull() ?: break
+            threads.submit { answer(socket) }
+        }
+    }
+
+    private fun answer(socket: Socket) {
+        runCatching {
+            socket.use {
+                val reader = it.getInputStream().bufferedReader()
+                var length = 0
+                var line = reader.readLine()
+                while (!line.isNullOrEmpty()) {
+                    if (line.startsWith(CONTENT_LENGTH, ignoreCase = true)) {
+                        length = line.substringAfter(':').trim().toInt()
+                    }
+                    line = reader.readLine()
+                }
+                // Characters and not bytes, which is the same count only because every body these
+                // tests send is ASCII; a fake upstream is not the place for a charset.
+                repeat(length) { reader.read() }
+                calls.incrementAndGet()
+                val head =
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n" +
+                        "Content-Length: ${body.toByteArray().size}\r\nConnection: close\r\n\r\n"
+                it.getOutputStream().write((head + body).toByteArray())
+                it.getOutputStream().flush()
+            }
+        }
+    }
+}
+
+private const val CONTENT_LENGTH = "Content-Length:"

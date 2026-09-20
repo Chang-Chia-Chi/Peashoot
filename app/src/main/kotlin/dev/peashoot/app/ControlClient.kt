@@ -6,19 +6,27 @@ import io.ktor.client.engine.cio.CIO
 import io.ktor.client.request.get
 import io.ktor.client.request.header
 import io.ktor.client.request.prepareGet
+import io.ktor.client.request.request
+import io.ktor.client.request.setBody
 import io.ktor.client.statement.HttpResponse
 import io.ktor.client.statement.bodyAsChannel
 import io.ktor.client.statement.bodyAsText
+import io.ktor.http.ContentType
 import io.ktor.http.HttpHeaders
+import io.ktor.http.HttpMethod
 import io.ktor.http.HttpStatusCode
+import io.ktor.http.contentType
+import io.ktor.http.isSuccess
 import io.ktor.utils.io.readLine
 import java.io.IOException
 import java.nio.file.Files
 import java.nio.file.Path
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.FlowCollector
 import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -33,6 +41,22 @@ private const val LAST_EVENT_ID = "Last-Event-ID"
 /** Long enough that a restarting proxy is not hammered, short enough to feel immediate. */
 private const val MIN_BACKOFF_MS = 250L
 private const val MAX_BACKOFF_MS = 5_000L
+
+/**
+ * How long a one-shot control call waits before it is a failure rather than a slow proxy.
+ *
+ * The client is built with the engine's own request timeout disabled, because a feed stays open for
+ * hours; every other call inherits that, and a call that never comes back would leave the panel
+ * that made it busy for ever, with its buttons dead until the window closed. This is the bound that
+ * puts back.
+ *
+ * Thirty seconds, and not a figure that feels responsive: these calls are all on loopback and take
+ * milliseconds, but two of them are bounded by the store rather than the socket — `GET /cassettes`
+ * counts rows by reading them all, and an export writes every matching recording to a file — so a
+ * value chosen for the common case would abandon the one call a large store makes slow. Nothing
+ * here is on the window's thread, so waiting costs a disabled button and no frames.
+ */
+private const val CALL_TIMEOUT_MS = 30_000L
 
 /** What `GET /health` says: the one call that needs no token. */
 data class Health(val version: String, val uptimeSeconds: Long, val routes: Map<String, String>)
@@ -63,6 +87,16 @@ sealed interface Feed {
 }
 
 /**
+ * The proxy answered, and said no: the status it said it with, and the `detail` out of its problem
+ * object, which is the sentence to put in front of the user word for word. An [IOException] like
+ * every other failure a call can come back with, so a screen that only means to say "that did not
+ * work" needs no special case, while one that must tell a refusal from an unreachable proxy asks
+ * what this is.
+ */
+internal class Refused(val status: Int, val detail: String) :
+    IOException("the proxy refused: $detail")
+
+/**
  * The app's one way to the proxy: REST and the SSE feed over `/_peashoot/v1/`. It holds the bearer
  * token, never a database handle; every number the window shows came over this.
  */
@@ -76,6 +110,12 @@ class ControlClient(
     private val client: HttpClient =
         // A feed stays open for hours, so the engine must not time the request out under it.
         HttpClient(CIO) { engine { requestTimeout = 0 } },
+    /**
+     * What a one-shot call waits, which is [CALL_TIMEOUT_MS] for the window. A parameter only so
+     * that the test for a proxy that accepts and never answers does not cost the build half a
+     * minute — the same reason `TestProxy` shortens the feed's keep-alive interval.
+     */
+    private val callTimeoutMs: Long = CALL_TIMEOUT_MS,
 ) : AutoCloseable {
 
     /**
@@ -115,17 +155,69 @@ class ControlClient(
                 return Result.failure(it)
             }
         return try {
-            val response =
-                client.get("$baseUrl$CONTROL_BASE$path") {
-                    header(HttpHeaders.Authorization, bearer)
-                }
-            // Read either way, as [probe] reads it, so the connection is released rather than held
-            // until something collects it — and then deliberately dropped on a refusal: a
-            // refusal's detail is about the request, and the one thing a pane must never put on
-            // screen or in a log is what came back.
-            val body = response.bodyAsText()
-            if (response.status == HttpStatusCode.OK) Result.success(body)
-            else Result.failure(IOException("the proxy answered ${response.status} to $path"))
+            withTimeout(callTimeoutMs) {
+                val response =
+                    client.get("$baseUrl$CONTROL_BASE$path") {
+                        header(HttpHeaders.Authorization, bearer)
+                    }
+                // Read either way, as [probe] reads it, so the connection is released rather than
+                // held until something collects it — and then deliberately dropped on a refusal: a
+                // refusal's detail is about the request, and the one thing a pane must never put on
+                // screen or in a log is what came back.
+                val body = response.bodyAsText()
+                if (response.status == HttpStatusCode.OK) Result.success(body)
+                else Result.failure(IOException("the proxy answered ${response.status} to $path"))
+            }
+        } catch (e: TimeoutCancellationException) {
+            Result.failure(timedOut(path, e))
+        } catch (e: IOException) {
+            Result.failure(e)
+        }
+    }
+
+    /**
+     * One control API call of any method, with a JSON body when there is one, answering the proxy's
+     * own text. Never throws, for the reason [probe] and [get] do not: what asks for these is a
+     * click.
+     *
+     * A refusal comes back as [Refused], carrying the status and the `detail` the proxy wrote, and
+     * that is deliberately the opposite of what [get] does with one. What [get] fetches is an
+     * exchange, whose body is a prompt nobody asked to see; what is refused here is a draft the
+     * user has this moment typed, and the parser's own words about it are the only thing that says
+     * which rule to fix. Every other failure stays the [IOException] it was, so a screen can tell a
+     * proxy that said no from a proxy that was never there.
+     */
+    internal suspend fun send(
+        method: HttpMethod,
+        path: String,
+        body: String? = null,
+    ): Result<String> {
+        // The token read is its own `runCatching` and the request is caught on IOException alone,
+        // for the reason [get] spells out: `CancellationException` is an `IllegalStateException`.
+        val bearer = runCatching {
+            "Bearer ${token()}"
+        }
+            .getOrElse {
+                return Result.failure(it)
+            }
+        return try {
+            withTimeout(callTimeoutMs) {
+                val response =
+                    client.request("$baseUrl$CONTROL_BASE$path") {
+                        this.method = method
+                        header(HttpHeaders.Authorization, bearer)
+                        if (body != null) {
+                            contentType(ContentType.Application.Json)
+                            setBody(body)
+                        }
+                    }
+                // Read either way, as [probe] and [get] read it, so the connection is released.
+                val answer = response.bodyAsText()
+                if (response.status.isSuccess()) Result.success(answer)
+                else Result.failure(Refused(response.status.value, problemDetail(answer)))
+            }
+        } catch (e: TimeoutCancellationException) {
+            Result.failure(timedOut(path, e))
         } catch (e: IOException) {
             Result.failure(e)
         }
@@ -156,6 +248,17 @@ class ControlClient(
     }
 
     override fun close() = client.close()
+
+    /**
+     * A call that ran out of time, as the failure a panel already knows how to report. An
+     * [IOException], so it reads as a proxy that could not be reached rather than as one that said
+     * no — which is what it is: nothing came back. Deliberately *not* the
+     * [TimeoutCancellationException] itself, because that is a `CancellationException`, and letting
+     * one out of here would cancel the caller instead of answering it and take the panel's whole
+     * scope down with it.
+     */
+    private fun timedOut(path: String, cause: Throwable): IOException =
+        IOException("the proxy did not answer $path within ${callTimeoutMs}ms", cause)
 
     private fun parseHealth(body: String): Probe = runCatching {
         val json = Json.parseToJsonElement(body).jsonObject

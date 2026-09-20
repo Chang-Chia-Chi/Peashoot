@@ -9,6 +9,8 @@ import dev.peashoot.proxy.LiveConfig
 import dev.peashoot.proxy.ProxyConfig
 import dev.peashoot.proxy.ProxyServer
 import dev.peashoot.proxy.Recorded
+import dev.peashoot.proxy.Recorder
+import dev.peashoot.proxy.Replay
 import dev.peashoot.proxy.RouteTable
 import dev.peashoot.proxy.Store
 import io.ktor.http.Headers
@@ -39,19 +41,28 @@ private const val PING_MS = 200L
  * under test is the client, not what made the line. Started on a port of its own so [restart] can
  * take the same one back, which is what a proxy the user restarted looks like to the app.
  */
-internal class TestProxy(val home: Path) : AutoCloseable {
+internal class TestProxy(val home: Path, upstream: String? = null) : AutoCloseable {
     val store = Store(home)
     // A short ping so an idle spell in a test still writes the keep-alive comments a real feed
     // writes: a client that cannot skip them would break on the quiet, not on the traffic.
+    //
+    // [upstream] is where the relay sends what it cannot answer itself. A test that never goes
+    // through the relay leaves it alone and the default stands; a test that does must name one,
+    // because the default is the real provider and no test here may ever reach it.
     private val config =
-        ProxyConfig(port = freePort(), host = "127.0.0.1", pingInterval = PING_MS.milliseconds)
+        ProxyConfig(
+            port = freePort(),
+            host = "127.0.0.1",
+            anthropicUpstream = upstream ?: ProxyConfig().anthropicUpstream,
+            pingInterval = PING_MS.milliseconds,
+        )
     val port: Int
         get() = config.port
 
     val url = "http://127.0.0.1:$port"
 
     private var api = newApi()
-    private var server = ProxyServer(config, control = api)
+    private var server = ProxyServer(config, chain(), api)
 
     val token: String
         get() = home.resolve(TOKEN_FILE).readText().trim()
@@ -60,7 +71,7 @@ internal class TestProxy(val home: Path) : AutoCloseable {
     fun restart() {
         stop()
         api = newApi()
-        server = ProxyServer(config, control = api)
+        server = ProxyServer(config, chain(), api)
     }
 
     fun stop() = server.close()
@@ -121,12 +132,48 @@ internal class TestProxy(val home: Path) : AutoCloseable {
      */
     fun publish(id: Long, event: JsonObject) = api.feed.publish(id, event)
 
+    /**
+     * One live recording with a body of its own, fingerprinted under the rules this proxy is
+     * running, and no event line at all: what `POST /rules/test` and an export read is the exchange
+     * table, and the fingerprint is what a rule test compares a candidate's against.
+     */
+    suspend fun recorded(id: String, body: String) {
+        val request = Exchange.Request("POST", "/v1/messages", Headers.Empty, body.toByteArray())
+        val exchange =
+            Exchange(
+                request,
+                route = "default",
+                routing = Route(Mode.RECORD),
+                id = id,
+                receivedAt = Instant.now(),
+            )
+        exchange.response = Exchange.Response(HttpStatusCode.OK.value, Headers.Empty)
+        exchange.fingerprint =
+            config.rules.fingerprint(
+                request.method,
+                request.path,
+                request.headers,
+                request.json,
+                request.body,
+            )
+        store.put(listOf(Recorded(exchange, emptyList())))
+    }
+
     override fun close() {
         stop()
         store.close()
     }
 
     private fun newApi() = ControlApi(store, home, RouteTable(config.routes), LiveConfig(config))
+
+    /**
+     * The interceptors `proxy serve` runs, minus the deriver: a request through the relay is
+     * recorded and a replay serves what was recorded, which is the whole of what a route mode does
+     * and the only way to see a mode switch from outside the process. The deriver is left out
+     * because what it writes is event lines, and the tests that want those put them on the feed
+     * themselves.
+     */
+    private fun chain() = listOf(Replay(store, config), Recorder(store))
 }
 
 /** Enough of a request to be a body worth looking at, and nothing a real key ever went near. */
@@ -181,10 +228,11 @@ internal fun freePort(): Int = ServerSocket(0).use { it.localPort }
  * A proxy and a fresh data directory for one test. `runBlocking`, not `runTest`: every wait here is
  * on a real socket, where a virtual clock would fire the timeouts before the bytes arrived.
  */
-internal fun withTestProxy(block: suspend (TestProxy) -> Unit) = runBlocking {
-    val home = Files.createTempDirectory("peashoot-app")
-    TestProxy(home).use { block(it) }
-}
+internal fun withTestProxy(upstream: String? = null, block: suspend (TestProxy) -> Unit) =
+    runBlocking {
+        val home = Files.createTempDirectory("peashoot-app")
+        TestProxy(home, upstream).use { block(it) }
+    }
 
 /** Waits until [condition] holds, or fails the test by timing out. */
 internal suspend fun until(condition: () -> Boolean) =
