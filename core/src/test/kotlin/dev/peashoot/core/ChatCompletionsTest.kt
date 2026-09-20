@@ -80,6 +80,19 @@ class ChatCompletionsTest {
     }
 
     @Test
+    fun `a later chunk carrying a null usage does not erase the usage already reported`() {
+        val reader = readFixture("stream-with-tool-calls.sse")
+        val reported = reader.usage
+
+        // Every chunk of an include_usage stream but the last carries `"usage": null`, and a
+        // provider is free to send one after the count too. Null is silence, not zero.
+        reader.read(Frame("""data: {"choices":[],"usage":null}""" + "\n\n", 0))
+
+        assertEquals(reported, reader.usage)
+        assertEquals(Usage(input = 28, output = 48, cacheRead = 64, cacheWrite = 0), reader.usage)
+    }
+
+    @Test
     fun `a tool result is named by the tool call it answers`() {
         assertEquals(
             listOf(ToolResult("Read", bytes = 13), ToolResult("Bash", bytes = 8)),
