@@ -5,6 +5,12 @@ on:
     branches: [main]
   pull_request:
 
+# Every other workflow here says what it needs; this one never did, and it is now the one that
+# uploads an artifact. The repository default is already read-only, so this takes nothing away
+# and changes no step — it writes the assumption down where a default cannot quietly change it.
+permissions:
+  contents: read
+
 jobs:
   build:
     strategy:
@@ -20,6 +26,13 @@ jobs:
           java-version: "21"
       - uses: gradle/actions/setup-gradle@v6
       - run: ./gradlew build
+        shell: bash
+      # `build` proves a zip was written; this proves it starts. Nothing else in the gate runs the
+      # jar the installers carry, so a lost main class, a dropped service file or a manifest
+      # without a version would reach a user before it reached a check. On both legs, because it
+      # costs seconds and a jar packed on Windows is the one Windows users would get.
+      # The version is the untagged fallback from the root build script: change it there and here.
+      - run: bash examples/jar-boot/boot.sh 1.0.0-dev
         shell: bash
       # The jar the app starts and a release ships, kept from every run. `build` has already made
       # it, because the proxy's `assemble` depends on `fatJar`; one leg uploads it because the file

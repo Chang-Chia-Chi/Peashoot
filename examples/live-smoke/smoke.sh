@@ -13,6 +13,8 @@
 # Never run this under `set -x`: the keys are in the environment of every command below.
 set -euo pipefail
 
+. examples/lib/proxy.sh
+
 jar=proxy/build/libs/peashoot.jar
 home=$(mktemp -d)
 # The keys live here and not in the proxy's data directory, so that whatever CI keeps of that
@@ -57,19 +59,8 @@ start() {
   : >"$log"
   PEASHOOT_HOME=$home PEASHOOT_PORT=0 PEASHOOT_MODE=$1 java -jar "$jar" >"$log" 2>&1 &
   proxy=$!
-  url=
-  for _ in $(seq 60); do
-    url=$(grep -o 'listening on http://[^,]*' "$log" | tail -n 1 | cut -d' ' -f3 || true)
-    [ -n "$url" ] && break
-    kill -0 "$proxy" 2>/dev/null || {
-      cat "$log"
-      exit 1
-    }
-    sleep 1
-  done
-  if [ -z "$url" ]; then
+  if ! url=$(proxy_url "$log" "$proxy"); then
     echo "the proxy did not start in $1 mode"
-    cat "$log"
     exit 1
   fi
 }
@@ -188,8 +179,11 @@ else
   echo "::notice::OPENAI_API_KEY is not set; skipping both OpenAI surfaces"
 fi
 if [ -z "$providers" ]; then
-  echo "::notice::no provider key is set, so there is nothing to smoke"
-  exit 0
+  # A skipped provider is a notice; every provider skipped is a failure. A run that proved
+  # nothing must not report that the surfaces are fine, which is what green would say here.
+  echo "::error::no provider key is set: this run tested nothing"
+  echo "Set ANTHROPIC_API_KEY, OPENAI_API_KEY, or both, as repository secrets."
+  exit 1
 fi
 
 echo "== recording against the real providers =="

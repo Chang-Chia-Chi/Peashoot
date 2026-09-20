@@ -80,9 +80,11 @@ compose.desktop {
         nativeDistributions {
             targetFormats(TargetFormat.Msi, TargetFormat.Dmg, TargetFormat.Deb)
             packageName = "Peashoot"
-            // jpackage refuses a 0 major on Windows, which is why an untagged build calls itself
-            // 1.0.0; a tagged one passes `-Ppeashoot.version=<tag without v>` (root build script).
-            packageVersion = version.toString()
+            // The same version the jar carries, with any suffix taken off: jpackage accepts a
+            // number with a non-zero major and nothing else, so the untagged `1.0.0-dev` installs
+            // as `1.0.0` while the jar inside it still says which build it came from. A tag build
+            // passes `-Ppeashoot.version=<tag without v>` and both say the tag.
+            packageVersion = version.toString().substringBefore('-')
             description = "Record, replay, and watch LLM agent traffic"
             vendor = "Peashoot"
             copyright = "Copyright 2026 The Peashoot authors"

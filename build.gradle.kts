@@ -17,9 +17,11 @@ plugins {
 val kotlinTest = libs.kotlin.test
 
 // What a build calls itself: the tag without its `v`, passed by .github/workflows/release.yml as
-// `-Ppeashoot.version=1.2.3`. Untagged builds keep 1.0.0, because jpackage refuses a 0 major on
-// Windows and an installer that cannot be built is worse than one that overstates its age.
-val peashootVersion = providers.gradleProperty("peashoot.version").getOrElse("1.0.0")
+// `-Ppeashoot.version=1.2.3`. Without a tag it says `1.0.0-dev`, so that `GET /health` on a jar
+// built from main can never be mistaken for the jar a release shipped — every untagged build
+// used to answer a flat `1.0.0`. The installers cannot carry the suffix: jpackage takes a number
+// with a non-zero major and nothing else, so `app` strips it (see app/build.gradle.kts).
+val peashootVersion = providers.gradleProperty("peashoot.version").getOrElse("1.0.0-dev")
 
 // One coverage report for the whole build: `./gradlew koverHtmlReport` -> build/kover/html.
 dependencies {

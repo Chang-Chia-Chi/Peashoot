@@ -19,6 +19,12 @@ on:
 permissions:
   contents: read
 
+# One release build per ref at a time, and never cancelled half way: two runs for one tag would
+# race over the same draft, and a cancelled one leaves an installer nobody built again.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   installers:
     # Neither the tag nor the publishing is a fork's business.
@@ -127,6 +133,15 @@ jobs:
         run: |
           set -euo pipefail
           ls -l artifacts
-          gh release create "$TAG" --draft --repo "$GITHUB_REPOSITORY" --title "$TAG" \
-            --notes "Draft. The installers are unsigned: macOS Gatekeeper and Windows SmartScreen will warn, and on macOS the first launch needs right-click Open. Write the notes, check the three installers start the app, and publish by hand." \
-            artifacts/*
+          notes="Draft. The installers are unsigned: macOS Gatekeeper and Windows SmartScreen will warn, and on macOS the first launch needs right-click Open. Write the notes, check the three installers start the app, and publish by hand."
+          # Re-runnable: `gh release create` refuses a tag that already has a release, so a second
+          # run after one flaky leg used to die rather than finish the job. Uploading to the
+          # existing release cannot publish it — `--clobber` replaces assets and touches nothing
+          # else, and a draft stays a draft until a human says otherwise.
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "a release for $TAG exists; replacing its assets"
+            gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber artifacts/*
+          else
+            gh release create "$TAG" --draft --repo "$GITHUB_REPOSITORY" --title "$TAG" \
+              --notes "$notes" artifacts/*
+          fi
