@@ -1,5 +1,6 @@
 package dev.peashoot.proxy
 
+import dev.peashoot.core.ChatCompletions
 import dev.peashoot.core.DEFAULT_PRICES
 import dev.peashoot.core.Mode
 import dev.peashoot.core.Price
@@ -8,6 +9,7 @@ import dev.peashoot.core.RULES_FILE
 import dev.peashoot.core.Redaction
 import dev.peashoot.core.Route
 import dev.peashoot.core.Rules
+import dev.peashoot.core.Surface
 import java.nio.file.Files
 import java.nio.file.Path
 import java.util.concurrent.atomic.AtomicReference
@@ -80,6 +82,12 @@ data class ProxyConfig(
     /** The listen address. Loopback only: the control API reads and steers all traffic. */
     val host: String = "127.0.0.1",
     val anthropicUpstream: String = "https://api.anthropic.com",
+    /**
+     * Where the OpenAI surfaces go. Its own key because a local OpenAI-compatible server — Ollama
+     * is the free one — is the whole point of having it: pointing it at `127.0.0.1:11434` must not
+     * drag the Anthropic traffic along with it.
+     */
+    val openaiUpstream: String = "https://api.openai.com",
     /** Debug: append every raw upstream response to this file, for building fixtures. */
     val dumpFrames: Path? = null,
     /** Sent upstream, never kept: not on the Exchange, not in any log or file. Any case. */
@@ -116,8 +124,14 @@ data class ProxyConfig(
     /** [secretHeaders] lower-cased once, since header names compare case-insensitively. */
     val lowercaseSecretHeaders: Set<String> = secretHeaders.map(String::lowercase).toSet()
 
-    /** [anthropicUpstream] without a trailing slash, so a request path appends directly. */
-    val upstreamBase: String = anthropicUpstream.trimEnd('/')
+    /**
+     * Where [surface] is relayed to, without a trailing slash so a request path appends directly.
+     */
+    fun upstreamBase(surface: Surface): String =
+        when (surface) {
+            ChatCompletions -> openaiUpstream
+            else -> anthropicUpstream
+        }.trimEnd('/')
 }
 
 /**
@@ -158,8 +172,10 @@ fun loadConfig(home: Path, env: (String) -> String? = System::getenv): ProxyConf
         host = host,
         anthropicUpstream =
             env("PEASHOOT_ANTHROPIC_UPSTREAM")
-                ?: toml.getString("surfaces.anthropic.upstream")
-                ?: defaults.anthropicUpstream,
+                ?: toml.upstream("anthropic", defaults.anthropicUpstream),
+        // No environment override: nothing in CI points at an OpenAI upstream, and a variable
+        // nobody reads is one more thing to keep true. The file and `PUT /config` set it.
+        openaiUpstream = toml.upstream("openai", defaults.openaiUpstream),
         dumpFrames = env("PEASHOOT_DUMP_FRAMES")?.let(Path::of),
         secretHeaders =
             toml
@@ -183,6 +199,10 @@ fun loadConfig(home: Path, env: (String) -> String? = System::getenv): ProxyConf
         cassetteFile = cassetteFile,
     )
 }
+
+/** Where one surface's traffic goes: `[surfaces.<name>] upstream`, or [default]. */
+private fun TomlParseResult.upstream(name: String, default: String): String =
+    getString("surfaces.$name.upstream") ?: default
 
 /** The default route with `PEASHOOT_MODE`, `PEASHOOT_STRICT`, and `PEASHOOT_CASSETTE` on top. */
 private fun Route.withEnv(env: (String) -> String?, cassetteFile: Path?): Route =
@@ -239,6 +259,11 @@ private fun ProxyConfig.toToml(): String = buildString {
     appendLine()
     appendLine("[surfaces.anthropic]")
     appendLine("upstream = \"$anthropicUpstream\"")
+    appendLine()
+    appendLine("# Point this at an OpenAI-compatible server to record against one for free:")
+    appendLine("# Ollama serves /v1/chat/completions on http://127.0.0.1:11434.")
+    appendLine("[surfaces.openai]")
+    appendLine("upstream = \"$openaiUpstream\"")
     appendLine()
     appendLine("# On, every turn's file tools also go to $GOURCE_FILE, for Gource to animate.")
     appendLine("[gource]")

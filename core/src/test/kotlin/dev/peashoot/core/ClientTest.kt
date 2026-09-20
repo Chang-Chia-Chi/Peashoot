@@ -78,6 +78,23 @@ class ClientTest {
             Client.detect(headersOf("X-Stainless-Retry-Count", "0"), null),
             "an SDK that names no language is still an SDK",
         )
+        assertEquals(
+            Client("sdk-js", session = null, agent = null, parentAgent = null),
+            Client.detect(
+                headersOf(
+                    "x-stainless-lang" to listOf("js"),
+                    "x-stainless-package-version" to listOf("4.68.0"),
+                    "user-agent" to listOf("OpenAI/JS 4.68.0"),
+                ),
+                null,
+            ),
+            "the OpenAI SDKs are Stainless-generated, so the language header names them too",
+        )
+        assertEquals(
+            Client("openai", session = null, agent = null, parentAgent = null),
+            Client.detect(headersOf("user-agent", "OpenAI/Python 1.109.1"), null),
+            "and a client that sends only the product token falls back to it",
+        )
     }
 
     @Test

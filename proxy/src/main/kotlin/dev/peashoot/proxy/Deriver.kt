@@ -3,11 +3,12 @@ package dev.peashoot.proxy
 import dev.peashoot.core.DEFAULT_PRICES
 import dev.peashoot.core.Exchange
 import dev.peashoot.core.Frame
+import dev.peashoot.core.FrameReader
 import dev.peashoot.core.FrameSource
 import dev.peashoot.core.Interceptor
-import dev.peashoot.core.Messages
 import dev.peashoot.core.Outcome
 import dev.peashoot.core.Price
+import dev.peashoot.core.Surface
 import dev.peashoot.core.ToolCall
 import dev.peashoot.core.Usage
 import dev.peashoot.core.costUsd
@@ -62,10 +63,10 @@ class Deriver(
 ) : Interceptor {
     /**
      * What the frames have said so far, for an exchange whose response began. Only that exchange's
-     * drive coroutine touches its turn, and only completion removes it.
+     * drive coroutine touches its turn, and only completion removes it. The reader is the surface's
+     * own, so a grammar is read by the adapter that knows it.
      */
-    private class Turn {
-        val reader = Messages.Reader()
+    private class Turn(val reader: FrameReader) {
         var firstByteAt: Instant? = null
     }
 
@@ -88,7 +89,7 @@ class Deriver(
     }
 
     override fun onFrames(exchange: Exchange, frames: Flow<Frame>): Flow<Frame> {
-        val turn = Turn()
+        val turn = Turn(exchange.surface.reader())
         // Registered when collection starts, so a response that never began leaves no entry: the
         // chain promises a completion only for an exchange the proxy answered.
         return frames
@@ -114,7 +115,7 @@ class Deriver(
 
     /** An exchange whose response never started has nothing to report but its own ending. */
     override suspend fun onComplete(exchange: Exchange, outcome: Outcome) {
-        val turn = turns.remove(exchange.id) ?: Turn()
+        val turn = turns.remove(exchange.id) ?: Turn(exchange.surface.reader())
         emit(exchange, completedEvent(exchange, outcome, turn))
         gource?.append(exchange.client.session, turn.reader.tools)
     }
@@ -122,7 +123,7 @@ class Deriver(
     private fun startedEvent(exchange: Exchange): JsonObject = buildJsonObject {
         put("ts", exchange.receivedAt.toString())
         put("event", "exchange.started")
-        putExchange(exchange, Messages.model(exchange.request.json))
+        putExchange(exchange, exchange.surface.model(exchange.request.json))
     }
 
     /**
@@ -134,12 +135,12 @@ class Deriver(
     private fun completedEvent(exchange: Exchange, outcome: Outcome, turn: Turn): JsonObject {
         val reader = turn.reader
         val now = Instant.now()
-        val model = reader.model ?: Messages.model(exchange.request.json)
+        val model = reader.model ?: exchange.surface.model(exchange.request.json)
         // Subscription traffic is billed by the plan, not by the token: it has no cost here.
         val cost =
             when {
                 exchange.replayHit -> 0.0
-                Messages.isOAuth(exchange.request.headers) -> null
+                exchange.surface.isOAuth(exchange.request.headers) -> null
                 else -> priced(model, reader.usage)
             }
         return buildJsonObject {
@@ -155,7 +156,7 @@ class Deriver(
             put("latencyMs", millisSince(exchange.receivedAt, now))
             put("replayHit", exchange.replayHit)
             put("clientDisconnected", exchange.clientDisconnected)
-            put("rateLimit", rateLimitJson(exchange.response?.headers))
+            put("rateLimit", rateLimitJson(exchange.surface, exchange.response?.headers))
         }
     }
 
@@ -185,7 +186,7 @@ class Deriver(
         put("agent", client.agent)
         put("parentAgent", client.parentAgent)
         put("client", client.type)
-        put("surface", Messages.SURFACE)
+        put("surface", exchange.surface.name)
         put("model", model)
         put("route", exchange.route)
         put("mode", exchange.mode.spelling)
@@ -229,7 +230,7 @@ class Deriver(
 private fun millisSince(from: Instant, to: Instant): Long = Duration.between(from, to).toMillis()
 
 private fun toolResultsJson(exchange: Exchange): JsonArray = buildJsonArray {
-    Messages.toolResults(exchange.request.json).forEach { result ->
+    exchange.surface.toolResults(exchange.request.json).forEach { result ->
         add(
             buildJsonObject {
                 put("name", result.name)
@@ -262,8 +263,8 @@ internal fun usageJson(usage: Usage?): JsonElement =
             put("cacheWrite", usage.cacheWrite)
         }
 
-private fun rateLimitJson(headers: Headers?): JsonElement {
-    val limit = headers?.let(Messages::rateLimit) ?: return JsonNull
+private fun rateLimitJson(surface: Surface, headers: Headers?): JsonElement {
+    val limit = headers?.let(surface::rateLimit) ?: return JsonNull
     return buildJsonObject {
         put("remainingTokens", limit.remainingTokens)
         put("remainingRequests", limit.remainingRequests)
