@@ -1,10 +1,14 @@
 package dev.peashoot.app
 
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.material.Checkbox
 import androidx.compose.material.Divider
 import androidx.compose.material.MaterialTheme
 import androidx.compose.material.Text
@@ -16,6 +20,7 @@ import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
@@ -25,6 +30,7 @@ import androidx.compose.ui.window.application
 import dev.peashoot.app.farm.FarmState
 import dev.peashoot.app.farm.reduce
 import dev.peashoot.app.farm.tick
+import dev.peashoot.app.render.FarmCanvas
 import dev.peashoot.core.homeDir
 import java.nio.file.Path
 import java.time.Duration
@@ -65,6 +71,9 @@ private const val TICK_MS = 5_000L
  */
 private const val IDLE_MINUTES = 30L
 
+/** The event list is a strip under the farm now; #20 moves it to a tab of its own. */
+private val EVENTS_HEIGHT = 120.dp
+
 fun main() = application {
     val model = remember { AppModel() }
     LaunchedEffect(model) { model.watch() }
@@ -84,9 +93,10 @@ private fun proxyPort(env: (String) -> String? = System::getenv): Int =
 
 /**
  * What the window shows and the one thing that fills it: health as it is polled, the feed's lines
- * newest first, the farm every line has been folded into, and whatever the connection is doing. The
- * renderer (#19, #20) replaces the list with the farm it is drawn from; everything worth testing is
- * in [ControlClient] and in [reduce], neither of which needs a window.
+ * newest first, the farm every line has been folded into, and whatever the connection is doing. #19
+ * made the farm the main view and left the lines in a short pane below it, which #20 moves to a tab
+ * of its own; everything worth testing is in [ControlClient], in [reduce] and in the pure halves of
+ * `dev.peashoot.app.render`, none of which needs a window.
  */
 class AppModel(private val home: Path = homeDir(), private val port: Int = proxyPort()) {
     private val url = "http://127.0.0.1:$port"
@@ -197,6 +207,15 @@ class AppModel(private val home: Path = homeDir(), private val port: Int = proxy
         }
     }
 
+    /**
+     * The show-paths toggle, which is one flag on the farm because the badge it answers to is one
+     * switch. Safe beside [tickFarm] and [add] for the same reason they are safe beside each other:
+     * a Compose Desktop click handler runs on the UI thread, which is the thread [watch] runs on.
+     */
+    fun showPaths(show: Boolean) {
+        farm = farm.copy(labelsHidden = !show)
+    }
+
     private fun add(line: Feed.Line) {
         lastId = line.id
         farm = reduce(farm, line.event)
@@ -215,7 +234,7 @@ private fun describe(line: Feed.Line): String {
     return "${line.id}  ${field("ts")}  ${field("event")}  ${field("exchangeId")}"
 }
 
-/** The farm in one line, until there is a farm to look at (#19). */
+/** The farm in one line, over the farm itself: the numbers a picture does not say outright. */
 private fun summary(farm: FarmState): String {
     val crops = farm.fields.values.sumOf { it.crops.size }
     val sky = farm.weather.name.lowercase(Locale.ROOT)
@@ -235,10 +254,21 @@ private fun Dashboard(model: AppModel) {
             Text(model.status, style = MaterialTheme.typography.subtitle1)
             HealthLines(model.health)
             Text(summary(model.farm))
+            ShowPaths(!model.farm.labelsHidden, model::showPaths)
+            FarmCanvas(model.farm, Modifier.fillMaxWidth().weight(1f))
             Divider(Modifier.padding(vertical = 8.dp))
             Text("events, newest first", style = MaterialTheme.typography.caption)
-            EventLines(model.lines)
+            EventLines(model.lines, Modifier.height(EVENTS_HEIGHT))
         }
+    }
+}
+
+/** Off by default, so a screenshot leaks no path by accident; on, the canvas carries a badge. */
+@Composable
+private fun ShowPaths(show: Boolean, onShow: (Boolean) -> Unit, modifier: Modifier = Modifier) {
+    Row(modifier, verticalAlignment = Alignment.CenterVertically) {
+        Checkbox(checked = show, onCheckedChange = onShow)
+        Text("show paths")
     }
 }
 
@@ -255,8 +285,8 @@ private fun HealthLines(health: Health?) {
 }
 
 @Composable
-private fun EventLines(lines: List<String>) {
-    LazyColumn(Modifier.fillMaxSize()) {
+private fun EventLines(lines: List<String>, modifier: Modifier = Modifier) {
+    LazyColumn(modifier.fillMaxWidth()) {
         items(lines) { Text(it, fontFamily = FontFamily.Monospace, fontSize = 12.sp) }
     }
 }

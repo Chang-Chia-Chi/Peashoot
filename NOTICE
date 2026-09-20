@@ -1,0 +1,30 @@
+Peashoot — third-party asset notices
+====================================
+
+The farm's sprites come from two asset packs by Kenney. Both are CC0, which asks
+for no credit at all; this file gives it anyway, because the sprites are somebody
+else's work and a reader of the farm should be able to find them.
+
+The file in this repository derived from them is:
+
+    app/src/main/resources/farm/atlas.png
+
+It is the two packs' `Tilemap/tilemap_packed.png` stacked vertically, unchanged
+pixel for pixel; `app/src/main/resources/farm/README.md` gives the recipe.
+
+Tiny Town, version 1.1
+    Author:  Kenney (www.kenney.nl)
+    Pack:    https://kenney.nl/assets/tiny-town
+    License: Creative Commons Zero, CC0 1.0 Universal
+             http://creativecommons.org/publicdomain/zero/1.0/
+    Sheet:   rows 0-10 of the atlas, whole and unchanged
+    Drawn:   three grass tiles for the ground, and the well's roof and base
+
+Tiny Farm, version 1.0
+    Author:  Kenney (www.kenney.nl)
+    Pack:    https://kenney.nl/assets/tiny-farm
+    License: Creative Commons Zero, CC0 1.0 Universal
+             http://creativecommons.org/publicdomain/zero/1.0/
+    Sheet:   rows 11-21 of the atlas, whole and unchanged
+    Drawn:   the tilled-soil furrows the fields are made of, four plants at
+             four growth stages each, and the two farmers the villagers are

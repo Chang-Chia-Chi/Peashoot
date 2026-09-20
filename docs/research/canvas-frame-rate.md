@@ -220,6 +220,100 @@ Run as, from that directory:
 
 No spike source is in this repository. The only file this ticket adds to it is this note. That satisfies the ticket's last acceptance criterion, "Spike code is not merged into the product modules" — nothing was added to `core`, `proxy` or `app`, and the whole of the spike is reproduced below instead.
 
+## 12. #19: the renderer against these numbers
+
+Measured 2026-09-19 on the same machine in the same state as sections 2 and 3, with the real
+renderer — `dev.peashoot.app.render`, the real atlas, the real layout, the real animator — hosted by
+`app/src/test/kotlin/dev/peashoot/app/render/FarmBench.kt` and run as `./gradlew :app:benchFarm`.
+Same phases as the spike: 1280x800 dp non-resizable window, warm up 3 s, measure 10 s of
+`withFrameNanos` deltas, average fps over the summed measured seconds, order statistics over the
+sorted deltas. Same 200 entities, counted the same way: 40 villagers and 160 crops. Both figures
+below come from a results file the bench wrote; nothing here is estimated.
+
+| | Spike, 200 entities | #19 renderer, 200 entities |
+|---|---:|---:|
+| GPU (`DIRECT3D`) avg fps | 164.50 | **164.91** |
+| GPU median / p99 / worst ms | 6.054 / 7.669 / 15.479 | **6.060 / 7.162 / 13.214** |
+| Software (`SOFTWARE_FAST`) avg fps | 64.41 | **64.14** |
+| Software median / p99 / worst ms | 15.536 / 16.555 / 16.699 | **15.581 / 19.410 / 21.356** |
+| Draw calls a frame | 860 | **1070** |
+| Canvas, density | 1583x954 px, 1.25 | 1583x954 px, 1.25 |
+
+**It matches.** What "matches" was taken to mean, decided before the runs: on the GPU, still pinned
+at the display's 165 Hz refresh with a median frame time in the same band — 6.060 ms against 6.054,
+a difference of 6 µs, well inside the 0.8% the spike's own repeats varied by; in software, within
+run-to-run noise of 64 fps — 64.14 against 64.41 and 64.53, a spread of 0.6%. The render API each
+run reported is in its results file: `"renderApi":"DIRECT3D"` for the GPU run and
+`"renderApi":"SOFTWARE_FAST"` with `"skikoRenderApiProp":"SOFTWARE"` for the software one, so
+neither run is void. Note that the property, not the environment variable, is what reaches the JVM
+here: the bench is its own `JavaExec`, so `-Pbench.renderapi=SOFTWARE` becomes `skiko.renderApi`.
+
+The draw-call figure is **computed by the bench, not by the renderer**: the count is a function of
+the layout, the canvas size in tiles, whether labels are on and how many villagers there are, and
+the bench works it out from the same `farmLayout` the canvas draws from. An earlier version of this
+bench read a counter the renderer kept for it; the counter was a product bent around its
+measurement and has been removed. The formula was checked against that counter before it went: both
+say 1070 for the measured scene and 1246 for the same scene with paths on.
+
+Three things differ in kind from the spike, and all three are visible in the tails rather than the
+medians. The frame draws **1070 calls, not 860**: the ground is the same 660, but the spike's 200
+sprites became 160 crops plus 40 villagers plus 180 tiles of soil plot (fifteen plots at their full
+4x3 footprint, drawn whether or not the field has filled them) plus 2 for the well and 40 name
+labels. The **animator** is real: every frame steps every villager's position toward a target and
+allocates a new position map, where the spike integrated flat `FloatArray`s; the bench also swaps
+the whole `FarmState` every 4 s, which re-lays the farm and recomposes the canvas, as a live feed
+would. And there is **text**: 40 villager names every frame, measured once per distinct string and
+box and cached by `TextMeasurer` across frames. In software p99 moved from the spike's 16.555 ms to
+19.410 ms, which is where that text and those allocations show up; on the GPU it did not move
+(7.162 against 7.669). Neither median moved, which is what says the extra work fits inside the
+frame rather than lengthening it. The labels-on case draws 1246 calls — 160 crop labels and 14
+field labels and the badge on top of the 1070 — and is not part of the 10 s measurement, because
+labels are off by default.
+
+The degrade this note asked for in §10 exists and is tested. `FrameMeter` watches a rolling second
+of frame deltas, degrades under 30 fps, recovers only above 35, and snaps villagers to their targets
+while degraded. As §10 predicted, this machine never reaches it: the bench's worst single frame in
+either mode is 21.356 ms. So the trigger is `FrameMeterTest`, which feeds synthetic frame times — a
+run of 40 ms frames degrades, a run of 16 ms frames recovers, one 400 ms stall among smooth frames
+does neither, and a 3 s gap — a dragged window, a resumed laptop — is dropped as a pause rather than
+read as a frame rate, which is a bug this note's numbers could never have caught. No flag, no system
+property, no hidden UI.
+
+§10's other suggestion, watching the median frame *time* because average fps is pinned at the
+display's refresh, was weighed and declined: that caution is about seeing load grow while the frame
+rate is still at the cap, and the degrade asks a different question. Its threshold is 30 fps, far
+below any refresh rate, where a one-second average is pinned to nothing and is the design's own
+wording.
+
+### The raw results files
+
+```json
+{"label":"gpu","env":{"renderApi":"DIRECT3D","skiko":"0.150.1","compose":"1.12.0","kotlin":"2.4.20","java":"22.0.1","javaVendor":"Oracle Corporation","skikoRenderApiProp":"null","skikoRenderApiEnv":"null","vsyncProp":"null","refreshRateHz":"165","canvasPx":"1583x954","density":1.25,"drawCallsPerFrame":1070,"villagers":40,"crops":160},"frames":1650,"seconds":10.005,"avgFps":164.91,"medianMs":6.060,"p99Ms":7.162,"worstMs":13.214}
+```
+
+```json
+{"label":"software","env":{"renderApi":"SOFTWARE_FAST","skiko":"0.150.1","compose":"1.12.0","kotlin":"2.4.20","java":"22.0.1","javaVendor":"Oracle Corporation","skikoRenderApiProp":"SOFTWARE","skikoRenderApiEnv":"null","vsyncProp":"null","refreshRateHz":"165","canvasPx":"1583x954","density":1.25,"drawCallsPerFrame":1070,"villagers":40,"crops":160},"frames":642,"seconds":10.010,"avgFps":64.14,"medianMs":15.581,"p99Ms":19.410,"worstMs":21.356}
+```
+
+Run as, from the repository root, each on a fresh launch with nothing else heavy running:
+
+```
+./gradlew :app:benchFarm -Pbench.label=gpu      -Pbench.out=<dir>
+./gradlew :app:benchFarm -Pbench.label=software -Pbench.renderapi=SOFTWARE -Pbench.out=<dir>
+```
+
+Each run also writes four PNGs into the same directory — the bench farm, the same farm with paths
+on, a small farm replayed from the reducer's fixtures, and a farm with more directories than there
+are plots — rendered through `ImageComposeScene` at the same 1583x954 and density 1.25, so the farm
+can be looked at without a window. Four things were wrong in those pictures and were fixed before
+these numbers were taken: the ground's grass variants fell on diagonals (two small primes; now a
+proper spatial hash); the fixed 26x16 tile world sat in the top-left corner of a 33x20 tile canvas
+(now centred); villagers waiting at the well stood on top of three whole fields (the queue is now
+beside the well, on the rows above the first plots, and a test asserts no queue spot or home
+overlaps a plot); and crop labels at a 48 px pitch ran over their neighbours (now elided to their
+cell). None of it changed the frame time: the run before those fixes was 164.51 fps / 6.063 ms on
+the GPU and 64.28 / 15.514 in software, which is the same 0.5% band as everything else here.
+
 ---
 
 ## Appendix A — the spike

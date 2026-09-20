@@ -27,6 +27,35 @@ dependencies {
 // their detekt classpath, and a `Compose:` block they cannot resolve would fail their own run.
 extensions.configure<DetektExtension> { config.from(rootProject.file("config/detekt/compose.yml")) }
 
+// The renderer's frame-rate bench (#19), held to the numbers in docs/research/canvas-frame-rate.md.
+// Its own JavaExec and not the Compose `run` task, because that task sets `args` and `jvmArgs`
+// itself and wipes whatever the build script put there — which is how the spike lost a run.
+// Test runtime classpath: the bench ships nowhere. It is not wired into `check`; it opens a window.
+//   ./gradlew :app:benchFarm -Pbench.label=gpu -Pbench.out=C:/tmp
+//   ./gradlew :app:benchFarm -Pbench.label=software -Pbench.renderapi=SOFTWARE -Pbench.out=C:/tmp
+// Both resolved against the project, not the task: inside a task's configuration block `extensions`
+// is the task's own, which holds nothing but extra properties.
+val composeVersion = libs.versions.compose.asProvider().get()
+val benchClasspath =
+    extensions.getByType<JavaPluginExtension>().sourceSets.getByName("test").runtimeClasspath
+
+tasks.register<JavaExec>("benchFarm") {
+    description = "Measures the farm renderer's frame rate at 200 entities."
+    group = "verification"
+    classpath = benchClasspath
+    mainClass.set("dev.peashoot.app.render.FarmBenchKt")
+    systemProperty("bench.compose.version", composeVersion)
+    systemProperty(
+        "bench.out",
+        providers.gradleProperty("bench.out").getOrElse(layout.buildDirectory.get().asFile.path),
+    )
+    providers.gradleProperty("bench.label").orNull?.let { systemProperty("bench.label", it) }
+    // Skiko reads this at class-init time, so it has to be on the JVM from the start.
+    providers.gradleProperty("bench.renderapi").orNull?.let {
+        systemProperty("skiko.renderApi", it)
+    }
+}
+
 compose.desktop {
     application {
         mainClass = "dev.peashoot.app.MainKt"
