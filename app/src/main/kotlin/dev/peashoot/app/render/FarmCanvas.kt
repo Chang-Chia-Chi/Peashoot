@@ -222,18 +222,13 @@ private fun DrawScope.drawWell(atlas: ImageBitmap) {
     drawSprite(atlas, Sprite.WELL_BASE, WELL)
 }
 
-/**
- * Everyone where they are, and the puddle under anyone who has just lost a bucket. The puddle goes
- * down first so the villager stands in it rather than behind it; a villager the reducer retired
- * mid-spill is simply not in [standing] and its puddle is never asked for.
- */
+/** Everyone where they are; the puddle under anyone who just lost a bucket is [drawOverlays]'s. */
 private fun DrawScope.drawVillagers(
     atlas: ImageBitmap,
     frame: Frame,
     standing: List<Pair<Villager, Spot>>,
 ) {
     for ((villager, spot) in standing) {
-        frame.effects.spills[villager.id]?.let { drawSpill(spot, it) }
         val pose = frame.poses[villager.id] ?: Pose.STANDING
         drawSprite(atlas, villagerSprite(villager.id), bobbed(spot, pose, frame.clock))
     }

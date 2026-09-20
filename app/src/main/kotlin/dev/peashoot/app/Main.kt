@@ -263,7 +263,12 @@ private fun summary(farm: FarmState): String {
         "bin ${farm.bin.produce} / $${money(farm.bin.ledger)}"
 }
 
-/** Money in the one place, and always in [Locale.ROOT]: a ledger with a comma in it is a bug. */
+/**
+ * Money the way the window writes it, always in [Locale.ROOT]: a ledger with a comma for a decimal
+ * point is a bug on half the machines that will ever run this. The canvas has its own copy of this
+ * one line in `render.binLine`, which is a line and not a module: the two do not share a file
+ * because `dev.peashoot.app.render` is not something the window reaches into for a formatter.
+ */
 private fun money(usd: Double): String = String.format(Locale.ROOT, "%.2f", usd)
 
 private fun percent(share: Double): String = String.format(Locale.ROOT, "%.0f%%", share * PERCENT)

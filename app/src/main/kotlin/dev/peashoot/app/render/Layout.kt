@@ -65,8 +65,12 @@ internal val BIN = Spot(1f, 1f)
 
 /**
  * Where the lanterns hang once a route is replaying. The two columns the world keeps outside
- * everything else — plots run from x 1 to 24, homes from 1 to 24, the queue from 4 to 20 — so a
- * lantern is never under a sprite and never over a crop.
+ * everything it places — plots run from x 1 to 24, homes from 1 to 24, the queue from 4 to 20 — so
+ * a lantern is never over a crop, never on a home and never in the queue. Not "never under a
+ * sprite": a helper's spot is worked out from a live parent position and held only by [inWorld],
+ * whose ceiling is column 25, so a helper of a parent at the right-hand edge can stand in a lantern
+ * column. It lands near the row of homes and the lanterns are on rows 4 and 8, so in practice they
+ * do not meet; nothing guarantees it, which is why this says so rather than claiming otherwise.
  *
  * ponytail: four, at fixed spots, rather than one per villager or one per plot. A lit farm is the
  * point and four pools of light say it; lanterns that followed the work would be a second animator.

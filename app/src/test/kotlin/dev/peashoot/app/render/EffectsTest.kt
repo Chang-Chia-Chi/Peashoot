@@ -120,6 +120,24 @@ class EffectsTest {
     }
 
     @Test
+    fun `a second dropped stream flashes even though the sky was already on lightning`() {
+        val once = replay("weather.jsonl")[SPILLED]
+        val twice =
+            once.copy(
+                villagers = once.villagers.mapValues { (_, it) -> it.copy(spills = it.spills + 1) }
+            )
+        assertTrue(
+            !struck(once, twice),
+            "the weather has no decay, so there is nothing left for it to turn to",
+        )
+        assertEquals(
+            EffectKind.FLASH,
+            Effects().raised(once, twice).flash?.kind,
+            "a second drop under a sky already lit is still a second drop",
+        )
+    }
+
+    @Test
     fun `a second strike restarts a flash rather than being swallowed by it`() {
         val states = replay("weather.jsonl")
         val halfway = Effects(flash = Effect(EffectKind.FLASH, age = EFFECT_SECONDS / 2))

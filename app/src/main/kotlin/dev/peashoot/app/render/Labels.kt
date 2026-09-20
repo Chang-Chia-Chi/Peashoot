@@ -110,6 +110,12 @@ internal fun DrawScope.drawPathLabels(measurer: TextMeasurer, layout: FarmLayout
  * it: the moods, the names, the stamina bars, the bin's ledger and — when the toggle is on — the
  * paths. A night that swallowed the names would be a farm that had stopped saying anything, and the
  * ink switches with it for the same reason.
+ *
+ * The spilled bucket's puddle is here too, which costs it something: drawn after the sprites, it
+ * sits over the villager's feet rather than under them. That is the lesser loss. A spill only ever
+ * happens under lightning, so the shade is always over it — a quarter of the farm's light gone, and
+ * seven tenths under a replayed route — and the puddle is the only thing that says *which* villager
+ * dropped the bucket, the flash saying only that somebody did.
  */
 internal fun DrawScope.drawOverlays(
     measurer: TextMeasurer,
@@ -118,6 +124,7 @@ internal fun DrawScope.drawOverlays(
 ) {
     val night = frame.farm.night
     for ((villager, spot) in standing) {
+        frame.effects.spills[villager.id]?.let { drawSpill(spot, it) }
         drawMood(measurer, frame.poses[villager.id] ?: Pose.STANDING, spot, night)
         drawStamina(villager.stamina, spot)
     }

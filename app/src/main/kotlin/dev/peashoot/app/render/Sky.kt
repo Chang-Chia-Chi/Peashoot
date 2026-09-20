@@ -132,8 +132,9 @@ internal fun DrawScope.drawSky(sky: Sky, clock: Float) {
 }
 
 /**
- * The flash a dropped stream left, over everything including the labels: it is the one thing on the
- * canvas that is meant to interrupt, and it is gone in half a second.
+ * The flash a dropped stream left, over everything the farm draws, labels included: it is the one
+ * thing on the canvas meant to interrupt, and it is gone in half a second. The show-paths badge
+ * sits above even this, because a screenshot must carry it whatever the weather was doing.
  */
 internal fun DrawScope.drawFlash(sky: Sky) {
     if (sky.flash > 0f) drawRect(color = Color.White.copy(alpha = sky.flash * FLASH_ALPHA))

@@ -114,16 +114,29 @@ internal fun struck(before: FarmState?, after: FarmState): Boolean =
 
 /**
  * Everything the step from [before] to [after] sets off, laid over whatever is still running. A
- * second strike restarts a flash that is part-way through rather than being swallowed by it: it is
- * a second dropped stream, and a farm that hides the second one is hiding news. It cannot strobe —
- * only the *turning* to lightning strikes at all, and a farm already under it turns nowhere.
+ * second strike restarts a flash part-way through rather than being swallowed by it: it is a second
+ * dropped stream, and a farm that hides the second one is hiding news.
+ *
+ * A new spill strikes as well as [struck] does, and that is not belt and braces. The weather has no
+ * decay, so two dropped streams with no completed line between them leave it on lightning both
+ * times and [struck] sees nothing turn — while a spill is a count that went up, which only
+ * `exchange.client_gone` ever does. It cannot strobe either: a line that raises no spill and turns
+ * no weather raises nothing.
+ *
+ * ponytail: a second drop whose exchange this window never held — one it connected in the middle of
+ * — turns no weather and raises no spill, so it still passes without a flash. That line is already
+ * the one the reducer can attribute to nobody. Upgrade: the Deriver naming the session on
+ * `client_gone`, which would make every drop a spill and this rule one clause shorter.
  */
-internal fun Effects.raised(before: FarmState?, after: FarmState): Effects =
-    Effects(
+internal fun Effects.raised(before: FarmState?, after: FarmState): Effects {
+    val spilled = spillEffects(before, after)
+    return Effects(
         crops = crops + cropEffects(before, after),
-        spills = spills + spillEffects(before, after),
-        flash = if (struck(before, after)) Effect(EffectKind.FLASH) else flash,
+        spills = spills + spilled,
+        flash =
+            if (struck(before, after) || spilled.isNotEmpty()) Effect(EffectKind.FLASH) else flash,
     )
+}
 
 /** Every effect one frame older, and the ones that have run their course gone. */
 internal fun aged(effects: Effects, seconds: Float): Effects =
