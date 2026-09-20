@@ -19,6 +19,18 @@ const val REDACT_FILE = "redact.json"
  */
 private const val API_KEY_PATTERN = "\\bsk-[A-Za-z0-9_-]{20,}"
 
+/**
+ * An OpenAI account: an organization id `org-…` or a project id `proj_…`, a hyphen after the one
+ * and an underscore after the other. Neither authenticates, so neither is a secret header dropped
+ * at receipt: `surfaceOf` reads the `openai-*` headers to tell whose a bare `GET /v1/models` is,
+ * and a client that sends only those would lose its surface. A cassette is committed and shared,
+ * though, so export takes the ids out of what it writes. The run after the prefix is alphanumeric,
+ * as the ids are, so a match ends at the quote or comma after it rather than eating the JSON around
+ * it; twenty of them for the reason the key pattern wants twenty, shorter than any id either
+ * account line issues and longer than any word that happens to follow `org-` or `proj_`.
+ */
+private const val ACCOUNT_PATTERN = "\\b(?:org-|proj_)[A-Za-z0-9]{20,}"
+
 /** One thing a redaction changed: where it was, the text a rule matched, and what it became. */
 data class Redacted(val where: String, val matched: String, val becomes: String)
 
@@ -50,7 +62,13 @@ data class Redaction(val rules: List<Replacement>) {
             .fold(text) { acc, rule -> rule.redact(acc, where, hits) }
 
     companion object {
-        val DEFAULT = Redaction(listOf(Replacement("", API_KEY_PATTERN, "[REDACTED]")))
+        val DEFAULT =
+            Redaction(
+                listOf(
+                    Replacement("", API_KEY_PATTERN, "[REDACTED]"),
+                    Replacement("", ACCOUNT_PATTERN, "[REDACTED]"),
+                )
+            )
 
         /** Reads the redaction file; every failure names the rule, as the rule file's do. */
         fun parse(text: String): Redaction {

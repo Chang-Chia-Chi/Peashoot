@@ -24,6 +24,18 @@ private val IDLE_AFTER: Duration = Duration.ofMinutes(30)
 /** Every instant here is spelled in UTC and read in UTC, so the tests pass in any zone. */
 private val UTC: ZoneId = ZoneId.of("UTC")
 
+/** Southern, and says so with its clocks: summer time in January, standard time in July. */
+private val AUCKLAND: ZoneId = ZoneId.of("Pacific/Auckland")
+
+/** Southern, and says nothing with its clocks: Queensland has kept one offset since 1992. */
+private val BRISBANE: ZoneId = ZoneId.of("Australia/Brisbane")
+
+/** Southern, and unplaceable: no daylight saving, and no area id that settles it either. */
+private val JOHANNESBURG: ZoneId = ZoneId.of("Africa/Johannesburg")
+
+/** On the equator, where there is no season to get right. */
+private val NAIROBI: ZoneId = ZoneId.of("Africa/Nairobi")
+
 /**
  * Thirty minutes to the second after the last thing `sess-hazel` said, which is the window exactly:
  * a day ends *at* the window and not only past it, and this is the instant that would tell `>=`
@@ -132,6 +144,24 @@ class DayTest {
             Season.AUTUMN,
             tick(FarmState(), december, IDLE_AFTER, ZoneId.of("America/New_York")).season,
         )
+    }
+
+    @Test
+    fun `south of the equator the same instant is the opposite season`() {
+        val january = Instant.parse("2026-01-15T12:00:00Z")
+        val july = Instant.parse("2026-07-15T12:00:00Z")
+        fun seasonIn(now: Instant, zone: ZoneId) = tick(FarmState(), now, IDLE_AFTER, zone).season
+        // One instant, two hemispheres, opposite seasons — both ways round.
+        assertEquals(Season.WINTER, seasonIn(january, UTC))
+        assertEquals(Season.SUMMER, seasonIn(january, AUCKLAND))
+        assertEquals(Season.SUMMER, seasonIn(july, UTC))
+        assertEquals(Season.WINTER, seasonIn(july, AUCKLAND))
+        // A southern zone whose clocks never move is placed by its area id instead.
+        assertEquals(Season.SUMMER, seasonIn(january, BRISBANE))
+        // And one that neither says: the northern calendar, which is what the farm always did.
+        // Written down because it is the method's known ceiling and not an accident.
+        assertEquals(Season.WINTER, seasonIn(january, JOHANNESBURG))
+        assertEquals(Season.WINTER, seasonIn(january, NAIROBI))
     }
 }
 

@@ -1,6 +1,8 @@
 package dev.peashoot.app.render
 
 import dev.peashoot.app.farm.FarmState
+import dev.peashoot.app.farm.Villager
+import dev.peashoot.app.farm.nameFor
 import dev.peashoot.app.farm.replay
 import kotlin.math.hypot
 import kotlin.test.Test
@@ -152,6 +154,31 @@ class LayoutTest {
             layout.homes.values.distinct().size,
             "villagers past the last home share it rather than wandering into the fields",
         )
+    }
+
+    @Test
+    fun `nor is the home of a helper, on either row of homes`() {
+        // Built deliberately, because nothing else reaches it (#75): a helper's home is its
+        // parent's, lifted, and only a parent on the second row of homes — a 25th villager — is
+        // lifted into the last furrow. Every villager here has a helper, so both rows are checked
+        // rather than hoped for.
+        val farm = syntheticFarm(fields = PLOTS, crops = PLOT_CAPACITY, villagers = HOME_CAPACITY)
+        val helpers =
+            farm.villagers.values.associate { parent ->
+                val id = "${parent.id}/agent-one"
+                id to Villager(id = id, name = nameFor(id), session = parent.id, parent = parent.id)
+            }
+        val layout = farmLayout(farm.copy(villagers = farm.villagers + helpers))
+        for ((id, helper) in helpers) {
+            val home = layout.homes.getValue(id)
+            assertTrue(
+                distance(home, layout.homes.getValue(helper.session)) <= BESIDE,
+                "$id is not beside its parent, so this asserts nothing about the lift",
+            )
+            for (plot in layout.plots) {
+                assertTrue(!standsOn(plot, home), "$id is standing on ${plot.label}")
+            }
+        }
     }
 }
 

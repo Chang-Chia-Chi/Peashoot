@@ -89,7 +89,7 @@ class ControlConfigTest {
         awaitRecordings(1)
         assertNull(store.list().single().exchange.request.headers["authorization"])
         assertEquals(
-            listOf("authorization", "x-api-key"),
+            listOf("authorization", "proxy-authorization", "x-api-key", "cookie", "set-cookie"),
             json("/config").getValue("secretHeaders").jsonArray.map { it.text() },
         )
     }
@@ -129,6 +129,9 @@ class ControlConfigTest {
             mapOf(
                 "surfaces" to """{"anthropic":{"upstream":"http://127.0.0.1:1"}}""",
                 "routes" to """{"default":{"mode":"passthrough"}}""",
+                // Nothing in this process reads it, so there is nothing here a restart could
+                // change: the next `GET /config` is the next thing that reads it at all.
+                "idleSessionMinutes" to "45",
             )
         val restart =
             mapOf(
@@ -185,7 +188,7 @@ class ControlConfigTest {
             val running = json("/config")
             assertFalse(token in running.toString(), "no secret is in the config")
             assertEquals(
-                listOf("authorization", "x-api-key"),
+                listOf("authorization", "proxy-authorization", "x-api-key", "cookie", "set-cookie"),
                 running.getValue("secretHeaders").jsonArray.map { it.text() },
             )
 
@@ -225,6 +228,9 @@ class ControlConfigTest {
                     """{"host":"192.0.2.1"}""" to "192.0.2.1",
                     """{"replay":{"cadence":"soon"}}""" to "cadence",
                     """{"resume":{"pingIntervalSeconds":0}}""" to "pingIntervalSeconds",
+                    """{"idleSessionMinutes":0}""" to "idleSessionMinutes",
+                    """{"idleSessionMinutes":100000}""" to "idleSessionMinutes",
+                    """{"idleSessionMinutes":"ten"}""" to "idleSessionMinutes",
                     """{"routes":{"other":{"mode":"record"}}}""" to "other",
                     """{"secretHeaders":[7]}""" to "secretHeaders",
                     """{"nope":1}""" to "nope",
