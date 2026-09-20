@@ -134,6 +134,31 @@ data class ShippingBin(
     val unpriced: Int = 0,
 )
 
+/** What one turn did to one crop, which is the three things a tool call can do to a file. */
+enum class TouchKind {
+    PLANTED,
+    GROWN,
+    INSPECTED,
+}
+
+/**
+ * One turn against one file: which villager's turn it was, the `ts` of the line as it spelled it,
+ * and what the turn did. The villager and not the session, because a helper touching its parent's
+ * file is the thing the pane exists to show.
+ */
+data class Touch(val villager: String, val ts: String?, val kind: TouchKind)
+
+/**
+ * How many touches a crop remembers.
+ *
+ * ponytail: the newest [TOUCH_HISTORY], oldest dropped, so a file a run edits a thousand times
+ * costs a bounded amount of memory and the pane shows the recent past rather than the whole of it.
+ * Nothing says so in the pane beyond the list ending. Upgrade: ask the control API for the rest,
+ * once it can answer which exchanges touched a path — today nothing under `/_peashoot/v1/` can, so
+ * this is where the whole history lives.
+ */
+internal const val TOUCH_HISTORY = 50
+
 /**
  * One file the agents have touched. [label] is its path, kept in the state because the farm draws
  * it when [FarmState.labelsHidden] is off, and it is the crop's key as well.
@@ -147,12 +172,21 @@ data class Crop(
     val growth: Growth,
     /** Reads of this file: an inspection, which advances nothing. */
     val inspections: Int,
+    /** Every turn that touched it, oldest first, up to [TOUCH_HISTORY]: #22's pane reads this. */
+    val touches: List<Touch> = emptyList(),
+) {
     /**
-     * The `ts` of the event that last touched it, as the event line spells it; null only for a crop
-     * planted by a line that had none. #22's touch history wants more than the last.
+     * When it was last touched, as the event line spelled it. The newest touch that named a time
+     * and not simply the newest: a line whose `ts` is missing or is not a string must leave the
+     * crop no worse, and no timestamp is worse than a stale one.
      */
-    val lastTouched: String?,
-)
+    val lastTouched: String?
+        get() = touches.lastOrNull { it.ts != null }?.ts
+
+    /** One more turn on this crop's history, the oldest dropped once it is [TOUCH_HISTORY] long. */
+    internal fun touched(villager: String, ts: String?, kind: TouchKind): Crop =
+        copy(touches = (touches + Touch(villager, ts, kind)).takeLast(TOUCH_HISTORY))
+}
 
 /** A directory: the field the files under it grow in, labelled with the directory itself. */
 data class Field(val label: String, val crops: Map<String, Crop>)
@@ -273,7 +307,7 @@ private fun completed(state: FarmState, event: JsonObject): FarmState {
         )
     return state.copy(
         villagers = state.villagers + (villager.id to back),
-        fields = touched(state.fields, event),
+        fields = touched(state.fields, event, villager.id),
         // Resting is resting *at the well*: the villager keeps its place until a turn really ends,
         // and is given one if the refusal is the first this window heard of it.
         wellQueue =
@@ -323,9 +357,13 @@ private fun villagerOf(state: FarmState, session: String, event: JsonObject): Vi
 internal fun nameFor(id: String): String = VILLAGER_NAMES[id.hashCode().mod(VILLAGER_NAMES.size)]
 
 /** Every path the turn's tools named, in the order the turn named them. */
-private fun touched(fields: Map<String, Field>, event: JsonObject): Map<String, Field> {
+private fun touched(
+    fields: Map<String, Field>,
+    event: JsonObject,
+    villager: String,
+): Map<String, Field> {
     val ts = event["ts"].text()
-    return tools(event).fold(fields) { grown, tool -> grown.touch(tool, ts) }
+    return tools(event).fold(fields) { grown, tool -> grown.touch(tool, ts, villager) }
 }
 
 /**
@@ -336,7 +374,11 @@ private fun touched(fields: Map<String, Field>, event: JsonObject): Map<String, 
  * file existed before the app was watching. A tool that named no path, or named one but only
  * searched it, changes nothing.
  */
-private fun Map<String, Field>.touch(tool: JsonObject, ts: String?): Map<String, Field> {
+private fun Map<String, Field>.touch(
+    tool: JsonObject,
+    ts: String?,
+    villager: String,
+): Map<String, Field> {
     val path = touchedPath(tool) ?: return this
     val name = tool["name"].text()
     val directory = path.substringBeforeLast('/', ROOT_FIELD)
@@ -346,13 +388,13 @@ private fun Map<String, Field>.touch(tool: JsonObject, ts: String?): Map<String,
         when {
             crop == null && name == READ -> null
             crop == null ->
-                Crop(label = path, growth = Growth.SEED, inspections = 0, lastTouched = ts)
-            // A line whose `ts` is missing or is not a string keeps the crop's last good one: a
-            // strange line must leave the farm no worse, and no timestamp is worse than a stale
-            // one.
+                Crop(label = path, growth = Growth.SEED, inspections = 0)
+                    .touched(villager, ts, TouchKind.PLANTED)
             name == READ ->
-                crop.copy(inspections = crop.inspections + 1, lastTouched = ts ?: crop.lastTouched)
-            else -> crop.copy(growth = crop.growth.next(), lastTouched = ts ?: crop.lastTouched)
+                crop
+                    .copy(inspections = crop.inspections + 1)
+                    .touched(villager, ts, TouchKind.INSPECTED)
+            else -> crop.copy(growth = crop.growth.next()).touched(villager, ts, TouchKind.GROWN)
         }
     return if (next == null) this
     else plus(directory to field.copy(crops = field.crops + (path to next)))

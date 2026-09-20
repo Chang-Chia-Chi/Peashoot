@@ -1,12 +1,18 @@
 package dev.peashoot.app
 
+import dev.peashoot.core.Exchange
+import dev.peashoot.core.Mode
+import dev.peashoot.core.Route
 import dev.peashoot.core.TOKEN_FILE
 import dev.peashoot.proxy.ControlApi
 import dev.peashoot.proxy.LiveConfig
 import dev.peashoot.proxy.ProxyConfig
 import dev.peashoot.proxy.ProxyServer
+import dev.peashoot.proxy.Recorded
 import dev.peashoot.proxy.RouteTable
 import dev.peashoot.proxy.Store
+import io.ktor.http.Headers
+import io.ktor.http.HttpStatusCode
 import java.net.ServerSocket
 import java.nio.file.Files
 import java.nio.file.Path
@@ -17,6 +23,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 
@@ -76,6 +83,38 @@ internal class TestProxy(val home: Path) : AutoCloseable {
         store.putEvent(event).also { api.feed.publish(it, event) }
 
     /**
+     * One whole exchange as a recorder would leave it: a row in the exchange table, and the
+     * `exchange.completed` line that ties it to a session. Both are needed, because `GET
+     * /exchanges?session=` finds its rows through the event table and an exchange with no line
+     * belongs to no session at all.
+     *
+     * [announce] off stores the line without publishing it, which is what an exchange that happened
+     * before this window connected looks like: the endpoint has it and the feed never carried it.
+     */
+    suspend fun record(
+        session: String,
+        id: String,
+        at: Instant,
+        disconnected: Boolean = false,
+        announce: Boolean = true,
+    ): JsonObject {
+        val exchange =
+            Exchange(
+                Exchange.Request("POST", "/v1/messages", Headers.Empty, A_REQUEST.toByteArray()),
+                route = "default",
+                routing = Route(Mode.RECORD),
+                id = id,
+                receivedAt = at,
+            )
+        exchange.response = Exchange.Response(HttpStatusCode.OK.value, Headers.Empty)
+        exchange.clientDisconnected = disconnected
+        store.put(listOf(Recorded(exchange, emptyList())))
+        val line = completedLine(session, id, at, disconnected)
+        if (announce) put(line) else store.putEvent(line)
+        return line
+    }
+
+    /**
      * A line straight onto the feed, bypassing the store, which only accepts the shape this version
      * of the proxy writes. A later proxy may put anything on a line, and the window has to survive
      * reading it.
@@ -89,6 +128,51 @@ internal class TestProxy(val home: Path) : AutoCloseable {
 
     private fun newApi() = ControlApi(store, home, RouteTable(config.routes), LiveConfig(config))
 }
+
+/** Enough of a request to be a body worth looking at, and nothing a real key ever went near. */
+private const val A_REQUEST = """{"model":"claude-opus-4-1","messages":[{"role":"user"}]}"""
+
+/**
+ * The `exchange.completed` line the Deriver would have written for that exchange, in its own field
+ * order: what the farm folds, and what a timeline row's usage, cost and latency can only come from.
+ */
+private fun completedLine(
+    session: String,
+    id: String,
+    at: Instant,
+    disconnected: Boolean,
+): JsonObject = buildJsonObject {
+    put("ts", at.toString())
+    put("event", "exchange.completed")
+    put("exchangeId", id)
+    put("session", session)
+    put("agent", null as String?)
+    put("client", "claude-code")
+    put("model", "claude-opus-4-1")
+    put("route", "default")
+    put("mode", "record")
+    put("tools", buildJsonArray { add(buildJsonObject { put("name", "Read") }) })
+    put(
+        "usage",
+        buildJsonObject {
+            put("input", TOKENS_IN)
+            put("output", TOKENS_OUT)
+            put("cacheRead", 0)
+            put("cacheWrite", 0)
+        },
+    )
+    put("costUsd", A_COST)
+    put("stopReason", "end_turn")
+    put("status", HttpStatusCode.OK.value)
+    put("latencyMs", A_LATENCY)
+    put("replayHit", false)
+    put("clientDisconnected", disconnected)
+}
+
+private const val TOKENS_IN = 120
+private const val TOKENS_OUT = 340
+private const val A_COST = 0.25
+private const val A_LATENCY = 1_500L
 
 /** A port nothing holds right now: the proxy takes it, gives it up, and takes it again. */
 internal fun freePort(): Int = ServerSocket(0).use { it.localPort }

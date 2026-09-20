@@ -3,6 +3,7 @@ package dev.peashoot.app
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -124,6 +125,12 @@ class AppModel(private val home: Path = homeDir(), private val port: Int = proxy
     var farm by mutableStateOf(FarmState())
         private set
 
+    /**
+     * What clicking a villager or a crop opens (#22). Its state is written from the same thread
+     * this class's is, and for the same reason: see [showPaths].
+     */
+    val panes = PaneModel()
+
     /** Only ever a proxy this app started: one that was already up belongs to whoever ran it. */
     private var owned: OwnedProxy? = null
 
@@ -138,19 +145,27 @@ class AppModel(private val home: Path = homeDir(), private val port: Int = proxy
     suspend fun watch() {
         ControlClient(url, { readToken(home) }).use { client ->
             if (!ensureProxy(client)) return
-            coroutineScope {
-                val polling = launch { pollHealth(client) }
-                val ticking = launch { tickFarm() }
-                client.events(lastId).collect { feed ->
-                    when (feed) {
-                        is Feed.State -> status = feed.detail
-                        is Feed.Line -> add(feed)
+            try {
+                coroutineScope {
+                    val polling = launch { pollHealth(client) }
+                    val ticking = launch { tickFarm() }
+                    panes.attach(this, client)
+                    client.events(lastId).collect { feed ->
+                        when (feed) {
+                            is Feed.State -> status = feed.detail
+                            is Feed.Line -> add(feed)
+                        }
                     }
+                    // The feed only ends when another attempt could not help, so there is nothing
+                    // left to poll for, or to age; without this the scope would wait on them for
+                    // ever.
+                    polling.cancel()
+                    ticking.cancel()
                 }
-                // The feed only ends when another attempt could not help, so there is nothing
-                // left to poll for, or to age; without this the scope would wait on them for ever.
-                polling.cancel()
-                ticking.cancel()
+            } finally {
+                // The client is about to be closed under the panes: a pane asking a closed client
+                // is a failure nobody could have read, so it is given nothing to ask instead.
+                panes.detach()
             }
         }
     }
@@ -239,6 +254,9 @@ class AppModel(private val home: Path = homeDir(), private val port: Int = proxy
     private fun add(line: Feed.Line) {
         lastId = line.id
         farm = reduce(farm, line.event)
+        // Usage, cost, latency and the replay flag are on the event line alone; the exchanges
+        // endpoint serves summary rows, so a timeline can only say them for a line heard here.
+        panes.heard(line.event)
         lines.add(0, describe(line))
         while (lines.size > MAX_LINES) lines.removeAt(lines.lastIndex)
     }
@@ -295,13 +313,18 @@ private fun Dashboard(model: AppModel) {
                 }
             }
             if (tab == FARM_TAB) {
-                Box(Modifier.fillMaxWidth().weight(1f)) {
-                    FarmCanvas(model.farm, Modifier.fillMaxSize())
-                    // One card at a time, the oldest first, so that a window left alone over a
-                    // lunch break is read in the order the days ended rather than all at once.
-                    model.farm.pendingCards.firstOrNull()?.let { card ->
-                        DayCard(card, model::dismissCard, Modifier.align(Alignment.Center))
+                // The pane sits beside the farm rather than over it, so the villager or crop that
+                // was clicked stays on screen while its timeline is read.
+                Row(Modifier.fillMaxWidth().weight(1f)) {
+                    Box(Modifier.weight(1f).fillMaxHeight()) {
+                        FarmCanvas(model.farm, model.panes::select, Modifier.fillMaxSize())
+                        // One card at a time, the oldest first, so that a window left alone over a
+                        // lunch break is read in the order the days ended rather than all at once.
+                        model.farm.pendingCards.firstOrNull()?.let { card ->
+                            DayCard(card, model::dismissCard, Modifier.align(Alignment.Center))
+                        }
                     }
+                    DetailPane(model.farm, model.panes)
                 }
             } else {
                 EventLines(model.lines, Modifier.weight(1f))

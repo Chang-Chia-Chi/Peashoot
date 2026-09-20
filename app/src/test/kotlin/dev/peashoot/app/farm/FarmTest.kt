@@ -131,6 +131,26 @@ class FarmTest {
     }
 
     @Test
+    fun `a crop keeps who touched it and when, in the order it happened`() {
+        val last = replay("touches.jsonl").last()
+        val crop = checkNotNull(last.crop("src/main/Shared.kt"))
+        // Issue #22's second criterion: the agents and the times, not just the last of them. The
+        // helper's Read is the same crop as the main thread's Write because the spellings
+        // normalise.
+        assertEquals(
+            listOf(
+                Touch("sess-touch", "2026-09-20T09:00:05Z", TouchKind.PLANTED),
+                Touch("sess-touch/agent-two", "2026-09-20T09:00:11Z", TouchKind.INSPECTED),
+                Touch("sess-touch", "2026-09-20T09:00:18Z", TouchKind.GROWN),
+            ),
+            crop.touches,
+        )
+        // A Grep names a path and touches nothing, so it leaves no crop and no touch.
+        assertEquals(listOf("src/main/Shared.kt"), last.crops().map { it.label })
+        assertEquals("2026-09-20T09:00:18Z", crop.lastTouched)
+    }
+
+    @Test
     fun `a completed turn heard first still makes a villager and plants its crops`() {
         val last = replay("late-join.jsonl").single()
         assertEquals(setOf("sess-late"), last.villagers.keys)
