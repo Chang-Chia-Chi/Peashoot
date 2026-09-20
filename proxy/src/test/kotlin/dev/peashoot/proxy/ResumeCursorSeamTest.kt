@@ -203,24 +203,31 @@ class ResumeCursorSeamTest {
         }
 
     /**
-     * The filter swept across every cursor there is, with the upstream still in flight.
+     * The filter swept across every cursor there is, each one answered while the upstream is held.
      *
-     * This is the case a sequence filter gets wrong: the cursor attaches while the owner is still
-     * appending, so part of its tail is drained out of the buffer and the rest arrives live, and
-     * the frame at that seam is the one that would be lost or sent twice. The release is fired
-     * without waiting for the cursor to attach — deliberately, because that is what varies where in
-     * the stream the attach actually lands, sometimes mid-append and sometimes after the end, at a
-     * different depth each time round. Every N must give back exactly that N's tail.
-     * `ResumeSeamTest` runs the same sweep for an unfiltered re-issue.
+     * This is the case a sequence filter gets wrong. The upstream is parked before frame
+     * [LEFT_AFTER], so the buffer holds exactly that many frames when Resume answers the cursor:
+     * for every N below it, part of the tail is drained out of the buffer and the rest arrives
+     * live, and the frame at that seam is the one that would be lost or sent twice. Waiting for the
+     * cursor's own `exchange.started` line — which the Deriver writes after every interceptor has
+     * seen the request, so after Resume has answered it — is what pins that. Without the wait the
+     * release can beat the request entirely, and the N degrades into the completed-buffer case the
+     * test above already covers, silently and differently each run.
+     *
+     * What the wait does not pin is the instant the served flow is first collected, which is a
+     * moment later still; the same is true of the awaited hand-over at the top of this class and of
+     * `ResumeSeamTest`'s. `ResumeSeamTest` sweeps the same hand-over for an unfiltered re-issue and
+     * deliberately does not wait at all, because there the point is to vary the depth.
      */
     @Test
-    fun `a cursor at any sequence of an in-flight stream gets exactly that tail`() =
+    fun `a cursor at any sequence of a held stream gets exactly that tail`() =
         events.indices.forEach(::cursorAt)
 
     private fun cursorAt(after: Int) = withResume {
         droppedMidStream()
 
         val resumed = async { streamedGet(cursorPath("$after")) }
+        awaitEvents(ResumeRig.STARTED, 2)
         release.complete(Unit)
 
         assertEquals(tailAfter(after), resumed.await(), "the cursor at $after")

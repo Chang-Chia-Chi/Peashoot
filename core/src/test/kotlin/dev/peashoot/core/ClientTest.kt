@@ -148,11 +148,11 @@ class ClientTest {
         assertEquals("agent_one", detected.agent)
         assertEquals("parent_one", detected.parentAgent, "a tab is a control character too")
 
-        val long = "x".repeat(IDENTIFIER_CAP * 2)
+        val long = "x".repeat(MAX_IDENTIFIER_LENGTH * 2)
         val capped = Client.detect(headersOf("x-peashoot-session", long), null)
-        assertEquals(IDENTIFIER_CAP, assertNotNull(capped.session).length)
+        assertEquals(MAX_IDENTIFIER_LENGTH, assertNotNull(capped.session).length)
         assertEquals(
-            IDENTIFIER_CAP,
+            MAX_IDENTIFIER_LENGTH,
             Client.detect(headersOf("user-agent", long), null).type.length,
             "the client type comes off a user-agent and is bounded with the rest",
         )
@@ -243,9 +243,6 @@ class ClientTest {
     }
 
     private companion object {
-        /** What `Client` caps a client-chosen identifier at; a UUID is 36 characters. */
-        const val IDENTIFIER_CAP = 128
-
         const val ONE_TURN =
             """{"model":"claude-sonnet-4-5-20250929",""" +
                 """"messages":[{"role":"user","content":"hello peashoot"}]}"""
