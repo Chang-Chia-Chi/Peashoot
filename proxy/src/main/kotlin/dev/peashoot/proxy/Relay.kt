@@ -75,10 +75,17 @@ private val hopByHop =
 
 /**
  * Engine-owned or wrong-for-upstream request headers. accept-encoding goes so streams arrive
- * uncompressed.
+ * uncompressed, and `x-peashoot-session` goes because it is ours: a client injects it to tell *this
+ * proxy* which session a turn belongs to (design section 9), it means nothing to any provider, and
+ * forwarding it would hand a third party a stable identifier tying a user's turns together that
+ * they would not otherwise have. Stripping is the privacy-preserving default and costs nothing. It
+ * is removed here and not at receipt, so client detection still reads it; and it is no part of the
+ * fingerprint either, being absent from `Rules.DEFAULT.keepHeaders`, so two turns of one session
+ * match a recording exactly as two turns of another do.
  */
 private val notForwardedToUpstream =
-    hopByHop + setOf("host", "content-length", "content-type", "accept-encoding")
+    hopByHop +
+        setOf("host", "content-length", "content-type", "accept-encoding", "x-peashoot-session")
 
 /**
  * Engine-owned response headers. content-type travels as the response's own property; the body is
