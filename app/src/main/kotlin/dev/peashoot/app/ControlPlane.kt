@@ -5,6 +5,7 @@ import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import dev.peashoot.app.farm.scalar
+import dev.peashoot.core.Mode
 import dev.peashoot.core.text
 import io.ktor.http.HttpMethod
 import io.ktor.http.encodeURLPathPart
@@ -32,10 +33,17 @@ private val PRETTY = Json { prettyPrint = true }
 
 /**
  * One route as `GET /routes` serves it: what it does, whether a miss is refused, and from where.
+ *
+ * [mode] is null for a spelling this build has no [Mode] for, which is what a newer proxy serving a
+ * mode that did not exist when this window was built looks like. The row still shows [spelled] —
+ * refusing to draw a route because its mode is unfamiliar would hide the route — but no button
+ * offers a mode this window cannot name, and switching away from it is still allowed.
  */
 internal data class RouteRow(
     val name: String,
-    val mode: String,
+    val mode: Mode?,
+    /** Exactly what the proxy called it, which is what is shown. */
+    val spelled: String,
     val strict: Boolean,
     val cassette: String?,
 )
@@ -213,41 +221,74 @@ internal class ControlPlaneModel : Panel() {
         }
 
     /**
-     * One route's mode and strictness, which the proxy applies to its next request. The answer is
-     * the route the proxy now holds, so the row is replaced from it rather than from what was asked
-     * for: what a switch did is the proxy's to say.
+     * One route's mode and strictness, which the proxy applies to its next request.
+     *
+     * The route is read from the proxy immediately before it is written, and never from the row on
+     * screen. `PUT /routes/{name}` replaces the *whole* route, so everything this switch does not
+     * mean to change has to be sent back with it — and a body saying nothing about the cassette
+     * unpins a pinned route, which would leave a replay answering from any recording at all. The
+     * row is the wrong thing to read it off: it is as old as the last poll, so another client that
+     * pinned a cassette in between would have its pin written away by a switch that never knew
+     * about it. A route the proxy does not have is said out loud rather than invented.
      */
-    fun setMode(name: String, mode: String, strict: Boolean) =
-        start("switching $name to $mode") { client ->
-            // The cassette is sent back as it stands, and is read off the row here rather than
-            // asked for by the caller: `PUT /routes/{name}` replaces the *whole* route, so a body
-            // that says nothing about the cassette unpins a pinned one — and a route that was
-            // replaying one cassette would come back replaying any recording at all. Reading it
-            // here is what keeps that invariant in one place instead of in every call site.
-            val body = buildJsonObject {
-                put("mode", mode)
-                put("strict", strict)
-                put("cassette", routes.firstOrNull { it.name == name }?.cassette)
-            }
+    fun setMode(name: String, mode: Mode, strict: Boolean) =
+        start("switching $name to ${mode.spelling}") { client ->
             client
-                .send(HttpMethod.Put, "/routes/${name.encodeURLPathPart()}", body.toString())
+                .send(HttpMethod.Get, "/routes")
                 .fold(
                     { answer ->
-                        val changed = routeOf(name, answer)
-                        val at = routes.indexOfFirst { it.name == name }
-                        when {
-                            changed == null ->
-                                note = "$name was switched, but the answer could not be read"
-                            at < 0 -> routes.add(changed)
-                            else -> {
-                                routes[at] = changed
-                                note = null
-                            }
+                        val current = routesOf(answer)?.firstOrNull { it.name == name }
+                        if (current == null) {
+                            note = "the proxy has no route named $name to switch"
+                        } else {
+                            sendMode(client, current, mode, strict)
                         }
                     },
-                    { note = whyNot("switch $name to $mode", it) },
+                    { note = whyNot("read $name before switching it", it) },
                 )
         }
+
+    /**
+     * [route] put back with its mode and strictness replaced and everything else — the cassette —
+     * as the proxy just said it was. The answer is the route the proxy now holds, so the row is
+     * replaced from that rather than from what was asked for: what a switch did is the proxy's to
+     * say. Every way out of here leaves the panel's line saying something other than what it was
+     * doing, because "switching default to replay" left on screen for ever is a lie about a call
+     * that finished.
+     */
+    private suspend fun sendMode(
+        client: ControlClient,
+        route: RouteRow,
+        mode: Mode,
+        strict: Boolean,
+    ) {
+        val body = buildJsonObject {
+            put("mode", mode.spelling)
+            put("strict", strict)
+            put("cassette", route.cassette)
+        }
+        client
+            .send(HttpMethod.Put, "/routes/${route.name.encodeURLPathPart()}", body.toString())
+            .fold(
+                { answer ->
+                    val changed = routeOf(route.name, answer)
+                    val at = routes.indexOfFirst { it.name == route.name }
+                    when {
+                        changed == null ->
+                            note = "${route.name} was switched, but the answer could not be read"
+                        at < 0 -> {
+                            routes.add(changed)
+                            note = null
+                        }
+                        else -> {
+                            routes[at] = changed
+                            note = null
+                        }
+                    }
+                },
+                { note = whyNot("switch ${route.name} to ${mode.spelling}", it) },
+            )
+    }
 }
 
 /**
@@ -257,8 +298,19 @@ internal class ControlPlaneModel : Panel() {
  * still news, and an empty one says so in words rather than as a blank line.
  */
 internal fun problemDetail(body: String): String =
-    runCatching { (Json.parseToJsonElement(body) as JsonObject)["detail"].text() }.getOrNull()
+    jsonOf(body)?.get("detail").text()
         ?: body.take(REFUSAL_CAP).ifBlank { "the proxy gave no reason" }
+
+/**
+ * An answer from the proxy as a JSON object, or null for one that is not: the whole of "did this
+ * come back readable". It was written out eight times across the window before this — every pane
+ * and every panel parsing and casting in its own `runCatching` — and a reading that is wrong once
+ * is wrong everywhere, so it is one function.
+ */
+internal fun jsonOf(body: String): JsonObject? = runCatching {
+    Json.parseToJsonElement(body) as JsonObject
+}
+    .getOrNull()
 
 /**
  * What a panel writes when a call did not work. A refusal is the proxy's own words, whole and
@@ -278,34 +330,35 @@ internal fun whyNot(doing: String, failure: Throwable): String =
  * apart: "this proxy has no routes" is the one wrong thing to say about a truncated answer.
  */
 internal fun routesOf(body: String): List<RouteRow>? = runCatching {
-    (Json.parseToJsonElement(body) as JsonObject).map { (name, value) ->
-        rowOf(name, value as JsonObject)
-    }
+    jsonOf(body)?.map { (name, value) -> rowOf(name, value as JsonObject) }
 }
     .getOrNull()
 
 /**
  * One route out of a `PUT /routes/{name}` answer, which names the route's shape and not its name.
  */
-internal fun routeOf(name: String, body: String): RouteRow? = runCatching {
-    rowOf(name, Json.parseToJsonElement(body) as JsonObject)
-}
-    .getOrNull()
+internal fun routeOf(name: String, body: String): RouteRow? =
+    jsonOf(body)?.let { runCatching { rowOf(name, it) }.getOrNull() }
 
 /**
  * JSON as a person reads it, or the answer exactly as it came when it turns out not to be JSON. A
  * screen showing a config is showing whatever the proxy said, not this window's idea of it.
  */
-internal fun pretty(body: String): String = runCatching {
-    PRETTY.encodeToString(JsonObject.serializer(), Json.parseToJsonElement(body) as JsonObject)
-}
-    .getOrDefault(body)
+internal fun pretty(body: String): String =
+    jsonOf(body)?.let { PRETTY.encodeToString(JsonObject.serializer(), it) } ?: body
 
-/** A route object, which must at least say what mode it is in to be a route at all. */
-private fun rowOf(name: String, route: JsonObject): RouteRow =
-    RouteRow(
+/**
+ * A route object, which must at least say what mode it is in to be a route at all. The spelling is
+ * kept whatever it says and [Mode.of] is allowed to answer null, so a mode from a proxy newer than
+ * this window shows as itself instead of taking the whole table down with it.
+ */
+private fun rowOf(name: String, route: JsonObject): RouteRow {
+    val spelled = checkNotNull(route["mode"].text()) { "a route says what mode it is in" }
+    return RouteRow(
         name = name,
-        mode = checkNotNull(route["mode"].text()) { "a route says what mode it is in" },
+        mode = Mode.of(spelled),
+        spelled = spelled,
         strict = route.scalar("strict") { booleanOrNull } == true,
         cassette = route["cassette"].text(),
     )
+}

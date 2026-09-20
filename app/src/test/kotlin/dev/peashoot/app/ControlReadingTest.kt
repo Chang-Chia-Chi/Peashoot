@@ -1,5 +1,6 @@
 package dev.peashoot.app
 
+import dev.peashoot.core.Mode
 import java.io.IOException
 import kotlin.test.Test
 import kotlin.test.assertContains
@@ -82,6 +83,8 @@ class ControlReadingTest {
             dry.lines,
         )
         assertNull(dry.path, "a dry run wrote nothing to name")
+        assertEquals(2, dry.exchanges)
+        assertEquals(1, dry.redactions)
 
         val written =
             checkNotNull(
@@ -92,9 +95,27 @@ class ControlReadingTest {
             )
         assertEquals("nothing in them matches a redaction rule", written.lines[1])
         assertEquals("/tmp/demo.jsonl", written.path)
-        assertContains(written.lines, "written to /tmp/demo.jsonl")
+        // The path is not one of the lines: a dry run has none and a write does, and a line the
+        // two could never share would make every write look like a changed one.
+        assertTrue(written.lines.none { it.contains("/tmp/demo.jsonl") })
 
         assertNull(exportLines("""{"exchanges":1}"""), "half an answer is no answer")
+    }
+
+    @Test
+    fun `the cassettes a proxy already has are the names an export would replace`() {
+        assertEquals(
+            setOf("one", "two"),
+            cassetteNames(
+                """{"cassettes":[{"name":"one","exchanges":3,"path":"/c/one.jsonl"},""" +
+                    """{"name":"two","exchanges":null,"path":null}]}"""
+            ),
+        )
+        assertEquals(emptySet(), cassetteNames("""{"cassettes":[]}"""))
+        // Unreadable is not "no cassettes": an export must not be told it replaces nothing by an
+        // answer nobody could read — the caller treats null as "cannot say" and says nothing.
+        assertNull(cassetteNames("{}"))
+        assertNull(cassetteNames("nonsense"))
     }
 
     @Test
@@ -103,10 +124,16 @@ class ControlReadingTest {
             checkNotNull(
                 routesOf("""{"default":{"mode":"record","strict":false,"cassette":null}}""")
             )
-        assertEquals(listOf(RouteRow("default", "record", false, null)), read)
+        assertEquals(listOf(RouteRow("default", Mode.RECORD, "record", false, null)), read)
         assertEquals(
-            RouteRow("default", "replay", true, "demo"),
+            RouteRow("default", Mode.REPLAY, "replay", true, "demo"),
             routeOf("default", """{"mode":"replay","strict":true,"cassette":"demo"}"""),
+        )
+        // A mode from a proxy newer than this window: shown as it was spelled, named by nothing,
+        // and not a reason to refuse to draw the route it belongs to.
+        assertEquals(
+            RouteRow("default", null, "teleport", false, null),
+            routeOf("default", """{"mode":"teleport"}"""),
         )
         // Empty is a proxy with no routes; null is an answer this window could not read, and the
         // two must not be drawn as the same thing.

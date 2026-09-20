@@ -16,7 +16,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.booleanOrNull
@@ -111,7 +110,7 @@ internal data class Timeline(val rows: List<ExchangeRow>, val more: Boolean)
 internal fun timelineOf(body: String, heard: (String) -> JsonObject?): Timeline? = runCatching {
     // `exchanges` has to be there and has to be an array, or this is not the endpoint
     // answering: absent or of another shape is unreadable, not a session with nothing in it.
-    val answer = Json.parseToJsonElement(body) as JsonObject
+    val answer = checkNotNull(jsonOf(body))
     Timeline(
         rows =
             (answer["exchanges"] as JsonArray)
@@ -197,7 +196,7 @@ internal fun touchText(touch: Touch, name: String): String =
  * held anywhere.
  */
 internal fun bodyText(detail: String): String = runCatching {
-    val body = (Json.parseToJsonElement(detail) as JsonObject)["requestBody"].text().orEmpty()
+    val body = checkNotNull(jsonOf(detail))["requestBody"].text().orEmpty()
     if (body.length <= BODY_CAP) return@runCatching body
     // Characters and not bytes: [BODY_CAP] counts `String` units, so calling them bytes was simply
     // wrong for any prompt with a non-ASCII character in it. Counted as code points, so an emoji

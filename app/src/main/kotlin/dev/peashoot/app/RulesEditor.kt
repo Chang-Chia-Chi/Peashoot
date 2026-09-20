@@ -7,7 +7,6 @@ import androidx.compose.runtime.setValue
 import dev.peashoot.app.farm.scalar
 import dev.peashoot.core.text
 import io.ktor.http.HttpMethod
-import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
@@ -17,11 +16,22 @@ import kotlinx.serialization.json.intOrNull
 // saved yet. The rule file is data meant to be read and edited — `core.Rules`' own KDoc says so —
 // so the editor is a text box over its JSON and not a form over three lists, which would be this
 // window's opinion of a file the proxy validates.
+//
+// ponytail: that text box is the ceiling. A syntax error is the proxy's to report rather than the
+// editor's to prevent, there is no completion and no per-rule editing, and a user who deletes a
+// brace learns about it from a 400. Upgrade: a form over `keepHeaders`, `ignorePointers` and
+// `replace` with the text box still there behind it, once someone edits rules often enough to mind.
 
 /** Enough of a fingerprint to tell two apart at a glance, and not enough to retype by mistake. */
 private const val FINGERPRINT_DIGITS = 12
 
-/** How many collisions or splits are listed before the rest are counted instead. */
+/**
+ * How many collisions or splits are listed before the rest are counted instead.
+ *
+ * ponytail: twenty, and the rest are a number. A rule change that collides half a cassette is one
+ * the count alone answers — it is wrong — so the list is for reading a handful, not for auditing
+ * hundreds. Upgrade: a scrolling list of its own, if a rule set ever gets big enough to want one.
+ */
 private const val LISTED_GROUPS = 20
 
 /** What `POST /rules/test` said: the lines to show, and whether any is a reason not to save. */
@@ -113,9 +123,13 @@ internal class RulesModel(private val onSaved: () -> Unit) : Panel() {
     }
 
     /**
-     * What this draft would do to the proxy's newest live recordings, saving nothing. `lastN` is
-     * left off, so the endpoint's own default decides how many — a number this window has no better
-     * opinion about than the proxy that holds the rows.
+     * What this draft would do to the proxy's newest live recordings, saving nothing.
+     *
+     * ponytail: `lastN` is left off, so the endpoint's own default of fifty decides how many. Spec
+     * story 13 says "my last N recorded exchanges" and this window never lets anyone say which N;
+     * fifty of the newest is the proxy's answer and this has no better one, but it is the proxy's
+     * answer and not the user's. Upgrade: a number beside the test button, bounded 1 to 500 as the
+     * endpoint bounds it.
      */
     fun test() =
         start("testing the draft against the proxy's recordings") { client ->
@@ -156,6 +170,14 @@ internal class RulesModel(private val onSaved: () -> Unit) : Panel() {
     /**
      * The draft, saved. A draft nothing has tested never reaches here from the window, because the
      * button is not offered — and is refused here anyway, since a guard on a screen is not a rule.
+     *
+     * A `PUT` can still fail, and on two quite different grounds. *Validation* it cannot fail: the
+     * test endpoint and this one read the draft with the same parser, so a rule set the proxy would
+     * refuse was refused at the test and never got here. What it can fail on is everything after
+     * that — `PUT /rules` also writes a file, and a write that cannot happen is a 500 whose detail
+     * is the proxy's fixed "the control API failed; the proxy log says how". That sentence goes on
+     * screen as it stands, and the draft and its test are left exactly as they were, so the next
+     * press is a retry rather than a re-type.
      */
     fun save() {
         val why = saveBlocked(draft, tested, risky, confirming)
@@ -219,7 +241,7 @@ internal fun saveBlocked(
  * stops hitting. Both are the proxy's own words for them; this only writes them down.
  */
 internal fun testLines(body: String): RuleTest? = runCatching {
-    val answer = Json.parseToJsonElement(body) as JsonObject
+    val answer = checkNotNull(jsonOf(body))
     // A count and not a string: `text()` answers null for a number, and a test that says how many
     // recordings it ran against is the one number on the answer worth reading.
     val counted = checkNotNull(answer.scalar("tested") { intOrNull })

@@ -36,8 +36,12 @@ import dev.peashoot.core.Mode
 // wrote a cassette, and `dumpFrames` and `cassetteFile` inside the config it serves. A cassette
 // path masked to `file 1a2b3c` would not tell the person who just exported it where to find their
 // file, which is the one thing that line is for. It does mean this tab is not screenshot-safe the
-// way the farm is, since those paths name a home directory. Upgrade: a toggle of its own if the
-// control plane ever ends up in a screenshot, or the farm's if the two ever have to mean one thing.
+// way the farm is, since those paths name a home directory, and [TAB_WARNING] says so on the tab
+// itself rather than only here. One nuance, which a review was right to draw out: "nothing on this
+// tab came off the wire" is not quite true either — a redaction preview's `where` is a pointer
+// built from the *key names* in a request body, never its values, so a body with an unusual key in
+// it does put that key on screen. Upgrade: a toggle of its own if the control plane ever ends up in
+// a screenshot, or the farm's if the two ever have to mean one thing.
 
 /** Wide enough for the longest route name this proxy has, which is `default`. */
 private val NAME_WIDTH = 120.dp
@@ -47,8 +51,13 @@ private val EDITOR_HEIGHT = 220.dp
 
 private const val SMALL = 12
 
-/** The modes a route can be put in, in the order `core.Mode` declares them. */
-private val MODES = Mode.entries.map { it.spelling }
+/**
+ * What the tab says about itself before anything else: the show-paths badge is the farm's, and the
+ * paths written here are the proxy's own, so a screenshot of this tab is not covered by it.
+ */
+private const val TAB_WARNING =
+    "this tab shows the proxy's own file paths and its config; the show-paths toggle does not " +
+        "cover it"
 
 /** Monospace, because everything typed or shown here is JSON someone has to read. */
 private val MONO = TextStyle(fontFamily = FontFamily.Monospace, fontSize = SMALL.sp)
@@ -61,6 +70,7 @@ private val MONO = TextStyle(fontFamily = FontFamily.Monospace, fontSize = SMALL
 @Composable
 internal fun ControlScreen(model: ControlPlaneModel, modifier: Modifier = Modifier) {
     Column(modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
+        Text(TAB_WARNING, fontSize = SMALL.sp)
         RoutesSection(model)
         Divider(Modifier.padding(vertical = 8.dp))
         RulesSection(model.rules)
@@ -121,23 +131,28 @@ private fun RoutesSection(model: ControlPlaneModel, modifier: Modifier = Modifie
 private fun RouteControls(
     route: RouteRow,
     busy: Boolean,
-    onMode: (String, Boolean) -> Unit,
+    onMode: (Mode, Boolean) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Row(modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
         Text(route.name, modifier = Modifier.width(NAME_WIDTH), fontFamily = FontFamily.Monospace)
-        MODES.forEach { mode ->
+        // A mode this build has no name for is drawn as the proxy spelled it and has no button of
+        // its own: what a newer proxy does is not something this window can offer to do again.
+        if (route.mode == null) Text("[${route.spelled}]", fontSize = SMALL.sp)
+        Mode.entries.forEach { mode ->
             TextButton(
                 onClick = { onMode(mode, route.strict) },
                 enabled = !busy && mode != route.mode,
             ) {
-                Text(if (mode == route.mode) "[$mode]" else mode)
+                Text(if (mode == route.mode) "[${mode.spelling}]" else mode.spelling)
             }
         }
+        // Strictness is sent as another switch of the same route, so it needs a mode to send with
+        // it; a route in a mode this window cannot name says what it is and offers no box.
         Checkbox(
             checked = route.strict,
-            onCheckedChange = { onMode(route.mode, it) },
-            enabled = !busy,
+            onCheckedChange = { checked -> route.mode?.let { onMode(it, checked) } },
+            enabled = !busy && route.mode != null,
         )
         Text("strict", fontSize = SMALL.sp)
         route.cassette?.let { Text("  cassette $it", fontSize = SMALL.sp) }
@@ -219,7 +234,18 @@ private fun ExportSection(export: ExportModel, modifier: Modifier = Modifier) {
             ) {
                 Text("export")
             }
-            if (!export.mayWrite) Text("preview this export first", fontSize = SMALL.sp)
+            // The box stands where the rules editor's does, and means the same thing: the one
+            // action on this screen that cannot be undone has to be said twice.
+            if (export.replaces) {
+                Checkbox(
+                    checked = export.confirming,
+                    onCheckedChange = export::confirm,
+                    enabled = !export.busy,
+                )
+                Text("replace the cassette already there", fontSize = SMALL.sp)
+            } else if (!export.mayWrite) {
+                Text("preview this export first", fontSize = SMALL.sp)
+            }
         }
         export.preview.forEach { Text(it, fontFamily = FontFamily.Monospace, fontSize = SMALL.sp) }
         export.written?.let { Text("wrote $it", fontSize = SMALL.sp) }
