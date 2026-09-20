@@ -23,6 +23,9 @@ import kotlinx.serialization.json.jsonPrimitive
 private const val MINE = "sess-mine"
 private const val THEIRS = "sess-theirs"
 
+/** One file a turn touched, which is a crop to click and a path to ask the proxy about. */
+private const val A_FILE = "src/main/App.kt"
+
 /** Far enough apart that newest-first is an order and not a coin toss. */
 private val START = Instant.parse("2026-09-20T09:00:00Z")
 
@@ -70,7 +73,7 @@ class PaneTest {
                 assertNull(model.panes.note, "a timeline that loaded says nothing about itself")
 
                 // Clicking a crop is a different pane over the same model: the rows go with it.
-                model.panes.select(Hit.OnCrop("src/main/App.kt"))
+                model.panes.select(Hit.OnCrop(A_FILE))
                 assertTrue(model.panes.rows.isEmpty())
                 model.panes.dismiss()
                 assertNull(model.panes.selected)
@@ -79,7 +82,7 @@ class PaneTest {
         }
 
     @Test
-    fun `an exchange from before the window connected shows the endpoint's half of the row`() =
+    fun `an exchange from before the window connected says what it used, cost and took`() =
         withTestProxy { proxy ->
             // Stored and never published: exactly what a proxy that has been running all day has,
             // since the window's first feed connection asks for no backfill.
@@ -93,10 +96,38 @@ class PaneTest {
                 val row = model.panes.rows.single()
                 assertEquals("01EX09", row.id)
                 assertEquals(START.toString(), row.at)
-                // Usage, cost and latency live on the event line alone, and this window heard none.
+                // #85: the proxy reads the completed line it stored onto the summary row, so a
+                // turn this window never heard is no longer blank where the money is.
+                assertEquals("120 in, 340 out, 0 cached, 0 written", row.usage)
+                assertEquals(0.25, row.costUsd)
+                assertEquals(1500L, row.latencyMs)
+                // The model it answered as is still the line's alone, and the window heard none.
                 assertNull(row.model)
-                assertNull(row.usage)
-                assertNull(row.costUsd)
+                watching.cancel()
+            }
+        }
+
+    @Test
+    fun `a crop's touch history is the proxy's, and reaches back before the window connected`() =
+        withTestProxy { proxy ->
+            // Stored and never published, which is what a proxy that has been running all day
+            // has: the window's first feed connection asks for no backfill (#85).
+            proxy.record(MINE, "01EX20", START, announce = false, toolPath = A_FILE)
+            val model = AppModel(home = proxy.home, port = proxy.port)
+            coroutineScope {
+                val watching = launch { model.watch() }
+                until { model.status.startsWith("connected") }
+                // The farm heard none of it, so it has no crop and no touch of its own to show.
+                assertTrue(model.farm.fields.isEmpty())
+
+                model.panes.select(Hit.OnCrop(A_FILE))
+                until { model.panes.touches.isNotEmpty() }
+                val touch = model.panes.touches.single()
+                assertEquals("01EX20", touch.exchangeId)
+                assertEquals(START.toString(), touch.at)
+                assertEquals(MINE, touch.villager)
+                assertEquals(listOf("Read"), touch.tools)
+                assertNull(model.panes.note, "a history that loaded says nothing about itself")
                 watching.cancel()
             }
         }
