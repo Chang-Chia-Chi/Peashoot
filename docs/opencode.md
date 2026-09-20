@@ -68,11 +68,13 @@ stores and logs, and forwards them upstream unchanged. It never stores one.
 
 ## 2. Tag the session — the three-line plugin
 
-OpenCode sends no session identifier that Peashoot recognises, so without this every turn is
-grouped by the conversation's first user message instead: workable, but it splits a session in two
-whenever OpenCode rewrites that message. Peashoot honours an `x-peashoot-session` header outright,
-from any client, over every other signal — and OpenCode's `chat.headers` hook is handed the session
-id directly.
+OpenCode sends no session identifier that Peashoot recognises, so without this the Anthropic and
+OpenAI-compatible providers fall back to grouping turns by the conversation's first user message —
+workable, but it splits a session in two whenever OpenCode rewrites that message. On the built-in
+`openai` provider there is no fallback at all: that fallback reads the request's `messages` array,
+and a Responses body carries `input`, so the event line's `session` is simply `null`. Peashoot
+honours an `x-peashoot-session` header outright, from any client, over every other signal — and
+OpenCode's `chat.headers` hook is handed the session id directly.
 
 Drop this in `.opencode/plugins/peashoot.ts` (project) or `~/.config/opencode/plugins/peashoot.ts`
 (global). It is auto-loaded; no `plugin` entry in `opencode.json` is needed.
@@ -117,9 +119,12 @@ traffic apart from Claude Code's and no more. Use the plugin if you want session
   together that they would not otherwise have.
 - It is **no part of the fingerprint**, so a recording made in one session replays in another and a
   cassette does not go stale when you start a new session.
-- Its value is **bounded where it enters**: control characters are replaced and it is capped at 128
-  characters, because it is a string you chose and it ends up in `events.jsonl`, in the store, in
-  the Gource log, and on the farm's labels.
+- The **session derived from it** is bounded where it enters: ASCII control characters are replaced
+  and it is capped at 128 characters, because it is a string you chose and it ends up in
+  `events.jsonl`, in the event table, in the Gource log, and on the farm's labels. The raw header
+  is still kept verbatim in the stored exchange's request headers, where replay fidelity needs it,
+  and the control API serves it back; an exported cassette keeps only the headers the rule set
+  keeps, so it is not in one.
 
 ## 3. What grouping looks like
 
@@ -133,12 +138,13 @@ With the plugin, every line of one OpenCode session carries the same `"session"`
 session id — whichever surface the turn went to:
 
 ```json
-{"event":"exchange.completed","session":"ses_8Fq2xKp1","client":"opencode","surface":"anthropic-messages", ...}
-{"event":"exchange.completed","session":"ses_8Fq2xKp1","client":"opencode","surface":"openai-chat", ...}
+{"event":"exchange.completed","session":"ses_8Fq2xKp1","client":"<user-agent token>","surface":"anthropic-messages", ...}
+{"event":"exchange.completed","session":"ses_8Fq2xKp1","client":"<user-agent token>","surface":"openai-chat", ...}
 ```
 
-`"client"` is the user-agent's product token, so it says `opencode` whether or not the plugin is
-installed; `"session"` is what the plugin changes. The proxy's own view of the same thing:
+`"session"` is what the plugin changes, and it is the only field it changes. `"client"` is whatever
+the request's user-agent names, which nobody here has observed for these providers — see the last
+section; it plays no part in grouping either way. The proxy's own view of the same thing:
 
 ```
 curl -H "Authorization: Bearer $(cat ~/.peashoot/token)" http://localhost:8787/sessions
@@ -168,11 +174,12 @@ never been executed; run them and say what happened on #27.
    opencode run "Read README.md and name the three modules."
    ```
 
-3. Check the event lines. What should be there: `"surface":"anthropic-messages"`,
-   `"client":"opencode"`, a `"session"` that is OpenCode's own session id and not a
-   `opencode:<hex>` fallback, and a `"tools"` array naming the read with its path. If `session`
-   reads `opencode:` and then hex, the plugin did not load or the hook did not fire — check that
-   the directory is `plugins/` and not `plugin/`.
+3. Check the event lines. What should be there: `"surface":"anthropic-messages"`, a `"session"`
+   that is OpenCode's own session id, and a `"tools"` array naming the read with its path. If
+   `session` instead reads a client name, a colon and hex — the first-user-message fallback — the
+   plugin did not load or the hook did not fire; check that the directory is `plugins/` and not
+   `plugin/`. Write down what `"client"` says: nobody has observed it for this provider, and it is
+   the one field on the line this page cannot predict.
 
 4. Swap to the OpenAI-compatible provider from §1 and run the same prompt. The lines should say
    `"surface":"openai-chat"` and, if both runs are in one OpenCode session, carry the same
@@ -204,8 +211,12 @@ current one.
 | OpenCode's own plugin setting a per-session header | [packages/opencode/src/plugin/github-copilot/copilot.ts](https://github.com/anomalyco/opencode/blob/dev/packages/opencode/src/plugin/github-copilot/copilot.ts) |
 | Which provider maps to `sdk.responses` | [packages/opencode/src/provider/provider.ts](https://github.com/anomalyco/opencode/blob/dev/packages/opencode/src/provider/provider.ts), and `docs/research/client-compat-matrix.md` §2.3 |
 
-Not verified, and worth checking during the smoke: whether OpenCode now sends a session header of
-its own. `docs/research/client-compat-matrix.md` §2.3(d) recorded "no session header by default",
+Not verified, and worth checking during the smoke. **What user-agent OpenCode sends on these
+providers**: `docs/research/client-compat-matrix.md` §2.3(d) found a custom
+`User-Agent: opencode/<version> …` only on the GitLab and Cloudflare providers and left the general
+one unfetched, so what `"client"` reads on an Anthropic or OpenAI-compatible provider is genuinely
+unknown — it may well be the runtime's own. Nothing depends on it: grouping is `"session"`, which
+the plugin sets. And **whether OpenCode now sends a session header of its own**. `docs/research/client-compat-matrix.md` §2.3(d) recorded "no session header by default",
 while the current `request.ts` appears to set one before a plugin's headers are merged. Nothing here
 depends on the answer — Peashoot reads no OpenCode header but the one the plugin injects — but if
 OpenCode has grown a stable one, `Client.detect` could read it and the plugin could go.
