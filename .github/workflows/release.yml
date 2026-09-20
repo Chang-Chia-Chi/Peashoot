@@ -30,6 +30,8 @@ jobs:
           - os: windows-latest
             task: packageMsi
             format: msi
+          # macos-latest is Apple Silicon, and jpackage builds for the machine it runs on, so
+          # this DMG is arm64 only. An Intel Mac needs a second leg on macos-13; nobody has asked.
           - os: macos-latest
             task: packageDmg
             format: dmg
