@@ -208,7 +208,11 @@ class InterceptorChainTest {
         val observer = Observer()
         FakeUpstream().use { upstream ->
             upstream.reply = {
-                FakeUpstream.Reply(status = 529, body = body, headers = mapOf("retry-after" to "3"))
+                FakeUpstream.Reply(
+                    status = 529,
+                    body = body,
+                    headers = mapOf("retry-after" to listOf("3")),
+                )
             }
             ProxyServer(ProxyConfig(port = 0, anthropicUpstream = upstream.url), listOf(observer))
                 .use { proxy ->

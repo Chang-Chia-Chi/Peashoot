@@ -67,7 +67,7 @@ class ChatCompletionsSeamTest {
         FakeUpstream.Reply(
             contentType = ContentType.Text.EventStream,
             frames = frames,
-            headers = mapOf("x-ratelimit-remaining-tokens" to "9000"),
+            headers = mapOf("x-ratelimit-remaining-tokens" to listOf("9000")),
         )
 
     private suspend fun post(

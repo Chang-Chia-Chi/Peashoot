@@ -115,9 +115,9 @@ class RelayTest {
                     FakeUpstream.Reply(
                         headers =
                             mapOf(
-                                "anthropic-ratelimit-tokens-remaining" to "1000",
-                                "x-codex-turn-state" to "sticky",
-                                "proxy-authenticate" to "Basic",
+                                "anthropic-ratelimit-tokens-remaining" to listOf("1000"),
+                                "x-codex-turn-state" to listOf("sticky"),
+                                "proxy-authenticate" to listOf("Basic"),
                             )
                     )
                 }

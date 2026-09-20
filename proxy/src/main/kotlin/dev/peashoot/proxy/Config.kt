@@ -1,5 +1,6 @@
 package dev.peashoot.proxy
 
+import dev.peashoot.core.ChatCompletions
 import dev.peashoot.core.DEFAULT_PRICES
 import dev.peashoot.core.Messages
 import dev.peashoot.core.Mode
@@ -7,6 +8,7 @@ import dev.peashoot.core.Price
 import dev.peashoot.core.REDACT_FILE
 import dev.peashoot.core.RULES_FILE
 import dev.peashoot.core.Redaction
+import dev.peashoot.core.Responses
 import dev.peashoot.core.Route
 import dev.peashoot.core.Rules
 import dev.peashoot.core.Surface
@@ -129,11 +131,12 @@ data class ProxyConfig(
      */
     fun upstreamBase(surface: Surface): String =
         when (surface) {
-            // Anthropic is named, not assumed: every other surface is an OpenAI one, so the
-            // Responses surface (#25) reaches the right provider the day it arrives instead of
-            // being relayed to Anthropic by a default nobody remembered to change.
+            // Every surface is named and none is assumed, which is why `Surface` is sealed: a
+            // fourth one would otherwise be relayed to whichever provider this `else` last
+            // happened to mean, with its key, instead of failing to compile until someone says.
             Messages -> anthropicUpstream
-            else -> openaiUpstream
+            ChatCompletions,
+            Responses -> openaiUpstream
         }.trimEnd('/')
 }
 

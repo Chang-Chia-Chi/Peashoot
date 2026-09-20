@@ -62,6 +62,67 @@ class ClientTest {
     }
 
     @Test
+    fun `a Codex main thread names its thread and is still nobody's helper`() {
+        assertEquals(
+            Client("codex", session = "cx-1", agent = null, parentAgent = null),
+            Client.detect(
+                headersOf(
+                    "originator" to listOf("codex_cli_rs"),
+                    "session-id" to listOf("cx-1"),
+                    "thread-id" to listOf("th-1"),
+                ),
+                null,
+            ),
+            "every Codex request carries thread-id, so it cannot on its own mean a sub-agent",
+        )
+    }
+
+    @Test
+    fun `a Codex thread that names where it came from is a helper of it`() {
+        assertEquals(
+            Client("codex", session = "cx-1", agent = "th-2", parentAgent = "th-1"),
+            Client.detect(
+                headersOf(
+                    "originator" to listOf("codex_cli_rs"),
+                    "session-id" to listOf("cx-1"),
+                    "thread-id" to listOf("th-2"),
+                    "x-codex-parent-thread-id" to listOf("th-1"),
+                    "x-openai-subagent" to listOf("review"),
+                ),
+                null,
+            ),
+        )
+        assertEquals(
+            Client("codex", session = "cx-1", agent = "th-2", parentAgent = null),
+            Client.detect(
+                headersOf(
+                    "originator" to listOf("codex_cli_rs"),
+                    "session-id" to listOf("cx-1"),
+                    "thread-id" to listOf("th-2"),
+                    "x-openai-subagent" to listOf("compact"),
+                ),
+                null,
+            ),
+            "a compact thread that named no parent is still the session's helper, not the session",
+        )
+    }
+
+    @Test
+    fun `the peashoot session header wins over Codex's own too`() {
+        assertEquals(
+            Client("codex", session = "injected-1", agent = null, parentAgent = null),
+            Client.detect(
+                headersOf(
+                    "x-peashoot-session" to listOf("injected-1"),
+                    "originator" to listOf("codex_cli_rs"),
+                    "session-id" to listOf("cx-1"),
+                ),
+                null,
+            ),
+        )
+    }
+
+    @Test
     fun `an official SDK is detected from its stainless headers`() {
         assertEquals(
             Client("sdk-python", session = null, agent = null, parentAgent = null),

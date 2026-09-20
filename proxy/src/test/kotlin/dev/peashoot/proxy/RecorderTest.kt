@@ -54,7 +54,7 @@ class RecorderTest {
         FakeUpstream.Reply(
             contentType = ContentType.Text.EventStream,
             frames = frames,
-            headers = mapOf("anthropic-ratelimit-tokens-remaining" to "9"),
+            headers = mapOf("anthropic-ratelimit-tokens-remaining" to listOf("9")),
             beforeFrame = beforeFrame,
             cutAfterFrames = cutAfterFrames,
         )
