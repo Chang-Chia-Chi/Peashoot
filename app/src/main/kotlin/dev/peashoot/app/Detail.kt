@@ -4,20 +4,20 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
-import dev.peashoot.app.farm.TOUCH_HISTORY
-import dev.peashoot.app.farm.Touch
 import dev.peashoot.app.farm.scalar
 import dev.peashoot.app.render.Hit
 import dev.peashoot.core.text
 import io.ktor.http.encodeURLParameter
-import java.util.Locale
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.doubleOrNull
 import kotlinx.serialization.json.intOrNull
@@ -39,20 +39,19 @@ import kotlinx.serialization.json.longOrNull
 private const val BODY_CAP = 64 * 1024
 
 /**
- * How many completed lines the window remembers, keyed by exchange. The exchanges endpoint serves
- * summary rows, and usage, cost, latency and the replay flag are on the event line alone — so for
- * an exchange whose line this window heard, this is where they come from.
+ * How many completed lines the window remembers, keyed by exchange. Since #85 a summary row says
+ * what the turn used, cost, took and whether it was a hit, so what is left here is the model it
+ * answered as, the paths its tools named, and `resumed` — the fields the exchanges endpoint has
+ * nowhere to put, because they are the answer's and not the row's.
  *
- * The line for an *older* exchange is not gone from the proxy: `GET /events?since=0` backfills the
- * whole event table, those fields included. The window never asks for it, because
- * `AppModel.watch`'s first connection deliberately takes no backfill, so what a pane can say about
- * a turn from before it connected is bounded by that choice rather than by the API.
+ * Those are not gone from the proxy either: `GET /events?since=0` backfills the whole event table.
+ * The window never asks for it, because `AppModel.watch`'s first connection deliberately takes no
+ * backfill, so what a pane can say about *them* for a turn from before it connected is bounded by
+ * that choice rather than by the API.
  *
  * ponytail: the newest [HEARD_EXCHANGES], which is `MAX_LINES`' order of magnitude for the same
- * reason — a scrollback, not a second copy of the table. Upgrade: either backfill the feed, which
- * is a decision with consequences beyond this pane (every long-finished session would end its day
- * at the first tick, one card each), or a control API that serves usage and timings on a summary
- * row, which would retire this outright.
+ * reason — a scrollback, not a second copy of the table. Upgrade: the model and the tools on a
+ * summary row would retire this outright, which is the same move #85 made for the other four.
  */
 private const val HEARD_EXCHANGES = 500
 
@@ -63,8 +62,8 @@ private const val HASH_RADIX = 16
 
 /**
  * One row of a villager's timeline: the exchanges endpoint's summary, plus what only the event line
- * carries. A field the window never heard a line for is null rather than zero — "nobody said" and
- * "it cost nothing" are different, and a replay hit really does cost nothing.
+ * carries. A field nothing said is null rather than zero — "nobody said" and "it cost nothing" are
+ * different, and a replay hit really does cost nothing.
  */
 internal data class ExchangeRow(
     val id: String,
@@ -82,7 +81,11 @@ internal data class ExchangeRow(
      * an absent field reads as false, which is what an absent one means. No row the exchanges
      * endpoint serves can carry it, though: a resumed answer is not stored, for the reason a replay
      * hit is not — it made no upstream call — so on this timeline it is the ORIGINAL row, the one
-     * whose client left, that a resumed turn shows up as. The same holds for [replayHit].
+     * whose client left, that a resumed turn shows up as.
+     *
+     * The same holds for [replayHit], which a summary row does carry since #85: it reads false on
+     * every row the proxy recorded, for exactly this reason, and a replay hit shows up on a
+     * timeline only as the recording it was served from.
      */
     val resumed: Boolean,
     val clientDisconnected: Boolean,
@@ -138,34 +141,89 @@ internal fun timelineNote(session: String, page: Timeline?): String? =
     }
 
 /**
- * The one line a touch history says about itself. A crop at [TOUCH_HISTORY] touches is a crop whose
- * older ones the reducer has dropped, and a list that simply ends looks like a complete list.
+ * One turn against one file, as `GET /touches?path=` serves it: which turn, when, whose villager's
+ * it was, and the tools it named that path with — `["Read", "Edit"]` for a turn that read the file
+ * and then edited it. The tools are the line's own names and not the farm's three kinds: the farm
+ * reads a turn as planting, growing or inspecting, and this pane says what the proxy said.
+ *
+ * [villager] is keyed as the reducer keys villagers, so a helper's touch names the helper.
  */
-internal fun touchNote(touches: List<Touch>): String? =
-    "the newest $TOUCH_HISTORY touches shown; this file has been touched more"
-        .takeIf { touches.size >= TOUCH_HISTORY }
+internal data class TouchRow(
+    val eventId: Long,
+    val exchangeId: String,
+    val at: String?,
+    val villager: String,
+    val tools: List<String>,
+)
 
-/** One summary row, and the completed line for it when the window heard one. */
-private fun rowOf(summary: JsonObject, line: JsonObject?): ExchangeRow =
-    ExchangeRow(
+/** One page of a file's history: the rows the endpoint gave, and whether more lie behind them. */
+internal data class Touches(val rows: List<TouchRow>, val more: Boolean)
+
+/**
+ * A file's touch history from the endpoint's own answer, in its own order, newest first. Since #85
+ * this is the proxy's whole record and not the window's: it reaches back past the moment this
+ * window connected, which is as far as the reducer's own touches ever went.
+ *
+ * Null is an answer that could not be read, which is not a file nothing has touched, for the reason
+ * [timelineOf] gives. A row naming no session is dropped rather than drawn under a blank villager.
+ */
+internal fun touchesOf(body: String): Touches? = runCatching {
+    val answer = checkNotNull(jsonOf(body))
+    Touches(
+        rows =
+            (answer["touches"] as JsonArray).filterIsInstance<JsonObject>().mapNotNull(::touchOf),
+        more = answer["nextCursor"] != null && answer["nextCursor"] !is JsonNull,
+    )
+}
+    .getOrNull()
+
+/**
+ * The one line a touch history says about itself: why there is nothing, or that what is shown is
+ * not all there is. A list that simply ends looks like a complete list.
+ */
+internal fun touchNote(page: Touches?): String? =
+    when {
+        page == null -> "that file's touches came back unreadable"
+        page.rows.isEmpty() -> "nothing the proxy heard has touched this file"
+        page.more -> "the newest ${page.rows.size} shown; this file has been touched more"
+        else -> null
+    }
+
+/**
+ * One summary row, and the completed line for it when the window heard one.
+ *
+ * Usage, cost, latency and the replay flag are asked of the row first and of the line second. They
+ * are one value either way — the row carries the line the proxy stored — but only the row has it
+ * for a turn from before this window connected, and only the line has it while a proxy older
+ * than #85 is what is answering.
+ */
+private fun rowOf(summary: JsonObject, line: JsonObject?): ExchangeRow {
+    fun said(name: String): JsonElement? =
+        summary[name]?.takeUnless { it is JsonNull } ?: line?.get(name)
+    return ExchangeRow(
         id = summary["id"].text().orEmpty(),
         at = summary["receivedAt"].text().orEmpty(),
         agent = summary["agent"].text(),
         model = line?.get("model").text(),
-        usage = line?.let(::usageText),
-        costUsd = line?.scalar("costUsd") { doubleOrNull },
-        latencyMs = line?.scalar("latencyMs") { longOrNull },
-        replayHit = line?.scalar("replayHit") { booleanOrNull } == true,
+        usage = usageText(said("usage") as? JsonObject),
+        costUsd = (said("costUsd") as? JsonPrimitive)?.doubleOrNull,
+        latencyMs = (said("latencyMs") as? JsonPrimitive)?.longOrNull,
+        replayHit = (said("replayHit") as? JsonPrimitive)?.booleanOrNull == true,
         resumed = line?.scalar("resumed") { booleanOrNull } == true,
         // Either source saying the client left is the client having left: the summary is the
-        // store's
-        // flag and the line is the deriver's reading of the same exchange.
+        // store's flag and the line is the deriver's reading of the same exchange.
         clientDisconnected =
             summary.scalar("clientDisconnected") { booleanOrNull } == true ||
                 line?.scalar("clientDisconnected") { booleanOrNull } == true,
         status = summary.scalar("status") { intOrNull },
-        paths = paths(line),
+        // Every path the turn's tools named, in the order the turn named them; a tool that named
+        // none contributes none, and a row with no line behind it has none at all.
+        paths =
+            (line?.get("tools") as? JsonArray).orEmpty().filterIsInstance<JsonObject>().mapNotNull {
+                it["path"].text()
+            },
     )
+}
 
 /**
  * What a pane writes where a path would go. The one function every path in every pane goes through,
@@ -190,8 +248,26 @@ internal fun pathLabel(path: String, hidden: Boolean): String =
  * time is the event line's own `ts`, and a line that carried none says so rather than inventing
  * one.
  */
-internal fun touchText(touch: Touch, name: String): String =
-    "${touch.ts ?: "no time given"}  $name  ${touch.kind.name.lowercase(Locale.ROOT)}"
+internal fun touchText(row: TouchRow, name: String): String =
+    "${row.at ?: "no time given"}  $name  ${row.tools.joinToString(", ").ifEmpty { "touched" }}"
+
+/**
+ * One row of a touch page. A row naming no session is dropped: the pane draws a touch under its
+ * villager, and the farm keys a villager by session, or by session and agent for a helper.
+ */
+private fun touchOf(row: JsonObject): TouchRow? {
+    val session = row["session"].text()
+    val eventId = row.scalar("eventId") { longOrNull }
+    if (session == null || eventId == null) return null
+    val agent = row["agent"].text()
+    return TouchRow(
+        eventId = eventId,
+        exchangeId = row["exchangeId"].text().orEmpty(),
+        at = row["ts"].text(),
+        villager = agent?.let { "$session/$it" } ?: session,
+        tools = (row["tools"] as? JsonArray).orEmpty().mapNotNull { it.text() },
+    )
+}
 
 /**
  * The body in a `GET /exchanges/{id}` answer, capped, with what was left off said out loud. Bodies
@@ -214,19 +290,13 @@ internal fun bodyText(detail: String): String = runCatching {
 private fun shortHash(path: String): String =
     path.hashCode().toUInt().toString(HASH_RADIX).takeLast(HASH_DIGITS).padStart(HASH_DIGITS, '0')
 
-/** What the turn reported using, or null for a line that reported nothing at all. */
-private fun usageText(line: JsonObject): String? {
-    val usage = line["usage"] as? JsonObject ?: return null
+/** What the turn reported using, or null where nothing reported it at all. */
+private fun usageText(usage: JsonObject?): String? {
+    if (usage == null) return null
     fun count(name: String) = usage.scalar(name) { intOrNull } ?: 0
     return "${count("input")} in, ${count("output")} out, " +
         "${count("cacheRead")} cached, ${count("cacheWrite")} written"
 }
-
-/** Every path the turn's tools named, in the order the turn named them; a line has none. */
-private fun paths(line: JsonObject?): List<String> =
-    (line?.get("tools") as? JsonArray).orEmpty().filterIsInstance<JsonObject>().mapNotNull {
-        it["path"].text()
-    }
 
 /**
  * What the panes are showing and how it got there. Its state is touched only from the thread
@@ -246,6 +316,9 @@ class PaneModel(private val labelsHidden: () -> Boolean) {
 
     /** The selected villager's timeline, as the exchanges endpoint gave it, newest first. */
     internal val rows = mutableStateListOf<ExchangeRow>()
+
+    /** The selected crop's touch history, as the touches endpoint gave it, newest first. */
+    internal val touches = mutableStateListOf<TouchRow>()
 
     /** What the pane is doing or why it cannot: one line, always safe to show. */
     var note by mutableStateOf<String?>(null)
@@ -297,22 +370,26 @@ class PaneModel(private val labelsHidden: () -> Boolean) {
         while (lines.size > HEARD_EXCHANGES) lines.remove(lines.keys.first())
     }
 
-    /** A click on the farm. A crop answers from the farm itself; a villager asks the proxy. */
+    /** A click on the farm: either pane asks the proxy, since #85 gave both a question to ask. */
     fun select(hit: Hit) {
-        loadingRows?.cancel()
-        loadingBody?.cancel()
-        rows.clear()
-        body = null
+        clear()
         selected = hit
-        note = null
-        if (hit is Hit.OnVillager) load(hit.id)
+        when (hit) {
+            is Hit.OnVillager -> load(hit.id)
+            is Hit.OnCrop -> loadTouches(hit.path)
+        }
     }
 
     fun dismiss() {
+        clear()
+        selected = null
+    }
+
+    private fun clear() {
         loadingRows?.cancel()
         loadingBody?.cancel()
-        selected = null
         rows.clear()
+        touches.clear()
         body = null
         note = null
     }
@@ -361,31 +438,54 @@ class PaneModel(private val labelsHidden: () -> Boolean) {
      */
     private fun load(villager: String) {
         val session = villager.substringBefore('/')
+        fetch("$session's exchanges", "/exchanges?session=${session.encodeURLParameter()}") {
+            val page = timelineOf(it, lines::get)
+            rows.addAll(page?.rows.orEmpty())
+            timelineNote(session, page)
+        }
+    }
+
+    /**
+     * A crop's history, from the proxy rather than from the farm. The reducer's own touches are
+     * only what this window heard, and since #85 the endpoint answers the whole of it — which is
+     * what #22 asked for and could not have while this was the feed's to remember.
+     *
+     * The path goes out as the crop is keyed, with separators already normalised; the endpoint
+     * normalises the stored ones the same way, so a file written on Windows and read on a POSIX box
+     * is one file to both.
+     */
+    private fun loadTouches(path: String) {
+        fetch("this file's touches", "/touches?path=${path.encodeURLParameter()}") {
+            val page = touchesOf(it)
+            touches.addAll(page?.rows.orEmpty())
+            touchNote(page)
+        }
+    }
+
+    /**
+     * One page from the proxy into whatever the pane holds, with [read] answering the note to show.
+     * Nothing throws at the click: a call that failed leaves its reason in [note].
+     *
+     * [read] runs on this thread, where a body deliberately does not. A page is bounded by the
+     * endpoint's own limit and its rows are small flat objects, where a body has no bound at all;
+     * and a timeline reads `lines`, which only this thread writes, so moving it would trade a parse
+     * nobody can feel for a race on the map the feed is filling.
+     *
+     * ponytail: one page, at the endpoint's own default, and the cursor is read only to say that
+     * there are more rather than to fetch them. Upgrade: pass it back when someone scrolls to the
+     * end.
+     */
+    private fun fetch(what: String, path: String, read: (String) -> String?) {
         val asking = client
         if (asking == null) {
             note = "there is no proxy to ask"
             return
         }
-        note = "asking the proxy for $session's exchanges"
-        // ponytail: one page, at the endpoint's own default, and the cursor is read only to say
-        // that there are more rather than to fetch them. Upgrade: pass it back when someone
-        // scrolls to the end.
+        note = "asking the proxy for $what"
         loadingRows = scope?.launch {
             asking
-                .get("/exchanges?session=${session.encodeURLParameter()}")
-                .fold(
-                    { answer ->
-                        // Parsed on this thread, where a body deliberately is not. A page is
-                        // bounded by the endpoint's own limit and its rows are small flat
-                        // objects, where a body has no bound at all; and the fold reads `lines`,
-                        // which only this thread writes, so moving it would trade a parse nobody
-                        // can feel for a race on the map the feed is filling.
-                        val page = timelineOf(answer, lines::get)
-                        rows.addAll(page?.rows.orEmpty())
-                        note = timelineNote(session, page)
-                    },
-                    { note = "that session's exchanges could not be read: ${it.message}" },
-                )
+                .get(path)
+                .fold({ note = read(it) }, { note = "$what could not be read: ${it.message}" })
         }
     }
 }

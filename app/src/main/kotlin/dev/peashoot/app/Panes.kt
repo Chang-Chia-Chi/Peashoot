@@ -22,7 +22,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import dev.peashoot.app.farm.Crop
 import dev.peashoot.app.farm.FarmState
 import dev.peashoot.app.farm.nameFor
 import dev.peashoot.app.render.Hit
@@ -56,7 +55,7 @@ fun DetailPane(farm: FarmState, panes: PaneModel, modifier: Modifier = Modifier)
             Divider(Modifier.padding(vertical = 6.dp))
             when (hit) {
                 is Hit.OnVillager -> VillagerTimeline(panes, farm.labelsHidden, Modifier.weight(1f))
-                is Hit.OnCrop -> CropHistory(farm, hit.path, Modifier.weight(1f))
+                is Hit.OnCrop -> CropHistory(farm, panes, Modifier.weight(1f))
             }
             // Under the list rather than inside it: a `LazyListScope` block is not a composable,
             // and the one body being looked at is the pane's business and not a row's.
@@ -78,9 +77,10 @@ private fun PaneHeader(title: String, onClose: () -> Unit, modifier: Modifier = 
 }
 
 /**
- * The session's exchanges as the endpoint gave them, newest first. Usage, cost, latency and the
- * replay flag are on the event line and not on a summary row, so a turn from before this window
- * connected shows its time and its flags and blanks for the rest, which is what it honestly knows.
+ * The session's exchanges as the endpoint gave them, newest first. A row says what the turn used,
+ * cost and took whether or not this window heard its line, since #85 put those on the summary; the
+ * model it answered as and the paths its tools named are still the feed's alone, so a turn from
+ * before this window connected blanks those two and nothing else.
  */
 @Composable
 private fun VillagerTimeline(panes: PaneModel, hidden: Boolean, modifier: Modifier = Modifier) {
@@ -113,27 +113,20 @@ private fun TimelineRow(
 }
 
 /**
- * Which agents touched this file and when: the farm's own record, folded from the feed, rather than
- * a control API read.
+ * Which agents touched this file and when, from `GET /touches?path=` rather than from the farm.
  *
- * Not because the API lacks the history — `GET /events?since=0` serves the whole event table, every
- * `tools` array in it — but because `AppModel.watch` opens the feed with no backfill, so this
- * window only ever hears what happened after it connected. The reducer's touches are what that
- * choice leaves, and the pane can show no more than the window was told. `docs/design.md` §10 says
- * so plainly rather than implying the pane reads it from the proxy.
+ * The reducer's own touches are only what this window heard, since `AppModel.watch` opens the feed
+ * with no backfill; the proxy's event table is the whole record, and #85 gave it an endpoint to be
+ * asked with. So a file touched before this window opened has its history here, which is what #22
+ * asked for and could not have while this was the feed's to remember.
+ *
+ * The villager is named from the farm where it is a villager the farm knows, and from [nameFor]
+ * otherwise, which is every turn from before this window connected.
  */
 @Composable
-private fun CropHistory(farm: FarmState, path: String, modifier: Modifier = Modifier) {
-    val crop = farm.crop(path)
+private fun CropHistory(farm: FarmState, panes: PaneModel, modifier: Modifier = Modifier) {
     LazyColumn(modifier.fillMaxWidth()) {
-        if (crop == null || crop.touches.isEmpty()) {
-            item { Text("nothing has touched this file since the window opened") }
-        }
-        // A list that simply ends looks like a complete list, and this one is capped.
-        touchNote(crop?.touches.orEmpty())?.let { note ->
-            item { Text(note, fontSize = SMALL_TEXT.sp) }
-        }
-        items(crop?.touches.orEmpty()) { touch ->
+        items(panes.touches, key = { it.eventId }) { touch ->
             Text(
                 touchText(touch, farm.villagers[touch.villager]?.name ?: nameFor(touch.villager)),
                 fontFamily = FontFamily.Monospace,
@@ -191,7 +184,3 @@ private fun flags(row: ExchangeRow): String {
         )
     return if (flags.isEmpty()) "no flags" else flags.joinToString(", ")
 }
-
-/** The crop that path names, wherever its field is. */
-private fun FarmState.crop(path: String): Crop? =
-    fields.values.firstNotNullOfOrNull { it.crops[path] }
