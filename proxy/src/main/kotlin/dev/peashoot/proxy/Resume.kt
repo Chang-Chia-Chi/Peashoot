@@ -15,6 +15,7 @@ import kotlin.time.ComparableTimeMark
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
 import kotlin.time.TimeSource
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.onCompletion
@@ -131,10 +132,16 @@ class Resume(config: ProxyConfig) : Interceptor {
         fun clientLeft(window: Duration): Boolean =
             goneAt?.let { it.elapsedNow() <= window } ?: clientGone()
 
-        /** Whether [asked] is this request sent again: the same fingerprint, or a continuation. */
+        /**
+         * Whether [asked] is this request sent again: the same fingerprint, or a continuation. The
+         * null check is not ceremony. The relay sets the fingerprint before any interceptor is
+         * asked, so both are always set — but `null == null` here would make every request a
+         * re-issue of every other, and this is the one interceptor that hands one client another
+         * client's answer. Replay guards the same field the same way.
+         */
         fun reissuedAs(asked: Entry): Boolean {
             val theirs = asked.continuable
-            return fingerprint == asked.fingerprint ||
+            return (fingerprint != null && fingerprint == asked.fingerprint) ||
                 (theirs != null && continuable?.continuedBy(theirs) == true)
         }
     }
@@ -160,10 +167,27 @@ class Resume(config: ProxyConfig) : Interceptor {
         claimable[exchange.id] = asked
         // A claim made on the engine's word can be ahead of the upstream's first byte: wait for
         // the response it is about to have, or for the word that it never had one.
-        val response = original?.started?.await()?.takeIf { it.worthServing() }
+        val response = original.awaited()
         return if (original == null || response == null) null
         else served(exchange, original, response)
     }
+
+    /**
+     * The response this claimed exchange is about to have, or null when it never had one.
+     *
+     * A claim is spent only when it is served, so a joiner that dies while parked here puts the
+     * answer back. The window it covers is real: a claim made on the engine's word can land before
+     * the upstream's first byte, and a client whose connection flaps again while it waits would
+     * otherwise take a whole buffered answer down with it and leave the next re-issue to pay for
+     * one. Only a still-servable answer goes back, so a broken one is not revived.
+     */
+    private suspend fun Entry?.awaited(): Exchange.Response? =
+        try {
+            this?.started?.await()?.takeIf { it.worthServing() }
+        } catch (e: CancellationException) {
+            this?.takeIf { it.servable() }?.let { claimable.putIfAbsent(it.id, it) }
+            throw e
+        }
 
     /**
      * The buffered answer as a source. Only the [FrameLog] is captured, so what recognised the
