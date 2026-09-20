@@ -3,8 +3,11 @@ package dev.peashoot.app.farm
 import dev.peashoot.core.text
 import java.time.Duration
 import java.time.Instant
+import java.time.LocalDate
+import java.time.LocalTime
 import java.time.Month
 import java.time.ZoneId
+import java.time.ZonedDateTime
 import java.time.format.DateTimeParseException
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.doubleOrNull
@@ -159,13 +162,13 @@ private fun heardAt(event: JsonObject): Instant? =
     }
 
 /**
- * The season the calendar is in, read in the zone the caller reads its clock in.
- *
- * ponytail: northern hemisphere, so a user in Wellington gets snow in July. Upgrade: a hemisphere
- * key, once the app reads config at all (#23).
+ * The season the calendar is in, read in the zone the caller reads its clock in — northern months,
+ * turned half a year where [southern] can place the zone below the equator.
  */
-private fun seasonOf(now: Instant, zone: ZoneId): Season =
-    when (now.atZone(zone).month) {
+private fun seasonOf(now: Instant, zone: ZoneId): Season {
+    val local = now.atZone(zone)
+    val month = if (southern(zone, local.year)) local.month.plus(HALF_A_YEAR) else local.month
+    return when (month) {
         Month.DECEMBER,
         Month.JANUARY,
         Month.FEBRUARY -> Season.WINTER
@@ -177,3 +180,39 @@ private fun seasonOf(now: Instant, zone: ZoneId): Season =
         Month.AUGUST -> Season.SUMMER
         else -> Season.AUTUMN
     }
+}
+
+/** Half a year: what turns the northern months into the ones a southern zone is living in. */
+private const val HALF_A_YEAR = 6L
+
+/** Mid-month, which is far enough from any transition that the offset there is the month's own. */
+private const val MID_MONTH = 15
+
+/**
+ * Whether the zone is south of the equator, as far as a zone id can say — which is not far, so this
+ * is a guess with a stated reach and not a fact about where anyone is.
+ *
+ * Two things a zone id tells you. Its clocks: a zone keeping summer time in January and standard
+ * time in July is keeping it in the months the north calls winter, and only a southern zone does
+ * that. And its area, for the two areas that hold nothing else — every zone under `Australia/` and
+ * `Antarctica/` is southern whatever its clocks do, which is what places Brisbane and Perth.
+ *
+ * What it cannot place is a zone that keeps one offset all year and sits in neither area:
+ * Johannesburg, São Paulo, Buenos Aires, Jakarta, Lima. Those read as northern, which is what the
+ * whole farm did before this — no worse than it was, and better for everywhere the clocks or the
+ * area settle. The equator needs no answer of its own: a zone on it has no season to get wrong, and
+ * never moves its clocks, so it is never called southern. A latitude is not in a zone id, and
+ * nothing here pretends to one.
+ *
+ * ponytail: no gazetteer. A table of the eighty-odd southern zone ids would place them all and
+ * would then be a geography to keep true against tzdb, for a tint on the sky. Upgrade: that table,
+ * or the hemisphere key #95 chose not to add, if anyone ever says the sky is wrong.
+ */
+private fun southern(zone: ZoneId, year: Int): Boolean =
+    zone.id.startsWith("Australia/") ||
+        zone.id.startsWith("Antarctica/") ||
+        (zone.rules.isDaylightSavings(noon(year, Month.JANUARY, zone)) &&
+            !zone.rules.isDaylightSavings(noon(year, Month.JULY, zone)))
+
+private fun noon(year: Int, month: Month, zone: ZoneId): Instant =
+    ZonedDateTime.of(LocalDate.of(year, month, MID_MONTH), LocalTime.NOON, zone).toInstant()
