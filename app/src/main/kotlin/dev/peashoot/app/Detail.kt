@@ -162,7 +162,8 @@ internal data class Touches(val rows: List<TouchRow>, val more: Boolean)
 /**
  * A file's touch history from the endpoint's own answer, in its own order, newest first. Since #85
  * this is the proxy's whole record and not the window's: it reaches back past the moment this
- * window connected, which is as far as the reducer's own touches ever went.
+ * window connected, which is as far as the reducer's own touch list ever went before #96 retired
+ * it.
  *
  * Null is an answer that could not be read, which is not a file nothing has touched, for the reason
  * [timelineOf] gives. A row naming no session is dropped rather than drawn under a blank villager.
@@ -449,9 +450,10 @@ class PaneModel(private val labelsHidden: () -> Boolean) {
     }
 
     /**
-     * A crop's history, from the proxy rather than from the farm. The reducer's own touches are
-     * only what this window heard, and since #85 the endpoint answers the whole of it — which is
-     * what #22 asked for and could not have while this was the feed's to remember.
+     * A crop's history, from the proxy rather than from the farm. The reducer's own list was only
+     * what this window heard, and since #85 the endpoint answers the whole of it — which is
+     * what #22 asked for and could not have while this was the feed's to remember. #96 retired the
+     * list once nothing drew it, so this endpoint is the only place a crop's history lives.
      *
      * The path goes out as the crop is keyed, with separators already normalised; the endpoint
      * normalises the stored ones the same way, so a file written on Windows and read on a POSIX box

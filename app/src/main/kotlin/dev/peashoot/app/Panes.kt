@@ -115,10 +115,10 @@ private fun TimelineRow(
 /**
  * Which agents touched this file and when, from `GET /touches?path=` rather than from the farm.
  *
- * The reducer's own touches are only what this window heard, since `AppModel.watch` opens the feed
- * with no backfill; the proxy's event table is the whole record, and #85 gave it an endpoint to be
- * asked with. So a file touched before this window opened has its history here, which is what #22
- * asked for and could not have while this was the feed's to remember.
+ * The reducer's own touch list was only what this window heard, since `AppModel.watch` opens the
+ * feed with no backfill; the proxy's event table is the whole record, #85 gave it an endpoint to be
+ * asked with, and #96 retired the list. So a file touched before this window opened has its history
+ * here, which is what #22 asked for and could not have while this was the feed's to remember.
  *
  * The villager is named from the farm where it is a villager the farm knows, and from [nameFor]
  * otherwise, which is every turn from before this window connected.
