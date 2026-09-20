@@ -99,6 +99,26 @@ class ChatCompletionsTest {
     }
 
     @Test
+    fun `a negative cached count cannot make a negative cache read`() {
+        val reader = ChatCompletions.reader()
+
+        reader.read(
+            Frame(
+                """data: {"choices":[],"usage":{"prompt_tokens":10,""" +
+                    """"prompt_tokens_details":{"cached_tokens":-5},"completion_tokens":3}}""" +
+                    "\n\n",
+                0,
+            )
+        )
+
+        assertEquals(
+            Usage(input = 10, output = 3, cacheRead = 0, cacheWrite = 0),
+            reader.usage,
+            "a nonsense count is floored rather than priced as a negative cost",
+        )
+    }
+
+    @Test
     fun `a server that streams whole calls with no index keeps them apart by id`() {
         val reader = ChatCompletions.reader()
 

@@ -109,7 +109,11 @@ class CassetteTest {
     private fun reply(request: FakeUpstream.Received) =
         if (request.body.contains(STREAMING)) {
             FakeUpstream.Reply(contentType = ContentType.Text.EventStream, frames = frames)
-        } else FakeUpstream.Reply(body = """{"n":1}""", headers = mapOf("x-note" to "recorded"))
+        } else
+            FakeUpstream.Reply(
+                body = """{"n":1}""",
+                headers = mapOf("x-note" to listOf("recorded")),
+            )
 
     @Test
     fun `an exported cassette replays byte for byte in a fresh home, with zero upstream calls`() =

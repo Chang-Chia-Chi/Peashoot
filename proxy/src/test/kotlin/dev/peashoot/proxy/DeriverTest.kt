@@ -43,7 +43,7 @@ class DeriverTest {
 
     private fun home(): Path = Files.createTempDirectory("peashoot-home")
 
-    private fun streamReply(name: String, headers: Map<String, String> = emptyMap()) =
+    private fun streamReply(name: String, headers: Map<String, List<String>> = emptyMap()) =
         FakeUpstream.Reply(
             contentType = ContentType.Text.EventStream,
             frames = FrameParser.parse(fixture(name)).map { it.raw },
@@ -377,9 +377,9 @@ class DeriverTest {
 
         val RATE_LIMIT_HEADERS =
             mapOf(
-                "anthropic-ratelimit-tokens-remaining" to "9000",
-                "anthropic-ratelimit-requests-remaining" to "50",
-                "anthropic-ratelimit-tokens-reset" to "2026-09-14T09:00:00Z",
+                "anthropic-ratelimit-tokens-remaining" to listOf("9000"),
+                "anthropic-ratelimit-requests-remaining" to listOf("50"),
+                "anthropic-ratelimit-tokens-reset" to listOf("2026-09-14T09:00:00Z"),
             )
 
         const val RATE_LIMIT =

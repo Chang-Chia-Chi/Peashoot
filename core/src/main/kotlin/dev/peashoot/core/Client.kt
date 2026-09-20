@@ -21,6 +21,9 @@ data class Client(
         private const val ORIGINATOR = "originator"
         private const val CODEX = "codex_cli_rs"
         private const val SESSION_ID = "session-id"
+        private const val THREAD_ID = "thread-id"
+        private const val CODEX_PARENT_THREAD = "x-codex-parent-thread-id"
+        private const val OPENAI_SUBAGENT = "x-openai-subagent"
         private const val STAINLESS = "x-stainless-"
         private const val STAINLESS_LANG = "x-stainless-lang"
         private const val UNKNOWN = "unknown"
@@ -45,16 +48,36 @@ data class Client(
                     )
                 }
                     ?: when {
-                        // ponytail: thread-id and x-openai-subagent are mapped when the Responses
-                        // surface arrives (#25); Codex sends no sub-agent headers on this one.
-                        headers[ORIGINATOR] == CODEX ->
-                            Client("codex", session = headers[SESSION_ID])
+                        headers[ORIGINATOR] == CODEX -> codex(headers)
                         headers.names().any { it.startsWith(STAINLESS, ignoreCase = true) } ->
                             Client(sdkType(headers), session = null)
                         else -> Client(userAgentToken(headers), session = null)
                     }
             val session = injected ?: detected.session ?: fallbackSession(detected.type, json)
             return detected.copy(session = session)
+        }
+
+        /**
+         * Codex. One CLI session runs several threads — the main one, and a `review` or `compact`
+         * thread spawned off it — so the session groups them and the thread is what tells them
+         * apart. `thread-id` is on every request, the main thread's included, so it is not on its
+         * own a sub-agent: what makes a thread one is that it names where it came from, in
+         * `x-codex-parent-thread-id` or `x-openai-subagent`. A main-thread turn leaves both unset,
+         * which is the same promise the Claude Code branch above makes, and is what keeps the farm
+         * from drawing every Codex turn as a helper of itself.
+         *
+         * Header names verified against Codex's own source; see
+         * `docs/research/codex-responses-transport.md`.
+         */
+        private fun codex(headers: Headers): Client {
+            val parentThread = headers[CODEX_PARENT_THREAD]
+            val spawned = parentThread != null || headers[OPENAI_SUBAGENT] != null
+            return Client(
+                "codex",
+                session = headers[SESSION_ID],
+                agent = headers[THREAD_ID].takeIf { spawned },
+                parentAgent = parentThread,
+            )
         }
 
         private fun sdkType(headers: Headers): String =

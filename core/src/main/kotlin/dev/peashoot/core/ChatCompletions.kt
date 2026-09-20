@@ -16,10 +16,6 @@ object ChatCompletions : Surface {
     override val name = "openai-chat"
 
     private const val PATH = "/v1/chat/completions"
-    private const val TOKENS_REMAINING = "x-ratelimit-remaining-tokens"
-    private const val REQUESTS_REMAINING = "x-ratelimit-remaining-requests"
-    private const val TOKENS_RESET = "x-ratelimit-reset-tokens"
-    private const val REQUESTS_RESET = "x-ratelimit-reset-requests"
 
     override fun owns(path: String): Boolean = path == PATH
 
@@ -38,13 +34,7 @@ object ChatCompletions : Surface {
         }
     }
 
-    override fun rateLimit(headers: Headers): RateLimit? =
-        rateLimitOf(
-            headers[TOKENS_REMAINING],
-            headers[REQUESTS_REMAINING],
-            // Either reset dates the window; the token one first, as it is the one that bites.
-            headers[TOKENS_RESET] ?: headers[REQUESTS_RESET],
-        )
+    override fun rateLimit(headers: Headers): RateLimit? = openAiRateLimit(headers)
 
     override fun reader(): FrameReader = Reader()
 
@@ -154,16 +144,7 @@ object ChatCompletions : Surface {
     }
 }
 
-private const val DATA_FIELD = "data:"
 private const val TOOL_ROLE = "tool"
-
-/**
- * The JSON one frame carries: an SSE block's `data:` lines, or a non-streaming body as it stands.
- * `data: [DONE]`, a keep-alive comment, and a blank frame all fail to parse and are ignored, which
- * is what leaves the reader as it was.
- */
-private fun chunkText(raw: String): String =
-    if (raw.lineSequence().any { it.startsWith(DATA_FIELD) }) sseData(raw) else raw
 
 /** The `tool_calls` of a message or of a delta; both hold them under the same key. */
 private fun toolCalls(message: JsonObject?): List<JsonObject> =
@@ -180,7 +161,11 @@ private fun toolCalls(message: JsonObject?): List<JsonObject> =
  */
 private fun usageOf(element: JsonElement?): Usage? {
     val fields = element as? JsonObject ?: return null
-    val cached = (fields["prompt_tokens_details"] as? JsonObject)?.get("cached_tokens").int() ?: 0
+    // Floored, so a server reporting a negative cached count cannot give a negative cache read,
+    // and with it a negative cost. Flooring the input alone would leave that one through.
+    val cached =
+        ((fields["prompt_tokens_details"] as? JsonObject)?.get("cached_tokens").int() ?: 0)
+            .coerceAtLeast(0)
     return Usage(
         // Never below zero: a server that reports a cached count and no prompt total would
         // otherwise give a negative input, and with it a negative cost.

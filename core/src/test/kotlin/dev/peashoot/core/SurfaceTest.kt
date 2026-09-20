@@ -22,6 +22,26 @@ class SurfaceTest {
     @Test
     fun `a query string is not part of the path`() {
         assertEquals(ChatCompletions, surfaceOf("/v1/chat/completions?beta=true", Headers.Empty))
+        assertEquals(
+            Responses,
+            surfaceOf("/v1/responses/resp_1?stream=true&starting_after=3", Headers.Empty),
+        )
+    }
+
+    @Test
+    fun `everything under the responses path is the Responses surface`() {
+        listOf(
+                "/v1/responses",
+                "/v1/responses/resp_1",
+                "/v1/responses/resp_1/cancel",
+                "/v1/responses/resp_1/input_items",
+            )
+            .forEach { assertEquals(Responses, surfaceOf(it, Headers.Empty), it) }
+        assertEquals(
+            Messages,
+            surfaceOf("/v1/responses_beta", Headers.Empty),
+            "the separator is required, so a neighbouring path is not silently this surface's",
+        )
     }
 
     @Test
@@ -65,5 +85,6 @@ class SurfaceTest {
     fun `each surface names itself for the event line`() {
         assertEquals("anthropic-messages", Messages.name)
         assertEquals("openai-chat", ChatCompletions.name)
+        assertEquals("openai-responses", Responses.name)
     }
 }

@@ -38,7 +38,8 @@ class FakeUpstream : AutoCloseable {
         val status: Int = 200,
         val contentType: ContentType = ContentType.Application.Json,
         val body: String = "{}",
-        val headers: Map<String, String> = emptyMap(),
+        /** Name to values: a list, because a real response may repeat a header name. */
+        val headers: Map<String, List<String>> = emptyMap(),
         val frames: List<String> = emptyList(),
         val beforeFrame: suspend (index: Int) -> Unit = {},
         val cutAfterFrames: Int? = null,
@@ -68,7 +69,9 @@ class FakeUpstream : AutoCloseable {
                         )
                     received += req
                     val r = reply(req)
-                    r.headers.forEach { (name, value) -> call.response.headers.append(name, value) }
+                    r.headers.forEach { (name, values) ->
+                        values.forEach { call.response.headers.append(name, it) }
+                    }
                     if (r.frames.isEmpty()) {
                         call.respondText(r.body, r.contentType, HttpStatusCode.fromValue(r.status))
                     } else {

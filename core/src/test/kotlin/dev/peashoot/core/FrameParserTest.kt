@@ -7,17 +7,34 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 
 class FrameParserTest {
-    private fun fixture(name: String): ByteArray =
-        checkNotNull(javaClass.getResourceAsStream("/anthropic-messages/$name")) { name }
-            .readBytes()
+    private fun fixture(name: String, dir: String = "anthropic-messages"): ByteArray =
+        checkNotNull(javaClass.getResourceAsStream("/$dir/$name")) { "$dir/$name" }.readBytes()
 
+    /**
+     * Every streamed fixture in the repository, whichever surface it belongs to: this is what the
+     * fixture READMEs mean when they say the round trip is proven byte for byte, so a new one that
+     * is not listed here has no such proof.
+     */
     @Test
     fun `re-serialized frames are byte-equal to the fixture`() {
-        for (name in listOf("stream-with-tool-use.sse", "stream-ending-in-error.sse")) {
-            val bytes = fixture(name)
+        val streams =
+            listOf(
+                "anthropic-messages" to "stream-with-tool-use.sse",
+                "anthropic-messages" to "stream-ending-in-error.sse",
+                "openai-chat" to "stream-with-tool-calls.sse",
+                "openai-chat" to "stream-without-usage.sse",
+                "openai-responses" to "stream-with-function-call.sse",
+                "openai-responses" to "stream-incomplete.sse",
+            )
+        for ((dir, name) in streams) {
+            val bytes = fixture(name, dir)
             val frames = FrameParser.parse(bytes)
-            assertTrue(frames.size > 1, "$name should split into frames")
-            assertContentEquals(bytes, frames.joinToString("") { it.raw }.toByteArray(), name)
+            assertTrue(frames.size > 1, "$dir/$name should split into frames")
+            assertContentEquals(
+                bytes,
+                frames.joinToString("") { it.raw }.toByteArray(),
+                "$dir/$name",
+            )
         }
     }
 

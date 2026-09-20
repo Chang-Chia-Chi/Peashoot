@@ -10,8 +10,12 @@ import kotlinx.serialization.json.JsonObject
  * 9). Everything else in the pipeline — routing, fingerprinting, the store, replay, the client
  * writer — is the same whichever surface a request belongs to, which is why the difference is this
  * one adapter and not a `when` spread through the interceptors.
+ *
+ * Sealed, because the one `when` that does have to name them — which provider a surface is relayed
+ * to — must not have an `else`: a fourth surface defaulting to whichever provider was written last
+ * would be relayed to the wrong one, with its key, by a branch nobody remembered to add.
  */
-interface Surface {
+sealed interface Surface {
     /** What the event line calls this surface. */
     val name: String
 
@@ -60,7 +64,7 @@ interface FrameReader {
 }
 
 /** Every surface the proxy speaks, in the order [surfaceOf] asks them for a path. */
-private val SURFACES: List<Surface> = listOf(Messages, ChatCompletions)
+private val SURFACES: List<Surface> = listOf(Messages, ChatCompletions, Responses)
 
 /**
  * The surface a request belongs to (design section 4, step 2). The path decides wherever one
@@ -89,6 +93,27 @@ internal fun rateLimitOf(tokens: String?, requests: String?, reset: String?): Ra
     if (tokens == null && requests == null && reset == null) return null
     return RateLimit(tokens?.toLongOrNull(), requests?.toLongOrNull(), reset)
 }
+
+/**
+ * The JSON one frame carries: an SSE block's `data:` lines, or a non-streaming body as it stands.
+ * `data: [DONE]`, a keep-alive comment, and a blank frame all fail to parse and are ignored, which
+ * is what leaves a reader as it was. Shared, because both OpenAI surfaces send both shapes and a
+ * copy each would be one provider quirk away from disagreeing about what a frame says.
+ */
+internal fun chunkText(raw: String): String =
+    if (raw.lineSequence().any { it.startsWith("data:") }) sseData(raw) else raw
+
+/**
+ * What OpenAI's rate-limit headers said, for either of its surfaces: they are the same four headers
+ * on both, so they are read in one place. Either reset dates the window; the token one first, as it
+ * is the one that bites.
+ */
+internal fun openAiRateLimit(headers: Headers): RateLimit? =
+    rateLimitOf(
+        headers["x-ratelimit-remaining-tokens"],
+        headers["x-ratelimit-remaining-requests"],
+        headers["x-ratelimit-reset-tokens"] ?: headers["x-ratelimit-reset-requests"],
+    )
 
 private val ANTHROPIC_HEADERS = setOf("anthropic-version", "anthropic-beta")
 

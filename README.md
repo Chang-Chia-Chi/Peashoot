@@ -142,6 +142,78 @@ The demo: one Claude Code prompt, run twice. The first run records and is billed
 
    Claude Code can send more than one request for one prompt; each was recorded in step 1 and replays the same way. A request that differs between the runs gets the 409 instead, and its fingerprint is in the body, so the rule that should have ignored the difference can be found in `rules.json`.
 
+## A Codex turn through the proxy
+
+Codex speaks the Responses API and nothing else, and it opens every session by trying a WebSocket
+upgrade before it sends any HTTP at all. The proxy answers that upgrade `426 Upgrade Required`, which
+is the one status Codex reads as "this provider speaks HTTP" and falls back on immediately; anything
+else costs it five retries first (`docs/research/codex-responses-transport.md`).
+
+**Nobody has run this yet.** The Responses surface is proven at the proxy's HTTP boundary against
+synthetic fixtures, and the upgrade refusal is verified against Codex's source, but no Codex binary
+has been pointed at Peashoot. These are the steps for the human who does it first (#25, acceptance
+criterion 1).
+
+1. Start the proxy: `./gradlew :proxy:installDist`, then `proxy/build/install/proxy/bin/proxy`.
+
+2. Point Codex at it. There is no base-URL environment variable — it is a config key, in
+   `~/.codex/config.toml`:
+
+   ```toml
+   model_provider = "peashoot"
+
+   [model_providers.peashoot]
+   name = "OpenAI through Peashoot"
+   base_url = "http://localhost:8787/v1"
+   env_key = "OPENAI_API_KEY"
+   wire_api = "responses"
+   ```
+
+   Leave `supports_websockets` unset: it defaults to false for a custom provider, so Codex goes
+   straight to HTTP. Set it to `true` to exercise the refusal deliberately — the turn should still
+   complete, a beat later. A project-local `.codex/config.toml` cannot set any of these keys.
+
+3. Run one turn that uses a tool, so the function-call grammar is exercised and not just text:
+
+   ```
+   codex exec "Run the shell tool: echo peashoot"
+   ```
+
+4. Look at what the proxy heard. The turn is one `exchange.completed` line per request:
+
+   ```
+   grep '"exchange.completed"' ~/.peashoot/events.jsonl | tail -n 5
+   ```
+
+   What should be there: `"surface":"openai-responses"`, `"client":"codex"`, a `"session"` taken from
+   Codex's own `session-id` header, and a `"tools"` array naming the shell call with its `command`.
+   A `review` or `compact` thread appears as its own `"agent"` beside the same session. If `client`
+   reads anything but `codex`, the originator header has changed and `Client.detect` needs to know.
+
+5. Run a `/review` or a `/compact` in the same session, which is the one step here that exercises
+   something nothing else can reach. Those spawn a second thread, and only they send
+   `x-openai-subagent` and `x-codex-parent-thread-id` — the two header names
+   `docs/research/codex-responses-transport.md` marks as read from Codex's source without a quoted
+   line, and the two the farm's agent graph rests on. On the event line, the lines for that thread
+   should carry an `"agent"` different from the main thread's and a `"parentAgent"` naming the
+   thread it came from, while `"session"` stays the same as the main thread's:
+
+   ```
+   grep '"exchange.completed"' ~/.peashoot/events.jsonl | tail -n 5
+   ```
+
+   If `agent` and `parentAgent` are both `null` on those lines, one or both header names are wrong
+   and `Client.detect` needs correcting — the farm would draw that thread as its own session rather
+   than as a helper beside its parent. Say so on #25 if you see it.
+
+6. Replay it and spend nothing. Stop the proxy, start it again with `PEASHOOT_MODE=replay`, and run
+   **the identical prompt**. Every line the second run adds says `"replayHit":true`. A chained turn
+   replays too, and needs no id rewriting: the recorded response id is served back verbatim, so the
+   `previous_response_id` Codex sends on the next call is the one the recording already knows.
+
+To capture fixtures from this run rather than just watching it, use `PEASHOOT_DUMP_FRAMES` and the
+redaction recipe in `core/src/test/resources/openai-responses/README.md`.
+
 ## Cassettes: replay in CI without a key
 
 A cassette is a JSONL file with one recorded exchange per line, meant to be committed. Export what the store holds, and import it anywhere:

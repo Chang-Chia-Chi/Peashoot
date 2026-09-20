@@ -91,6 +91,18 @@ internal fun loopbackAddress(host: String): InetAddress {
     return addresses.first()
 }
 
+/** The one upgrade token the proxy refuses, because it is the one a client falls back from. */
+private const val WEBSOCKET = "websocket"
+
+/**
+ * Whether the client offered a WebSocket upgrade. `Upgrade` is a comma-separated token list, so the
+ * tokens are compared one at a time and each must equal the name: a header naming only some other
+ * protocol must be answered as though it were not there, and so must one whose token merely
+ * contains the word, which a substring test would refuse unrecorded.
+ */
+private fun String?.offersWebSocket(): Boolean =
+    this?.split(',')?.any { it.trim().equals(WEBSOCKET, ignoreCase = true) } == true
+
 fun Application.relayModule(
     /** Read once per request, so a config `PUT` reaches the next one. */
     live: LiveConfig,
@@ -131,9 +143,19 @@ fun Application.relayModule(
         route("{...}") {
             handle {
                 when {
-                    // Codex tries a WebSocket upgrade first and falls back to HTTP on a clean
-                    // refusal.
-                    call.request.header(HttpHeaders.Upgrade) != null ->
+                    // Codex opens every session with a WebSocket upgrade and falls back to HTTP
+                    // on a clean refusal; 426 is the only status its source treats as one, and
+                    // every other answer costs it five stream retries first
+                    // (docs/research/codex-responses-transport.md).
+                    //
+                    // Only `websocket` is refused. A client offering some other upgrade — `h2c`
+                    // from `curl --http2`, say — must be answered as though the header were not
+                    // there (RFC 7540 section 3.2), so those relay normally; `upgrade` is
+                    // hop-by-hop, so the request reaches the provider without it either way.
+                    // Refusing every token would swallow such a request, unrecorded and unbilled.
+                    // This is narrower than `docs/spec.md` line 79, which says every upgrade is
+                    // refused; the As-built paragraph in `docs/design.md` records the difference.
+                    call.request.header(HttpHeaders.Upgrade).offersWebSocket() ->
                         call.respondText(
                             "Peashoot speaks plain HTTP; upgrade refused",
                             status = HttpStatusCode.UpgradeRequired,
