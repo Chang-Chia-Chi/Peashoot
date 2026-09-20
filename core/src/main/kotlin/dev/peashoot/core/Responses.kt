@@ -134,8 +134,13 @@ object Responses : Surface {
          * ponytail: a nameless call is dropped, arguments and all. The one way to reach that is the
          * path this surface adds: `?starting_after=N` resumes past the `output_item.added` that
          * carried the name, and a resumed stream then cut before its terminal event loses the call
-         * from the line entirely. Upgrade: when #27 serves a cursor from the proxy's own buffer, it
-         * has the earlier frames and can name it; until then nothing here can.
+         * from the line entirely. #27 arrived and did **not** fix this, though its own note said it
+         * would: the proxy does now hold the earlier frames, but it holds them for the *original*
+         * exchange, and the cursor's line is read by a fresh reader fed only the frames that went
+         * to the client. The original's line names the call correctly; the cursor's does not.
+         * Upgrade: the resumed exchange's reader started from the original's frames rather than
+         * from the filtered ones, which is a seam between Resume and the Deriver that does not
+         * exist today and is not worth inventing for a field on one duplicate line.
          */
         private val calls = LinkedHashMap<String, OpenTool>()
 

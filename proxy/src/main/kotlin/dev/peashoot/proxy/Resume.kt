@@ -95,7 +95,10 @@ internal val CONTINUATION_GRACE = 5.seconds
  * application's scope, if the idle footprint ever matters.
  *
  * ponytail: a re-issue is matched by scanning the tracked exchanges, at most the cap plus those in
- * flight. Upgrade: index them by fingerprint and stem, if the cap ever grows into the thousands.
+ * flight, and a cursor scans the same list for a response id. Upgrade: index them by fingerprint,
+ * stem and response id, if the cap ever grows into the thousands. An index is deliberately not here
+ * yet for a second reason beyond size: a third map would have to be kept in step with every claim,
+ * eviction and completion, and one missed removal there is an entry nothing ever frees.
  *
  * ponytail: a client that leaves before the upstream has answered at all is only resumable once the
  * engine reports its connection closed; a connection that goes silent without closing, which is

@@ -95,6 +95,12 @@ internal fun Exchange.badCursor(): Refusal =
  * a field that is simply absent; keeping them can at worst repeat bytes the client already had, and
  * only for a frame no numbered filter could have placed either way. The proxy's own keep-alive
  * comments never reach here at all: the client writer adds those, downstream of the buffer.
+ *
+ * ponytail: every frame is parsed as JSON again here, once per cursor, where the Deriver's reader
+ * has already parsed the same text for the same response. A cursor over a thousand-event answer is
+ * a thousand small parses, which is microseconds against a stream that took seconds to arrive, and
+ * it keeps [dev.peashoot.core.Frame] what it is — bytes nothing has to understand. Upgrade: the
+ * buffer remembering each frame's number as it appends, if a cursor is ever on a hot path.
  */
 internal fun Flow<Frame>.after(sequence: Int): Flow<Frame> = filter { frame ->
     val number = Responses.sequenceNumber(frame)
