@@ -158,18 +158,26 @@ internal class ResumeRig(
      * A raw socket with [body] posted to [path]: no client library leaves a response on demand.
      * Inline, so [then] may suspend in the caller's coroutine while the socket stays open.
      */
-    private inline fun <T> posted(body: String, path: String, then: (Socket) -> T): T {
+    private inline fun <T> posted(
+        body: String,
+        path: String,
+        method: String,
+        then: (Socket) -> T,
+    ): T {
         val (host, port) = proxy.url.removePrefix("http://").split(":")
         return Socket(host, port.toInt()).use { socket ->
             // A regression that never answers fails in five seconds, not never.
             socket.soTimeout = TIMEOUT_MS.toInt()
             val bytes = body.toByteArray()
+            // A GET carries no body, and a content-type on one would be a header the relay then
+            // has to parse for nothing; the Responses cursor is a GET.
+            val framing =
+                if (bytes.isEmpty()) ""
+                else "Content-Type: application/json\r\nContent-Length: ${bytes.size}\r\n"
             socket.getOutputStream().apply {
                 write(
-                    ("POST $path HTTP/1.1\r\nHost: $host:$port\r\n" +
-                            "Content-Type: application/json\r\n" +
-                            "Content-Length: ${bytes.size}\r\n\r\n")
-                        .toByteArray() + bytes
+                    ("$method $path HTTP/1.1\r\nHost: $host:$port\r\n$framing\r\n").toByteArray() +
+                        bytes
                 )
                 flush()
             }
@@ -183,13 +191,18 @@ internal class ResumeRig(
      * has, because nobody looks at the channel until the upstream answers.
      */
     suspend fun leaveBeforeAnswer(body: String, path: String = MESSAGES_PATH) {
-        posted(body, path) { withTimeout(TIMEOUT_MS) { received.await() } }
+        posted(body, path, "POST") { withTimeout(TIMEOUT_MS) { received.await() } }
         delay(SETTLE_MS)
     }
 
-    /** Posts [body], reads until [frames] frames are out, then closes. */
-    fun leaveAfter(frames: Int, body: String, path: String = MESSAGES_PATH) =
-        posted(body, path) { socket ->
+    /** Sends [body], reads until [frames] frames are out, then closes. */
+    fun leaveAfter(
+        frames: Int,
+        body: String,
+        path: String = MESSAGES_PATH,
+        method: String = "POST",
+    ) =
+        posted(body, path, method) { socket ->
             val input = socket.getInputStream()
             val buffer = ByteArray(READ_BUFFER)
             var seen = 0
@@ -258,8 +271,9 @@ internal class ResumeRig(
         path: String = MESSAGES_PATH,
         after: Int = LEFT_AFTER,
         drops: Int = 1,
+        method: String = "POST",
     ) {
-        leaveAfter(after, body, path)
+        leaveAfter(after, body, path, method)
         awaitEvents(CLIENT_GONE, drops)
     }
 

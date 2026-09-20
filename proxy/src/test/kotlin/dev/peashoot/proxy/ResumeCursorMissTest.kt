@@ -109,6 +109,48 @@ class ResumeCursorMissTest {
         assertEquals(1, upstream.received.size, "no second call, where background made one")
     }
 
+    /**
+     * A cursor's own tail must never answer another cursor, and this is the case that says so.
+     *
+     * Resume taps what it *serves* as well as what it relays — #26's "a laptop that sleeps twice" —
+     * so a cursor's own answer is buffered like any other, and that answer is a filtered tail
+     * carrying the same response id as the original, on `response.completed` among others. Served
+     * to a second cursor asking from further back it would give `sequence_number > max(N, M)`:
+     * every event between the two numbers silently gone, under a 200, the original's own headers,
+     * and a clean end. Nothing downstream could tell.
+     *
+     * The cap is one so the outcome is decided rather than raced. Both drops leave an entry behind,
+     * the cursor's departure is the newer of the two, so eviction takes the create and leaves the
+     * cursor's tail as the only thing the second cursor could possibly match — which makes a
+     * regression a short body rather than an unlucky one.
+     */
+    @Test
+    fun `a cursor's own tail is never offered to another cursor`() =
+        withResume({ it.copy(maxBufferedExchanges = 1) }) {
+            droppedMidStream()
+            // A cursor past the drop whose own client leaves after one frame. Its drive reads on,
+            // so its buffer ends up holding the tail from FIRST_CURSOR to the terminal event — and
+            // that event is what would stamp it with the original's response id.
+            dropMidStream(
+                body = "",
+                path = cursorPath("$FIRST_CURSOR"),
+                after = 1,
+                drops = 2,
+                method = "GET",
+            )
+            release.complete(Unit)
+            awaitEvents(ResumeRig.COMPLETED, 2)
+
+            // "Give me everything": the widest possible ask, so a tail served in its place loses
+            // the most and the assertion is unmistakable.
+            assertEquals(
+                fromUpstream,
+                streamedGet(cursorPath(after = null)),
+                "a tail is not a whole",
+            )
+            assertEquals(2, upstream.received.size, "it honestly missed and asked the provider")
+        }
+
     @Test
     fun `a cursor naming a response the proxy never buffered goes upstream`() = withResume {
         droppedMidStream()
@@ -261,6 +303,13 @@ class ResumeCursorMissTest {
     private companion object {
         /** Where a cursor asks from, matching [ResumeCursorSeamTest]'s. */
         const val CUT_AT = 3
+
+        /**
+         * Where the first cursor asks from: before the drop, so it has frames to read at once — a
+         * cursor past the held frame would have nothing to read and no way to leave mid-answer —
+         * and far enough in that the tail it buffers is plainly not the whole response.
+         */
+        const val FIRST_CURSOR = CUT_AT
 
         /** Past the last sequence of every fixture, so only the provider can have sent it. */
         const val FROM_UPSTREAM = 99
