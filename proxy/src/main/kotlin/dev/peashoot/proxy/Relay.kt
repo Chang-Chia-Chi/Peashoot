@@ -312,7 +312,13 @@ class Relay(
         // the call's finally ends the exchange as the failure it is.
         val clientGone = call.clientGone()
         val stream = ExchangeStream(exchange, source, interceptors, config.pingInterval, clientGone)
-        exchange.response = Exchange.Response(source.status, source.headers)
+        // What is relayed is whole; what is kept is filtered. The caller gets the provider's
+        // headers as they were, because a proxy in the middle is transparent — but the exchange is
+        // what the store and every cassette are written from, and a `set-cookie` in there is a
+        // credential in a file made to be shared (#98). The request side has been dropped at
+        // receipt since the start; this is the same drop on the way back, in the same one place.
+        exchange.response =
+            Exchange.Response(source.status, source.headers.without(config.lowercaseSecretHeaders))
         // Asked once before the drive exists, because the sink only asks while it waits for a
         // frame: a source with no frames at all completes the exchange without the sink ever
         // looking, and a client already gone would go unheard (#54).

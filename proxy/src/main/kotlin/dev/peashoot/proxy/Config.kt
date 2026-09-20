@@ -100,8 +100,22 @@ data class ProxyConfig(
     val openaiUpstream: String = "https://api.openai.com",
     /** Debug: append every raw upstream response to this file, for building fixtures. */
     val dumpFrames: Path? = null,
-    /** Sent upstream, never kept: not on the Exchange, not in any log or file. Any case. */
-    val secretHeaders: Set<String> = setOf("authorization", "x-api-key"),
+    /**
+     * Sent upstream, never kept: not on the Exchange, not in any log or file, in either direction.
+     * Any case. What belongs here is a credential by nature rather than an identifier — whoever
+     * holds one of these *is* the caller. `set-cookie` and `cookie` are the two halves of one
+     * session credential (#98), and a cassette is a file written to be committed and handed around;
+     * `proxy-authorization` is `authorization` under the name a forward proxy uses.
+     *
+     * `openai-organization` and `openai-project` are deliberately not here, though an export must
+     * not carry them either. This list is applied at receipt, before `Exchange.surface` is read,
+     * and `surfaceOf` routes a request whose path no surface owns — a bare `GET /v1/models` — by
+     * any `openai-` header the sender put on it. Dropping them here would send an OpenAI client's
+     * model listing to the Anthropic upstream, which is why #77 redacts them on the way out
+     * instead. A header this list names is a header the router may not read.
+     */
+    val secretHeaders: Set<String> =
+        setOf("authorization", "proxy-authorization", "x-api-key", "cookie", "set-cookie"),
     /** What each route does; every request takes [DEFAULT_ROUTE] until routing arrives. */
     val routes: Map<String, Route> = mapOf(DEFAULT_ROUTE to Route(Mode.RECORD)),
     /** `replay.cadence` in the file. */

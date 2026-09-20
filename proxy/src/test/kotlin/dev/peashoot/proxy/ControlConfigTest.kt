@@ -89,7 +89,7 @@ class ControlConfigTest {
         awaitRecordings(1)
         assertNull(store.list().single().exchange.request.headers["authorization"])
         assertEquals(
-            listOf("authorization", "x-api-key"),
+            listOf("authorization", "proxy-authorization", "x-api-key", "cookie", "set-cookie"),
             json("/config").getValue("secretHeaders").jsonArray.map { it.text() },
         )
     }
@@ -188,7 +188,7 @@ class ControlConfigTest {
             val running = json("/config")
             assertFalse(token in running.toString(), "no secret is in the config")
             assertEquals(
-                listOf("authorization", "x-api-key"),
+                listOf("authorization", "proxy-authorization", "x-api-key", "cookie", "set-cookie"),
                 running.getValue("secretHeaders").jsonArray.map { it.text() },
             )
 

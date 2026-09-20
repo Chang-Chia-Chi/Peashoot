@@ -28,6 +28,7 @@ import kotlin.test.assertContains
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
@@ -65,6 +66,8 @@ class CassetteTest {
         val contentType: String?,
         val note: String?,
         val body: String,
+        /** What the provider set on the caller, which the proxy passes on and never keeps (#98). */
+        val setCookie: String?,
     )
 
     private suspend fun post(
@@ -85,6 +88,7 @@ class CassetteTest {
                 response.headers[HttpHeaders.ContentType],
                 response.headers["x-note"],
                 response.bodyAsText(),
+                response.headers[HttpHeaders.SetCookie],
             )
         }
 
@@ -448,8 +452,54 @@ class CassetteTest {
         }
     }
 
+    /**
+     * A cassette is written to be committed and handed around, and a cookie is a credential rather
+     * than an id: whoever holds it is the session. `Redaction` cannot reach it, because redaction
+     * runs over the request body and the response text and never over headers (#98), so the only
+     * thing that can is `secretHeaders`, which `set-cookie` now names.
+     *
+     * Asserted in three places because the header passes three: the caller still gets it, since the
+     * proxy is transparent to what it relays and filters only what it keeps; the stored row does
+     * not, because the drop is where the response is first read; and the cassette does not, because
+     * there was nothing left to export.
+     */
+    @Test
+    fun `a Set-Cookie the provider sent reaches neither the store nor a cassette`() = runBlocking {
+        val source = home()
+        val seen =
+            FakeUpstream().use { upstream ->
+                upstream.reply = {
+                    FakeUpstream.Reply(
+                        body = """{"n":1}""",
+                        headers =
+                            mapOf(
+                                "Set-Cookie" to listOf("sess=$COOKIE_CANARY; Path=/; HttpOnly"),
+                                "x-note" to listOf("recorded"),
+                            ),
+                    )
+                }
+                record(source, upstream, listOf(PLAIN_REQUEST))
+            }
+        assertContains(
+            seen.single().setCookie.orEmpty(),
+            COOKIE_CANARY,
+            message = "the caller still gets it",
+        )
+
+        Store(source).use { store ->
+            val response = checkNotNull(store.list().single().exchange.response)
+            assertNull(response.headers["set-cookie"], "never stored")
+            assertEquals("recorded", response.headers["x-note"], "and nothing else was dropped")
+            command(listOf("export", "demo"), source, noEnv)
+        }
+        val text = source.resolve("cassettes/demo.jsonl").readText()
+        assertFalse(COOKIE_CANARY in text, text)
+        assertFalse("set-cookie" in text.lowercase(), text)
+    }
+
     private companion object {
         const val STREAMING = "stream me"
+        const val COOKIE_CANARY = "peashoot-set-cookie-canary"
         const val STREAM_REQUEST =
             """{"model":"claude-sonnet-4-5","stream":true,""" +
                 """"messages":[{"role":"user","content":"$STREAMING"}]}"""

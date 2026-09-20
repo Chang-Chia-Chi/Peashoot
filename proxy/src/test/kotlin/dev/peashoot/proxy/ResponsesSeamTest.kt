@@ -278,25 +278,40 @@ class ResponsesSeamTest {
      * Every header the upstream set arrives again on the replay — name, value, and multiplicity —
      * except the ones the design gives the proxy: hop-by-hop, and the length of a body it
      * re-encodes. Content-type is excluded from the forwarded set only because it travels as the
-     * response's own property instead, so it must still arrive.
+     * response's own property instead, so it must still arrive. A secret header is the third kind
+     * (#98): the recording pass relays it to the caller whole and keeps none of it, so there is
+     * nothing of it in the store for a replay to hand back.
      */
     private fun assertHeaders(recorded: HttpResponse, replayed: HttpResponse) {
         RESPONSE_HEADERS.keys.forEach { name ->
             val was = recorded.headers.getAll(name)
-            if (name in HOP_BY_HOP) {
-                assertNull(was, "$name is hop-by-hop, so not even the recording pass forwarded it")
-                assertNull(replayed.headers.getAll(name), name)
-            } else {
-                assertEquals(
-                    RESPONSE_HEADERS.getValue(name),
-                    assertNotNull(was, "the recording pass must have carried $name"),
-                )
-                assertEquals(was, replayed.headers.getAll(name), name)
+            when (name) {
+                in HOP_BY_HOP -> {
+                    assertNull(was, "$name is hop-by-hop, so no pass forwarded it at all")
+                    assertNull(replayed.headers.getAll(name), name)
+                }
+                in NOT_KEPT -> {
+                    assertEquals(
+                        RESPONSE_HEADERS.getValue(name),
+                        assertNotNull(was, "the recording pass relays $name to the caller"),
+                    )
+                    assertNull(
+                        replayed.headers.getAll(name),
+                        "$name is a secret header: relayed, never stored, so never replayed",
+                    )
+                }
+                else -> {
+                    assertEquals(
+                        RESPONSE_HEADERS.getValue(name),
+                        assertNotNull(was, "the recording pass must have carried $name"),
+                    )
+                    assertEquals(was, replayed.headers.getAll(name), name)
+                }
             }
         }
         assertEquals(
-            listOf("a=1; Path=/", "b=2; Path=/"),
-            replayed.headers.getAll(HttpHeaders.SetCookie),
+            listOf("""199 - "first"""", """199 - "second""""),
+            replayed.headers.getAll(HttpHeaders.Warning),
             "a header the upstream repeated is repeated back, not folded into one",
         )
         assertEquals(
@@ -563,12 +578,19 @@ class ResponsesSeamTest {
                 "x-ratelimit-remaining-tokens" to listOf("9000"),
                 "x-ratelimit-reset-tokens" to listOf("6m0s"),
                 TURN_STATE to listOf("issued-by-server"),
-                HttpHeaders.SetCookie to listOf("a=1; Path=/", "b=2; Path=/"),
+                // Repeated on purpose: a real response sends a header name more than once, and
+                // the multiplicity has to survive the store.
+                HttpHeaders.Warning to listOf("""199 - "first"""", """199 - "second""""),
+                // A secret header (#98): relayed to the caller, never kept, so a replay has none.
+                HttpHeaders.SetCookie to listOf("sess=peashoot-canary; Path=/"),
                 // Hop-by-hop: the proxy owns it and never passes it on, in either pass.
                 HttpHeaders.Trailer to listOf("x-checksum"),
             )
 
         val HOP_BY_HOP = setOf(HttpHeaders.Trailer)
+
+        /** Relayed whole and stored not at all, so the replay has nothing to hand back (#98). */
+        val NOT_KEPT = setOf(HttpHeaders.SetCookie)
 
         /** A port nothing listens on: a request that took the wrong surface fails, not passes. */
         const val DEAD_UPSTREAM = "http://127.0.0.1:1"
