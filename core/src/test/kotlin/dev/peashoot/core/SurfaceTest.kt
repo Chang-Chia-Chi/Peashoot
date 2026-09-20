@@ -43,8 +43,11 @@ class SurfaceTest {
         )
         assertEquals(ChatCompletions, surfaceOf("/v1/models", headersOf("openai-project", "p-1")))
         assertEquals(
-            ChatCompletions,
+            Messages,
             surfaceOf("/v1/models", headersOf("X-Stainless-Lang", "js")),
+            "both SDKs are Stainless-generated, so that header alone names neither: it would " +
+                "speak only where the two are hard to tell apart, and send an Anthropic SDK " +
+                "that omitted its version header to OpenAI",
         )
         assertEquals(
             ChatCompletions,

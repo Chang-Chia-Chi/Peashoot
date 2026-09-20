@@ -60,7 +60,7 @@ interface FrameReader {
 }
 
 /** Every surface the proxy speaks, in the order [surfaceOf] asks them for a path. */
-val SURFACES: List<Surface> = listOf(Messages, ChatCompletions)
+private val SURFACES: List<Surface> = listOf(Messages, ChatCompletions)
 
 /**
  * The surface a request belongs to (design section 4, step 2). The path decides wherever one
@@ -68,10 +68,12 @@ val SURFACES: List<Surface> = listOf(Messages, ChatCompletions)
  * pass through is owned by neither, and there the sender's headers decide, because they are all
  * such a request has.
  *
- * Anthropic's own header is asked first: the Anthropic SDK is Stainless-generated too and sends
- * `x-stainless-*` exactly as the OpenAI one does, so only `anthropic-version` tells the two apart.
- * A request with nothing to go on takes Messages, the surface that was here first, so no path
- * Claude Code already sends moves.
+ * `x-stainless-*` is not asked at all, though the OpenAI SDKs send it, precisely because the
+ * Anthropic ones send it identically: it could only speak where the two are already hard to tell
+ * apart, and there it would send an Anthropic SDK that omitted its version header to OpenAI, which
+ * answers 401. The OpenAI SDKs are named by their own `openai-*` headers and their `OpenAI/…`
+ * user-agent instead, both of which only they send. A request with nothing to go on takes Messages,
+ * the surface that was here first, so no path Claude Code already sends moves.
  *
  * Secret headers are stripped before an exchange exists, so `authorization` and `x-api-key` are not
  * part of this decision and cannot be: a request is routed by what it is willing to say.
@@ -90,8 +92,8 @@ internal fun rateLimitOf(tokens: String?, requests: String?, reset: String?): Ra
 
 private val ANTHROPIC_HEADERS = setOf("anthropic-version", "anthropic-beta")
 
-/** `openai-organization`, `openai-project`, `openai-beta`, and the SDK's own `x-stainless-*`. */
-private val OPENAI_PREFIXES = listOf("openai-", "x-stainless-")
+/** `openai-organization`, `openai-project`, `openai-beta`: headers only OpenAI clients send. */
+private const val OPENAI_PREFIX = "openai-"
 
 /** The official SDKs' product token: `OpenAI/Python 1.109.1`, `OpenAI/JS 4.68.0`. */
 private const val OPENAI_AGENT = "OpenAI"
@@ -99,8 +101,7 @@ private const val OPENAI_AGENT = "OpenAI"
 private fun Headers.sender(): Surface =
     when {
         names().any { it.lowercase() in ANTHROPIC_HEADERS } -> Messages
-        names().any { name -> OPENAI_PREFIXES.any { name.startsWith(it, ignoreCase = true) } } ->
-            ChatCompletions
+        names().any { it.startsWith(OPENAI_PREFIX, ignoreCase = true) } -> ChatCompletions
         this[HttpHeaders.UserAgent]?.startsWith(OPENAI_AGENT, ignoreCase = true) == true ->
             ChatCompletions
         else -> Messages

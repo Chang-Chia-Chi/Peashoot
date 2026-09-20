@@ -80,6 +80,10 @@ object ChatCompletions : Surface {
          * fragment and its `function.arguments` is the concatenation of every fragment's. Sorted,
          * because the event line lists calls in the order the response opened them while the
          * fragments of two calls may interleave. A call whose name never arrived is not one.
+         *
+         * ponytail: one `choices` entry. Asking for `n > 1` completions with tools would give each
+         * choice its own index 0, and the two would concatenate into one corrupted call. Upgrade:
+         * key this by choice index as well, the day anything sends `n > 1`.
          */
         private val open = sortedMapOf<Int, OpenTool>()
 
@@ -101,7 +105,9 @@ object ChatCompletions : Surface {
 
         private fun readChoice(choice: JsonObject) {
             stopReason = choice["finish_reason"].text() ?: stopReason
-            val part = (choice["delta"] ?: choice["message"]) as? JsonObject ?: return
+            // Each cast on its own: a server that sends `"delta": null` beside a real `message`
+            // would otherwise have its whole message thrown away, JSON null not being Kotlin's.
+            val part = choice["delta"] as? JsonObject ?: choice["message"] as? JsonObject ?: return
             toolCalls(part).forEachIndexed(::readToolCall)
         }
 
@@ -152,7 +158,9 @@ private fun usageOf(element: JsonElement?): Usage? {
     val fields = element as? JsonObject ?: return null
     val cached = (fields["prompt_tokens_details"] as? JsonObject)?.get("cached_tokens").int() ?: 0
     return Usage(
-        input = (fields["prompt_tokens"].int() ?: 0) - cached,
+        // Never below zero: a server that reports a cached count and no prompt total would
+        // otherwise give a negative input, and with it a negative cost.
+        input = ((fields["prompt_tokens"].int() ?: 0) - cached).coerceAtLeast(0),
         output = fields["completion_tokens"].int() ?: 0,
         cacheRead = cached,
         cacheWrite = 0,

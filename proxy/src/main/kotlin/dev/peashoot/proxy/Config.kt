@@ -1,7 +1,7 @@
 package dev.peashoot.proxy
 
-import dev.peashoot.core.ChatCompletions
 import dev.peashoot.core.DEFAULT_PRICES
+import dev.peashoot.core.Messages
 import dev.peashoot.core.Mode
 import dev.peashoot.core.Price
 import dev.peashoot.core.REDACT_FILE
@@ -129,8 +129,11 @@ data class ProxyConfig(
      */
     fun upstreamBase(surface: Surface): String =
         when (surface) {
-            ChatCompletions -> openaiUpstream
-            else -> anthropicUpstream
+            // Anthropic is named, not assumed: every other surface is an OpenAI one, so the
+            // Responses surface (#25) reaches the right provider the day it arrives instead of
+            // being relayed to Anthropic by a default nobody remembered to change.
+            Messages -> anthropicUpstream
+            else -> openaiUpstream
         }.trimEnd('/')
 }
 
