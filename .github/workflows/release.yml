@@ -77,9 +77,11 @@ jobs:
           VERSION: ${{ steps.version.outputs.version }}
         run: ./gradlew build ${VERSION:+-Ppeashoot.version=$VERSION}
 
-      # `packageMsi` and not `packageReleaseMsi`: the release variants run ProGuard, and nothing
-      # has yet proved that Ktor's and Netty's reflection survives it. If the installers are ever
-      # to be shrunk, that is its own change, with its own run of the image.
+      # `packageMsi` and not `packageReleaseMsi`: the release variants run ProGuard. The minified
+      # image was tried once on Windows — it starts, and the proxy with it, 13 MB smaller — but
+      # ProGuard reported dynamic access in Ktor and slf4j, and nothing has driven the window
+      # under it: the feed, the panes, the control plane. Shrinking the installers is its own
+      # change, with its own run of the whole app.
       #
       # If the Linux leg ever fails for a missing `fakeroot`, install it in a step above this one;
       # the runner image has carried it so far.
