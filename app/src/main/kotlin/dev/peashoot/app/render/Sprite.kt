@@ -80,24 +80,31 @@ private const val GROUND_FLOWERS = 7
 
 // The usual spatial hash: two large primes and a shift-mix. Small primes alone leave the variants
 // on diagonals — which is exactly what the first rendering of the farm showed.
-private const val GROUND_COLUMN_PRIME = 73856093
-private const val GROUND_ROW_PRIME = 19349663
-private const val GROUND_MIX = 0x45D9F3B
-private const val GROUND_SHIFT = 13
+internal const val HASH_COLUMN_PRIME = 73856093
+internal const val HASH_ROW_PRIME = 19349663
+private const val HASH_MIX = 0x45D9F3B
+private const val HASH_SHIFT = 13
 
 /**
- * Which grass a ground tile gets, from where it is and nothing else: a ground that picked at random
- * would shimmer, since the whole ground is redrawn every frame.
+ * A non-negative number spread evenly from one integer, and always the same one for the same
+ * integer. The renderer's only source of scatter, and it has two callers for one reason: the ground
+ * picks its tufts and flowers out of it ([groundSprite]) and the rain picks where its streaks fall
+ * (`Sky.kt`), and both would shimmer if they picked at random, because the whole of each is redrawn
+ * every frame and nothing remembers the frame before.
+ *
+ * Callers bring their own seed and take their own modulus, because those are the parts that differ:
+ * a tile hashes a column against a row, a streak hashes its own number.
  */
-internal fun groundSprite(column: Int, row: Int): Sprite {
-    val seed = (column * GROUND_COLUMN_PRIME) xor (row * GROUND_ROW_PRIME)
-    val mixed = (seed xor (seed ushr GROUND_SHIFT)) * GROUND_MIX
-    return when ((mixed ushr GROUND_SHIFT).mod(GROUND_SPREAD)) {
+internal fun scattered(seed: Int): Int =
+    ((seed xor (seed ushr HASH_SHIFT)) * HASH_MIX) ushr HASH_SHIFT
+
+/** Which grass a ground tile gets, from where it is and nothing else; see [scattered]. */
+internal fun groundSprite(column: Int, row: Int): Sprite =
+    when (scattered((column * HASH_COLUMN_PRIME) xor (row * HASH_ROW_PRIME)).mod(GROUND_SPREAD)) {
         GROUND_TUFTS -> Sprite.GRASS_TUFTS
         GROUND_FLOWERS -> Sprite.GRASS_FLOWERS
         else -> Sprite.GRASS
     }
-}
 
 /**
  * Which plant a crop is, from its path: a field of one plant looks like a monoculture, and `String`

@@ -4,6 +4,7 @@ import dev.peashoot.app.farm.Season
 import dev.peashoot.app.farm.replay
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -80,6 +81,28 @@ class SkyTest {
         val atNight = skyOf(storm.copy(night = true), flash = null).shade
         assertTrue(atNight > shade, "a storm at night is no darker than one at noon")
         assertTrue(atNight < 1f, "a farm nobody can see through is not a farm")
+    }
+
+    @Test
+    fun `the labels' ink follows what is darkening the ground, not only the night`() {
+        val weather = replay("weather.jsonl")
+        assertFalse(skyOf(weather[CLEARED], flash = null).pale, "a clear day needs no pale ink")
+        assertFalse(skyOf(weather[RAINY], flash = null).pale, "rain darkens nothing")
+        // The judgement this pins: a daytime storm takes a quarter of the light, which leaves the
+        // grass light enough that pale text on it would read worse than the dark text does.
+        val storm = weather[STORMY]
+        assertFalse(
+            skyOf(storm, flash = null).pale,
+            "a daytime storm is not dark enough to be worth pale ink",
+        )
+        assertTrue(skyOf(storm, flash = null).shade > 0f, "...but it does darken the ground")
+        // Night does cross the line, and so does a storm at night, which is darker still.
+        assertTrue(skyOf(replay("bin.jsonl")[REPLAYING], flash = null).pale, "night is dark")
+        assertTrue(skyOf(storm.copy(night = true), flash = null).pale)
+        assertTrue(
+            INK_TURNS_PALE > skyOf(storm, flash = null).shade,
+            "the line must sit above a daytime storm, or the case above is vacuous",
+        )
     }
 
     @Test

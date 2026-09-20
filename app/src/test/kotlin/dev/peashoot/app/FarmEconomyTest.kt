@@ -22,8 +22,16 @@ import kotlinx.serialization.json.doubleOrNull
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 
-/** Close enough for money: two sums of the same doubles in different orders are not bit-equal. */
-private const val A_PENNY = 0.005
+/**
+ * Float noise, and deliberately nothing bigger.
+ *
+ * Every cost in these fixtures is an exact binary fraction — 0.25, 0.125, 0.5, 0.0 — so the two
+ * sums are bit-equal today and even 0.0 would pass. This is here for the day a fixture carries a
+ * price like 0.1, where the same addends in two orders differ in the last bit or two and nothing
+ * larger than that would be a real disagreement. Half a cent, which this used to be, is four per
+ * cent of the smallest priced turn here: it would hide a whole dropped sub-cent cost.
+ */
+private const val FLOAT_NOISE = 1e-9
 
 /** The line of `bin.jsonl` that ends a turn and names a price; see the fixture README. */
 private const val A_PRICED_TURN = 1
@@ -56,13 +64,14 @@ class FarmEconomyTest {
                 lines.forEach { proxy.put(it) }
                 until { model.lines.size >= lines.size }
                 val reported = proxy.sessionCosts()
-                // One row per session and agent: two sessions in `day.jsonl`, one of them with a
-                // sub-agent of its own, and `bin.jsonl`'s.
-                assertEquals(4, reported.size, "the endpoint grouped the fixtures unexpectedly")
+                // How the endpoint groups its rows is the endpoint's business — one per session and
+                // agent today — and the criterion is about the total, not the shape. Only that it
+                // answered with costs at all, so that a sum of nothing cannot pass for agreement.
+                assertTrue(reported.isNotEmpty(), "the endpoint reported no costs to compare with")
                 assertEquals(
                     reported.sum(),
                     model.farm.bin.ledger,
-                    A_PENNY,
+                    FLOAT_NOISE,
                     "the farm's ledger and the proxy's books disagree about the same traffic",
                 )
                 assertTrue(model.farm.bin.ledger > 0.0, "a ledger of nothing proves nothing")

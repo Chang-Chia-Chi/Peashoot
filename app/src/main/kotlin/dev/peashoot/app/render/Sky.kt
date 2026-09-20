@@ -72,13 +72,7 @@ private const val TILE_MIDDLE = 0.5f
  * Where a streak lands across the canvas, out of this many buckets: enough that 240 streaks do not
  * visibly line up, small enough that the hash stays cheap.
  */
-private const val SCATTER = 1024
-
-// The spatial hash `groundSprite` uses, for the same reason: rain that picked at random would
-// jitter, since the whole sky is redrawn every frame and nothing remembers the last one.
-private const val DROP_PRIME = 73856093
-private const val DROP_MIX = 0x45D9F3B
-private const val DROP_SHIFT = 13
+private const val BUCKETS = 1024
 
 /**
  * What the sky is doing this frame, as three numbers the draw phase can use without asking the farm
@@ -86,7 +80,26 @@ private const val DROP_SHIFT = 13
  * lightning flash is still live. Pure, and the seam issue #21's first and fourth criteria are
  * asserted at — the reducer's half of the weather is already tested in `dev.peashoot.app.farm`.
  */
-internal data class Sky(val shade: Float, val rain: Float, val flash: Float)
+internal data class Sky(val shade: Float, val rain: Float, val flash: Float) {
+    /**
+     * Whether the labels over this sky need the pale ink rather than the dark one. Keyed off
+     * [shade], because what makes dark text hard to read is the ground being dark, and the night is
+     * not the only thing that does that: see [INK_TURNS_PALE] for why the line is where it is.
+     */
+    val pale: Boolean
+        get() = shade >= INK_TURNS_PALE
+}
+
+/**
+ * How dark the ground has to be before the labels give up on the dark ink.
+ *
+ * Between a storm's [STORM_SHADE] and the night's [NIGHT_SHADE], and deliberately not at "any shade
+ * at all": pale text needs a dark background as much as dark text needs a light one, so switching
+ * the moment a daytime storm rolls in would put near-white names on grass that is still three
+ * quarters lit and make the farm *less* readable, not more. A quarter of the light gone leaves the
+ * dark ink fine; nearly half of it does not.
+ */
+internal const val INK_TURNS_PALE = 0.35f
 
 /**
  * The sky from the farm and whatever flash is part-way through. Night and a storm stack, because
@@ -97,7 +110,7 @@ internal fun skyOf(state: FarmState, flash: Effect?): Sky =
         shade =
             ((if (state.night) NIGHT_SHADE else 0f) + shadeOf(state.weather)).coerceAtMost(DARKEST),
         rain = fallOf(state.weather),
-        flash = flash?.let { 1f - (it.age / EFFECT_SECONDS).coerceIn(0f, 1f) } ?: 0f,
+        flash = flash?.left ?: 0f,
     )
 
 /**
@@ -198,9 +211,6 @@ private fun DrawScope.drawRain(fall: Float, clock: Float) {
     drawPoints(ends, PointMode.Lines, RAIN_COLOUR, RAIN_STROKE)
 }
 
-/** A number in 0..1 from a streak's own index, spread the way `groundSprite` spreads its grass. */
-private fun scatter(seed: Int): Float {
-    val hashed = seed * DROP_PRIME
-    val mixed = (hashed xor (hashed ushr DROP_SHIFT)) * DROP_MIX
-    return (mixed ushr DROP_SHIFT).mod(SCATTER) / SCATTER.toFloat()
-}
+/** A number in 0..1 from a streak's own index, through the [scattered] the ground also goes by. */
+private fun scatter(streak: Int): Float =
+    scattered(streak * HASH_COLUMN_PRIME).mod(BUCKETS) / BUCKETS.toFloat()

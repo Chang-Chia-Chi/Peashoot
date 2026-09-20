@@ -41,7 +41,16 @@ internal enum class EffectKind {
 }
 
 /** One effect part-way through, [age] in seconds since the farm that raised it arrived. */
-internal data class Effect(val kind: EffectKind, val age: Float = 0f)
+internal data class Effect(val kind: EffectKind, val age: Float = 0f) {
+    /**
+     * How much of this effect is still to come: 1 on the frame it was raised, 0 once it has run its
+     * course. Every one of them fades on it — a pop's extra size, an inspection ring's alpha, a
+     * puddle's, a flash's — so it lives here rather than being written out at each of them, which
+     * is how three copies of the same clamp came to exist in the first place.
+     */
+    val left: Float
+        get() = 1f - (age / EFFECT_SECONDS).coerceIn(0f, 1f)
+}
 
 /**
  * Everything part-way through this frame, in the three shapes the draw phase reads them in: by crop
@@ -167,7 +176,7 @@ internal fun DrawScope.drawCrop(
     spot: Spot,
     effect: Effect?,
 ) {
-    val left = effect?.let { 1f - (it.age / EFFECT_SECONDS).coerceIn(0f, 1f) } ?: 0f
+    val left = effect?.left ?: 0f
     val grown = if (effect?.kind == EffectKind.GROW) 1f + POP_SCALE * left else 1f
     drawSprite(atlas, sprite, spot, grown)
     if (effect?.kind == EffectKind.INSPECT) {
@@ -186,7 +195,7 @@ internal fun DrawScope.drawCrop(
  * tipped one, and an oval of water says it without an atlas rebuilt for one half second.
  */
 internal fun DrawScope.drawSpill(spot: Spot, effect: Effect) {
-    val left = 1f - (effect.age / EFFECT_SECONDS).coerceIn(0f, 1f)
+    val left = effect.left
     val width = PUDDLE_TILES * TILE_PX
     val height = width / 2
     drawOval(

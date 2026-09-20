@@ -82,12 +82,12 @@ internal fun DrawScope.drawStamina(stamina: Stamina, spot: Spot) {
 }
 
 /** The bin's own line, under the crate at [BIN]. */
-internal fun DrawScope.drawLedger(measurer: TextMeasurer, bin: ShippingBin, night: Boolean) {
+internal fun DrawScope.drawLedger(measurer: TextMeasurer, bin: ShippingBin, pale: Boolean) {
     drawLabel(
         measurer,
         binLine(bin),
         Spot(BIN.x + LEDGER_LEFT, BIN.y + LEDGER_DROP),
-        nameStyle(night),
+        nameStyle(pale),
         LEDGER_TILES,
     )
 }
