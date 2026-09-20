@@ -125,6 +125,7 @@ private fun serve(): Unit = runBlocking {
         val control = ControlApi(store, home, RouteTable(config.routes), LiveConfig(config))
         val chain =
             listOf(
+                Resume(config),
                 Replay(store, config),
                 Recorder(store),
                 Deriver(store, home.resolve(EVENTS_FILE), config.pricing, gource, control.feed),

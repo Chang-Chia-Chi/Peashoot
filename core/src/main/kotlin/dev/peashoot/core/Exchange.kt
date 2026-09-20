@@ -33,11 +33,11 @@ data class Route(val mode: Mode, val strict: Boolean = false, val cassette: Stri
  * One request through the proxy, from receipt to completion. The request side is fixed at receipt;
  * the source fills in the response side and the sinks set the flags, so this is a context object,
  * not a value. Secret headers are stripped before construction and never appear here. The request
- * side, at receipt, and [response], before the stream starts, are both written on the call
- * coroutine; [clientDisconnected] and [clientBytes] are set at detach, under the stream's mutex,
- * which keeps client-gone and completion apart. Nothing else is written while the stream runs. The
- * store rebuilds one from a row, which is why id and receivedAt are parameters. [client] is derived
- * from the request, once, on first use.
+ * side, at receipt, and [response], [replayHit] and [resumed], before the stream starts, are all
+ * written on the call coroutine; [clientDisconnected] and [clientBytes] are set at detach, under
+ * the stream's mutex, which keeps client-gone and completion apart. Nothing else is written while
+ * the stream runs. The store rebuilds one from a row, which is why id and receivedAt are
+ * parameters. [client] is derived from the request, once, on first use.
  */
 class Exchange(
     val request: Request,
@@ -87,10 +87,34 @@ class Exchange(
     var fingerprint: String? = null
 
     /**
+     * The normalized request [fingerprint] is the hash of (design section 6): method, path, kept
+     * headers, and the body as the rule set left it. Set at classify beside the fingerprint, so
+     * Resume can ask a surface about the request's shape without applying the rules a second time.
+     * Null for an exchange rebuilt from the store, which keeps the hash and not what it hashed.
+     */
+    var normalized: JsonObject? = null
+
+    /**
      * Replay answered from a recording, set by it before the stream exists: nothing was billed, and
      * nothing is recorded again.
      */
     var replayHit: Boolean = false
+
+    /**
+     * Resume answered from the buffer of an earlier exchange whose client left (#26), set by it
+     * before the stream exists: no upstream call was made, so nothing was billed for this one. The
+     * exchange it was served from is the one that carries the call and its cost.
+     */
+    var resumed: Boolean = false
+
+    /**
+     * Whether the engine says this request's connection has closed: asked at any time, from any
+     * coroutine, without blocking. The relay sets it at receipt. It runs ahead of
+     * [clientDisconnected], which waits for the client writer to look, and Resume needs the head
+     * start: a re-issue arrives tens of milliseconds after the drop, often before the writer's next
+     * look. Never true for an exchange rebuilt from the store.
+     */
+    var clientGone: () -> Boolean = { false }
 
     /** The client went away mid-stream. */
     var clientDisconnected: Boolean = false

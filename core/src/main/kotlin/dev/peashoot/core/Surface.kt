@@ -42,6 +42,25 @@ sealed interface Surface {
 
     /** A reader for one response: single-use, fed every frame of it in arrival order. */
     fun reader(): FrameReader
+
+    /**
+     * Whether [frame] is the last frame of a whole answer on this surface. An upstream stream cut
+     * short does not fail: the provider's socket simply ends, and the frames that arrived look like
+     * any other frames, so the only thing that says an answer is whole is that the surface's own
+     * terminal frame is among them. Resume asks this before serving a completed answer to a
+     * re-issue, because a broken answer served as a whole one costs the client its retry (#26, ADR
+     * 0002). The default is "never": a surface that has not been taught its terminal frame must not
+     * have every cut answer taken for a complete one.
+     */
+    fun terminates(frame: Frame): Boolean = false
+
+    /**
+     * This surface's resume story beyond an equal fingerprint (design section 9, ADR 0002): how a
+     * client's re-issue after a cut stream may differ from the request it re-issues, read from the
+     * [Rules.normalized] request. Null is "exact only", and it is the default on purpose: a looser
+     * match is earned by measuring what a real client sends, and only Messages has been measured.
+     */
+    fun continuable(normalized: JsonObject): Continuable? = null
 }
 
 /**

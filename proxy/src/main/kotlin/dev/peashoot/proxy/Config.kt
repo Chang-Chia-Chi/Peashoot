@@ -132,6 +132,16 @@ data class ProxyConfig(
      */
     val pingInterval: Duration = 15.seconds,
     /**
+     * How long an exchange whose client left stays resumable, counted from the moment the proxy
+     * heard the client go; zero turns resume off. `resume.windowSeconds` in the file.
+     */
+    val resumeWindow: Duration = 300.seconds,
+    /**
+     * How many exchanges whose client left are kept for a re-issue at once, oldest out first; zero
+     * turns resume off too. `resume.maxBufferedExchanges` in the file.
+     */
+    val maxBufferedExchanges: Int = 100,
+    /**
      * What makes two requests the same request, read from [RULES_FILE]. Its own file rather than a
      * table in the config: it is the one thing here meant to be edited as data, and #11's `POST
      * /rules/test` will write it back.
@@ -240,6 +250,9 @@ fun loadConfig(home: Path, env: (String) -> String? = System::getenv): ProxyConf
         // that would have leaked what it meant to strip.
         redaction = Redaction.parse(Files.readString(redactFile)),
         pingInterval = toml.pingInterval(defaults.pingInterval),
+        // Both read in Resume.kt, beside what they bound: this file is at detekt's function cap.
+        resumeWindow = toml.resumeWindow(defaults.resumeWindow),
+        maxBufferedExchanges = toml.maxBufferedExchanges(defaults.maxBufferedExchanges),
         cassetteFile = cassetteFile,
         idleSessionMinutes = idleMinutes.toInt(),
     )
@@ -319,8 +332,15 @@ private fun ProxyConfig.toToml(): String = buildString {
     appendLine("enabled = $gourceEnabled")
     appendLine()
     appendLine("# While a stream is silent this long, an SSE comment line keeps the client alive.")
+    appendLine(
+        "# A client that leaves mid-answer can re-issue its request for windowSeconds and be"
+    )
+    appendLine("# served the answer the proxy went on reading; 0 turns that off. At most")
+    appendLine("# maxBufferedExchanges such answers are kept at once, the oldest dropped first.")
     appendLine("[resume]")
     appendLine("pingIntervalSeconds = ${pingInterval.inWholeSeconds}")
+    appendLine("windowSeconds = ${resumeWindow.inWholeSeconds}")
+    appendLine("maxBufferedExchanges = $maxBufferedExchanges")
     appendLine()
     appendLine("# Replay: cadence instant or recorded; repeatPolicy inOrder or latest.")
     appendLine("[replay]")

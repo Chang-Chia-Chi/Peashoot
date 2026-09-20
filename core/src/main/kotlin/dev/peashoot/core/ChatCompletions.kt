@@ -38,6 +38,19 @@ object ChatCompletions : Surface {
 
     override fun reader(): FrameReader = Reader()
 
+    /**
+     * `data: [DONE]` closes a stream, and a finished body — `object` `chat.completion`, where a
+     * chunk says `chat.completion.chunk` — is the whole answer in one frame. Both are read through
+     * [chunkText], so the same line does for either shape, as the reader's own does.
+     */
+    override fun terminates(frame: Frame): Boolean {
+        val text = chunkText(frame.raw)
+        return text.trim() == DONE || jsonObjectOrNull(text)?.get("object").text() == COMPLETION
+    }
+
+    private const val DONE = "[DONE]"
+    private const val COMPLETION = "chat.completion"
+
     /** Every tool the assistant asked for, by its id, so the results can be named. */
     private fun toolCallNames(message: JsonObject?): Map<String, String> =
         toolCalls(message)
