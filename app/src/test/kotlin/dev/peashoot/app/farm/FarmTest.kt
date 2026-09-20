@@ -51,10 +51,6 @@ class FarmTest {
         assertEquals(listOf(0, 1, 1, 2), states.map { it.crops().size })
         assertNull(states.last().crop("docs/notes.md"))
         assertEquals(listOf("src/main", "src/test"), states.last().fields.keys.sorted())
-        assertEquals(
-            "2026-09-19T09:00:12Z",
-            states.last().crop("src/main/App.kt")?.touches?.last()?.ts,
-        )
     }
 
     @Test
@@ -122,35 +118,28 @@ class FarmTest {
             states.map { it.crop("docs/plan.md")?.growth },
         )
         assertEquals(listOf("docs", "src/main"), last.fields.keys.sorted())
-        // The last line of that file carries no `ts` at all. Its touches are kept all the same,
-        // with no time rather than a neighbour's, and the times already on the crop stand.
-        val app = checkNotNull(last.crop("src/main/App.kt")).touches
-        assertNull(app.last().ts, "the last line named no time and does not borrow one")
-        assertEquals("2026-09-19T12:00:20Z", app.last { it.ts != null }.ts)
-        assertEquals("2026-09-19T12:00:20Z", last.crop("docs/plan.md")?.touches?.first()?.ts)
+        // The last line of that file carries no `ts` at all, which the fields do not read: a line
+        // with no time works them exactly as one with a time does.
         assertEquals(1, last.crop("docs/plan.md")?.inspections)
-        // A crop that line planted has no timestamp at all, and says so rather than saying "".
+        // That line planted this one, and nothing has been back to it since.
         assertEquals(Growth.SEED, last.crop("docs/new.md")?.growth)
-        assertNull(last.crop("docs/new.md")?.touches?.single()?.ts)
+        assertEquals(0, last.crop("docs/new.md")?.inspections)
         assertEquals(810, last.villager(DELTA).water)
     }
 
     @Test
-    fun `a crop keeps who touched it and when, in the order it happened`() {
+    fun `a helper and the session it helps work one crop between them`() {
         val last = replay("touches.jsonl").last()
         val crop = checkNotNull(last.crop("src/main/Shared.kt"))
-        // Issue #22's second criterion: the agents and the times, not just the last of them. The
-        // helper's Read is the same crop as the main thread's Write because the spellings
-        // normalise.
-        assertEquals(
-            listOf(
-                Touch("sess-touch", "2026-09-20T09:00:05Z", TouchKind.PLANTED),
-                Touch("sess-touch/agent-two", "2026-09-20T09:00:11Z", TouchKind.INSPECTED),
-                Touch("sess-touch", "2026-09-20T09:00:18Z", TouchKind.GROWN),
-            ),
-            crop.touches,
-        )
-        // A Grep names a path and touches nothing, so it leaves no crop and no touch.
+        // The helper's Read is the same crop as the main thread's Write because the spellings
+        // normalise, so the three turns fold into one crop: planted, looked at, grown once.
+        assertEquals(Growth.SPROUT, crop.growth)
+        assertEquals(1, crop.inspections)
+        // Who touched it and when is the proxy's to answer since #85 (`GET /touches`), not this
+        // fold's; what the fold owes is that both turns landed on the one crop, and that a helper
+        // is a villager of its own beside the session it helps.
+        assertEquals(setOf("sess-touch", "sess-touch/agent-two"), last.villagers.keys)
+        // A Grep names a path and touches nothing, so it leaves no crop at all.
         assertEquals(listOf("src/main/Shared.kt"), last.crops().map { it.label })
     }
 
