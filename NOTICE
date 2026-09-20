@@ -1,5 +1,10 @@
-Peashoot — third-party asset notices
-====================================
+Peashoot
+Copyright 2026 The Peashoot authors
+
+This product is licensed under the Apache License, Version 2.0; see LICENSE.
+
+Third-party assets
+==================
 
 The farm's sprites come from two asset packs by Kenney. Both are CC0, which asks
 for no credit at all; this file gives it anyway, because the sprites are somebody
@@ -28,3 +33,16 @@ Tiny Farm, version 1.0
     Sheet:   rows 11-21 of the atlas, whole and unchanged
     Drawn:   the tilled-soil furrows the fields are made of, four plants at
              four growth stages each, and the two farmers the villagers are
+             drawn as
+
+The atlas is the only asset in this repository that is anybody else's: there is
+no bundled font, and the window draws its text with the system's.
+
+Binary distributions
+====================
+
+The installers built from this repository (MSI, DMG, DEB) also carry a Java
+runtime image and the project's own dependencies — Kotlin, Ktor, Netty, SQLite
+JDBC, Compose Multiplatform and Skiko among them. Each is under its own licence,
+which travels inside the artifact it came from; none is listed here, because a
+list kept by hand would go stale on the next dependency bump.

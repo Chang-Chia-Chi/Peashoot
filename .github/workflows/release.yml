@@ -1,0 +1,147 @@
+name: Release
+
+# A tag builds the three installers and the jar and opens a DRAFT release with them attached.
+# Publishing stays a human act: nothing here ever makes a release visible.
+#
+# The installers are UNSIGNED. macOS Gatekeeper and Windows SmartScreen will warn about them, and
+# a macOS user needs right-click Open the first time. Signing needs the owner's certificates
+# (an Apple Developer ID and a Windows code-signing certificate) and is out of scope for #28.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Build and upload the installers, but create no release
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+# One release build per ref at a time, and never cancelled half way: two runs for one tag would
+# race over the same draft, and a cancelled one leaves an installer nobody built again.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  installers:
+    # Neither the tag nor the publishing is a fork's business.
+    if: github.repository == 'Chang-Chia-Chi/Peashoot'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            task: packageMsi
+            format: msi
+          # macos-latest is Apple Silicon, and jpackage builds for the machine it runs on, so
+          # this DMG is arm64 only. An Intel Mac needs a second leg on macos-13; nobody has asked.
+          - os: macos-latest
+            task: packageDmg
+            format: dmg
+          - os: ubuntu-latest
+            task: packageDeb
+            format: deb
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: "21"
+      - uses: gradle/actions/setup-gradle@v6
+
+      # The version the installers carry is the tag without its `v`. A run that is not on a tag
+      # says nothing, and the build keeps its own 1.0.0 — jpackage refuses a 0 major on Windows,
+      # so there is no such thing here as an honest 0.x installer.
+      - id: version
+        shell: bash
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          version=
+          if [ "$REF_TYPE" = tag ]; then
+            version="${REF_NAME#v}"
+            # Exactly three numbers, because this string becomes a Gradle argument and a
+            # `case` glob would have let most of a tag name through. The major may not be 0:
+            # jpackage would refuse it, but only on the Windows leg, twenty minutes from here.
+            if ! [[ "$version" =~ ^[1-9][0-9]*\.[0-9]+\.[0-9]+$ ]]; then
+              echo "a release tag must read vMAJOR.MINOR.PATCH, not $REF_NAME"
+              exit 1
+            fi
+          fi
+          echo "version=$version" >>"$GITHUB_OUTPUT"
+
+      # The whole gate first: a tag must not ship what `build` would have refused. This also
+      # writes peashoot.jar, because the proxy's `assemble` depends on `fatJar`.
+      - shell: bash
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: ./gradlew build ${VERSION:+-Ppeashoot.version=$VERSION}
+
+      # `packageMsi` and not `packageReleaseMsi`: the release variants run ProGuard. The minified
+      # image was tried once on Windows — it starts, and the proxy with it, 13 MB smaller — but
+      # ProGuard reported dynamic access in Ktor and slf4j, and nothing has driven the window
+      # under it: the feed, the panes, the control plane. Shrinking the installers is its own
+      # change, with its own run of the whole app.
+      #
+      # If the Linux leg ever fails for a missing `fakeroot`, install it in a step above this one;
+      # the runner image has carried it so far.
+      - shell: bash
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: ./gradlew :app:${{ matrix.task }} ${VERSION:+-Ppeashoot.version=$VERSION}
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: peashoot-${{ matrix.format }}
+          path: app/build/compose/binaries/main/${{ matrix.format }}/*
+          retention-days: 14
+          if-no-files-found: error
+
+      # The jar is the same file wherever it was built, so one leg keeps it.
+      - if: matrix.os == 'ubuntu-latest'
+        uses: actions/upload-artifact@v7
+        with:
+          name: peashoot-jar
+          path: proxy/build/libs/peashoot.jar
+          retention-days: 14
+          if-no-files-found: error
+
+  # Draft only, and only for a tag: a dry run builds everything and stops here.
+  release:
+    needs: installers
+    if: github.ref_type == 'tag' && inputs.dry_run != true
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          path: artifacts
+          merge-multiple: true
+      - shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          ls -l artifacts
+          notes="Draft. The installers are unsigned: macOS Gatekeeper and Windows SmartScreen will warn, and on macOS the first launch needs right-click Open. Write the notes, check the three installers start the app, and publish by hand."
+          # Re-runnable: `gh release create` refuses a tag that already has a release, so a second
+          # run after one flaky leg used to die rather than finish the job. Uploading to the
+          # existing release cannot publish it — `--clobber` replaces assets and touches nothing
+          # else, and a draft stays a draft until a human says otherwise.
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "a release for $TAG exists; replacing its assets"
+            gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber artifacts/*
+          else
+            gh release create "$TAG" --draft --repo "$GITHUB_REPOSITORY" --title "$TAG" \
+              --notes "$notes" artifacts/*
+          fi
