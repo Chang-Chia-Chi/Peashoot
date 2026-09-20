@@ -196,7 +196,11 @@ private const val ARGUMENTS_DONE = "response.function_call_arguments.done"
  */
 private fun usageOf(element: JsonElement?): Usage? {
     val fields = element as? JsonObject ?: return null
-    val cached = (fields["input_tokens_details"] as? JsonObject)?.get("cached_tokens").int() ?: 0
+    // Floored, so a server reporting a negative cached count cannot give a negative cache read,
+    // and with it a negative cost. Flooring the input alone would leave that one through.
+    val cached =
+        ((fields["input_tokens_details"] as? JsonObject)?.get("cached_tokens").int() ?: 0)
+            .coerceAtLeast(0)
     return Usage(
         // Never below zero: a server that reports a cached count and no input total would
         // otherwise give a negative input, and with it a negative cost.

@@ -444,27 +444,29 @@ class ResponsesSeamTest {
                     // 426 is the one status Codex treats as "this provider speaks HTTP": anything
                     // else costs it five stream retries first. See
                     // docs/research/codex-responses-transport.md.
-                    assertTrue(
-                        upgradeStatusLine(proxy).startsWith("HTTP/1.1 426"),
-                        upgradeStatusLine(proxy),
-                    )
+                    // One handshake per line: `assertTrue`'s message argument is eager, so
+                    // passing the call itself would open a second connection every time and
+                    // quietly double the upstream counts this test then asserts on.
+                    val refused = upgradeStatusLine(proxy)
+                    assertTrue(refused.startsWith("HTTP/1.1 426"), refused)
                     assertEquals(
                         0,
                         upstream.received.size,
                         "a refused upgrade is never relayed, so it bills nothing",
                     )
-                    // Only websocket is refused. Another token — `h2c` from `curl --http2` — must
-                    // be answered as though the header were absent, not swallowed unrecorded.
-                    assertTrue(
-                        upgradeStatusLine(proxy, "h2c").startsWith("HTTP/1.1 200"),
-                        upgradeStatusLine(proxy, "h2c"),
-                    )
+                    // Only the `websocket` token is refused. `h2c` from `curl --http2` must be
+                    // answered as though the header were absent, not swallowed unrecorded, and
+                    // neither may a token that merely contains the word.
+                    val h2c = upgradeStatusLine(proxy, "h2c")
+                    assertTrue(h2c.startsWith("HTTP/1.1 200"), h2c)
+                    val lookalike = upgradeStatusLine(proxy, "notwebsocket")
+                    assertTrue(lookalike.startsWith("HTTP/1.1 200"), lookalike)
                     assertEquals(200, post(proxy).status.value)
                 }
                 assertEquals(
-                    listOf(RESPONSES, RESPONSES, RESPONSES),
+                    List(3) { RESPONSES },
                     upstream.received.map { it.uri },
-                    "the refusal swallowed nothing: the h2c GETs and the post all got through",
+                    "the refusal swallowed nothing: both odd upgrades and the post got through",
                 )
             }
         }

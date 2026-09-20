@@ -48,11 +48,15 @@ class ResponsesTest {
     }
 
     @Test
-    fun `a turn that ran out of room says so, and reported no usage at all`() {
+    fun `a turn that ran out of room says so, and still bills what it used`() {
         val reader = readFixture("stream-incomplete.sse")
 
         assertEquals("gpt-5-2026-01-15", reader.model)
-        assertNull(reader.usage, "a null usage is silence, not a free turn")
+        assertEquals(
+            Usage(input = 41, output = 16, cacheRead = 0, cacheWrite = 0),
+            reader.usage,
+            "hitting max_output_tokens is a billed turn, so its terminal event carries usage",
+        )
         assertEquals("incomplete", reader.stopReason)
         assertEquals(emptyList(), reader.tools, "an assistant message is not a function call")
     }
@@ -97,7 +101,60 @@ class ResponsesTest {
 
         assertEquals("gpt-5-2026-01-15", reader.model)
         assertEquals("incomplete", reader.stopReason)
-        assertNull(reader.usage)
+        assertEquals(Usage(input = 41, output = 16, cacheRead = 0, cacheWrite = 0), reader.usage)
+    }
+
+    @Test
+    fun `a cut stream reports no usage at all, never zero`() {
+        val reader = Responses.reader()
+
+        // Every frame but the terminal one, which is the only event that carries usage: this is
+        // a stream that ended early, and absent usage must read as absent rather than as a free
+        // turn. The fixture's own terminal event does carry usage, because a real one does.
+        FrameParser.parse(fixture("stream-incomplete.sse")).dropLast(1).forEach(reader::read)
+
+        assertNull(reader.usage, "silence is not zero")
+        assertEquals("in_progress", reader.stopReason, "and the status says it never finished")
+    }
+
+    @Test
+    fun `a negative cached count cannot make a negative cache read`() {
+        val reader = Responses.reader()
+
+        reader.read(
+            Frame(
+                """data: {"type":"response.completed","response":{"status":"completed",""" +
+                    """"usage":{"input_tokens":10,"input_tokens_details":{"cached_tokens":-5},""" +
+                    """"output_tokens":3}}}""" +
+                    "\n\n",
+                0,
+            )
+        )
+
+        assertEquals(
+            Usage(input = 10, output = 3, cacheRead = 0, cacheWrite = 0),
+            reader.usage,
+            "a nonsense count is floored rather than priced as a negative cost",
+        )
+    }
+
+    @Test
+    fun `a call whose opening item was never seen is dropped rather than named wrongly`() {
+        val reader = Responses.reader()
+
+        // What a `starting_after` resume past the `output_item.added` leaves: arguments with no
+        // name. The ponytail note on `Responses.Reader.calls` says this call is dropped; this is
+        // that ceiling pinned, so it cannot change unnoticed.
+        reader.read(
+            Frame(
+                """data: {"type":"response.function_call_arguments.delta","item_id":"fc_1",""" +
+                    """"output_index":0,"delta":"{\"command\":\"echo hi\"}"}""" +
+                    "\n\n",
+                0,
+            )
+        )
+
+        assertEquals(emptyList(), reader.tools, "no name, so nothing the event line could report")
     }
 
     @Test

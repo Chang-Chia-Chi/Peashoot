@@ -55,6 +55,12 @@ replays, and it needs no id rewriting because the recorded id is served back ver
 at receipt and only ever sent upstream. `OpenAI-Organization` and `OpenAI-Project` are stored today
 (#77) — do not put a real one through this recipe.
 
+**Redact a real capture by hand before committing it.** An exported cassette carries the response
+headers whole, minus only the secret ones, so `x-codex-turn-state` goes in verbatim; and the default
+redaction is a single rule matching `sk-…` API keys in bodies and frames, which reaches no header at
+all. Nothing else is stripped for you: response ids, `call_id`s, account ids, and any turn-state
+token are yours to replace.
+
 ## Free local capture
 
 Unlike Chat Completions, there is no free local server for this surface to record against: Ollama

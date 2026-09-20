@@ -190,7 +190,23 @@ criterion 1).
    A `review` or `compact` thread appears as its own `"agent"` beside the same session. If `client`
    reads anything but `codex`, the originator header has changed and `Client.detect` needs to know.
 
-5. Replay it and spend nothing. Stop the proxy, start it again with `PEASHOOT_MODE=replay`, and run
+5. Run a `/review` or a `/compact` in the same session, which is the one step here that exercises
+   something nothing else can reach. Those spawn a second thread, and only they send
+   `x-openai-subagent` and `x-codex-parent-thread-id` — the two header names
+   `docs/research/codex-responses-transport.md` marks as read from Codex's source without a quoted
+   line, and the two the farm's agent graph rests on. On the event line, the lines for that thread
+   should carry an `"agent"` different from the main thread's and a `"parentAgent"` naming the
+   thread it came from, while `"session"` stays the same as the main thread's:
+
+   ```
+   grep '"exchange.completed"' ~/.peashoot/events.jsonl | tail -n 5
+   ```
+
+   If `agent` and `parentAgent` are both `null` on those lines, one or both header names are wrong
+   and `Client.detect` needs correcting — the farm would draw that thread as its own session rather
+   than as a helper beside its parent. Say so on #25 if you see it.
+
+6. Replay it and spend nothing. Stop the proxy, start it again with `PEASHOOT_MODE=replay`, and run
    **the identical prompt**. Every line the second run adds says `"replayHit":true`. A chained turn
    replays too, and needs no id rewriting: the recorded response id is served back verbatim, so the
    `previous_response_id` Codex sends on the next call is the one the recording already knows.
