@@ -21,6 +21,7 @@ import androidx.compose.ui.window.FrameWindowScope
 import androidx.compose.ui.window.Window
 import androidx.compose.ui.window.application
 import androidx.compose.ui.window.rememberWindowState
+import dev.peashoot.app.farm.Activity
 import dev.peashoot.app.farm.FarmState
 import dev.peashoot.app.farm.events
 import dev.peashoot.app.farm.reduce
@@ -63,6 +64,9 @@ private const val BADGE_CALLS = 2
 
 /** The well is a roof and a base. */
 private const val WELL_CALLS = 2
+
+/** The activities that put something over a villager's head: waiting its turn, and resting. */
+private val MOODY = setOf(Activity.WALKING_TO_WELL, Activity.RESTING)
 
 fun main() {
     val out = File(System.getProperty("bench.out", "."))
@@ -202,8 +206,14 @@ private fun drawCalls(farm: FarmState, canvas: IntSize): Int {
     val ground = (canvas.width / TILE_PX + 1) * (canvas.height / TILE_PX + 1)
     val furrows = layout.plots.size * PLOT_ROWS * PLOT_COLUMNS
     val crops = layout.plots.sumOf { it.crops.size }
-    // A villager is a sprite and a name; names are not paths, so they are always drawn.
-    val villagers = farm.villagers.size * 2
+    // A villager is a sprite and a name; names are not paths, so they are always drawn. The mood
+    // term is an upper bound and not a count: it is every villager bound for the well, where only
+    // the ones that have got there carry a `...` or a `zzz`, because arrival is a position and this
+    // works from the state alone. It is exact in the steady state the bench measures, where they
+    // have all arrived. A crop part-way through growing costs nothing extra — the pop is the same
+    // `drawImage` with a bigger destination — and an inspection costs one `drawRect` for the half
+    // second it lasts, which no steady state of this bench holds.
+    val villagers = farm.villagers.size * 2 + farm.villagers.values.count { it.activity in MOODY }
     val labels = if (farm.labelsHidden) 0 else crops + layout.plots.size + BADGE_CALLS
     val marker = if (layout.hiddenFields > 0) 1 else 0
     return ground + furrows + crops + WELL_CALLS + villagers + labels + marker

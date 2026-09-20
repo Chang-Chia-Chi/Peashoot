@@ -27,7 +27,6 @@ private const val LONGEST_STEP = 0.1f
  */
 @Composable
 fun FarmCanvas(farm: FarmState, modifier: Modifier = Modifier) {
-    val atlas = remember { farmAtlas() }
     val measurer = rememberTextMeasurer(cacheSize = LABEL_CACHE)
     val scene = remember { FarmScene() }
     // The effect runs once and the farm changes under it, so the latest state has to be read inside
@@ -46,20 +45,25 @@ fun FarmCanvas(farm: FarmState, modifier: Modifier = Modifier) {
         // `scene.frame` is read here, in the draw phase: a new frame then redraws this canvas and
         // nothing around it recomposes — the dashboard's text and event list are untouched 165
         // times a second.
-        drawFarm(atlas, measurer, scene.frame)
+        drawFarm(farmAtlas, measurer, scene.frame)
     }
 }
 
-/** One frame as the draw phase needs it: the farm, where everything is, and where everyone is. */
+/** One frame as the draw phase needs it: the farm, where everything is, and what everyone is at. */
 internal data class Frame(
     val farm: FarmState,
     val layout: FarmLayout,
     val positions: Map<String, Spot>,
+    val poses: Map<String, Pose> = emptyMap(),
+    val effects: Map<String, Effect> = emptyMap(),
+    /** Seconds since the scene started, wrapped at one: what the walk's bob is phased on. */
+    val clock: Float = 0f,
 )
 
 /**
- * The renderer's own state, which is positions and nothing else. A plain holder and not a set of
- * remembered values: only [frame] is snapshot state, because only it is read while drawing.
+ * The renderer's own state: where everyone is, what they are at, and which crops are part-way
+ * through moving. A plain holder and not a set of remembered values: only [frame] is snapshot
+ * state, because only it is read while drawing.
  */
 internal class FarmScene {
     var frame by mutableStateOf(Frame(FarmState(), farmLayout(FarmState()), emptyMap()))
@@ -67,24 +71,36 @@ internal class FarmScene {
 
     private val meter = FrameMeter()
     private var layout = frame.layout
-    private var destinations = emptyMap<String, Spot>()
+    private var effects = emptyMap<String, Effect>()
     private var last: FarmState? = null
 
     /**
-     * One frame: re-lay the farm if the reducer has given us a new one, then walk everyone on. Both
-     * the layout and everyone's destination are worked out only when the farm itself changes —
-     * neither can change between two frames of the same state, and the feed is slower than the
-     * screen by three or four orders of magnitude.
+     * Wrapped at one second, because the bob it drives goes a whole number of times a second: a
+     * `Float` counting up for the hours a window is open would lose the step to its own precision.
+     */
+    private var clock = 0f
+
+    /**
+     * One frame: age whatever the last farm set off, re-lay the farm and diff its crops if the
+     * reducer has given us a new one, then walk everyone on. The layout is worked out only when the
+     * farm itself changes — it cannot change between two frames of the same state, and the feed is
+     * slower than the screen by three or four orders of magnitude. Where everyone is *heading* is
+     * worked out every frame all the same, because a helper heads for wherever its parent has got
+     * to, which is a thing that changes without the farm changing at all.
      */
     fun advance(farm: FarmState, deltaNanos: Long) {
+        val seconds = (deltaNanos / NANOS_A_SECOND).toFloat().coerceAtMost(LONGEST_STEP)
+        effects = aged(effects, seconds)
         if (farm !== last) {
+            effects = effects + cropEffects(last, farm)
             last = farm
             layout = farmLayout(farm)
-            destinations = targets(farm, layout)
         }
-        val seconds = (deltaNanos / NANOS_A_SECOND).toFloat().coerceAtMost(LONGEST_STEP)
+        clock = (clock + seconds).mod(1f)
+        val was = frame.positions
         val snapped = meter.frame(deltaNanos)
-        frame = Frame(farm, layout, step(frame.positions, destinations, seconds, snapped))
+        val positions = step(was, headings(farm, layout, was), seconds, snapped)
+        frame = Frame(farm, layout, positions, poses(farm, was, positions), effects, clock)
     }
 }
 
@@ -94,7 +110,7 @@ private fun DrawScope.drawFarm(atlas: ImageBitmap, measurer: TextMeasurer, frame
     drawGround(atlas)
     translate(left = margin(size.width, WORLD_COLUMNS), top = margin(size.height, WORLD_ROWS)) {
         drawPlots(atlas, frame.layout)
-        drawCrops(atlas, frame.layout)
+        drawCrops(atlas, frame.layout, frame.effects)
         drawWell(atlas)
         drawVillagers(atlas, measurer, frame)
         if (!frame.farm.labelsHidden) drawPathLabels(measurer, frame.layout)
@@ -137,10 +153,15 @@ private fun furrow(column: Int): Sprite =
         else -> Sprite.FURROW_MIDDLE
     }
 
-private fun DrawScope.drawCrops(atlas: ImageBitmap, layout: FarmLayout) {
+private fun DrawScope.drawCrops(
+    atlas: ImageBitmap,
+    layout: FarmLayout,
+    effects: Map<String, Effect>,
+) {
     for (plot in layout.plots) {
         for (crop in plot.crops) {
-            drawSprite(atlas, cropSprite(crop.crop.label, crop.crop.growth), crop.spot)
+            val sprite = cropSprite(crop.crop.label, crop.crop.growth)
+            drawCrop(atlas, sprite, crop.spot, effects[crop.crop.label])
         }
     }
 }
@@ -157,7 +178,12 @@ private fun DrawScope.drawVillagers(atlas: ImageBitmap, measurer: TextMeasurer, 
             .mapNotNull { villager -> frame.positions[villager.id]?.let { villager to it } }
             .sortedBy { (_, spot) -> spot.y }
     for ((villager, spot) in standing) {
-        drawSprite(atlas, villagerSprite(villager.id), spot)
+        val pose = frame.poses[villager.id] ?: Pose.STANDING
+        drawSprite(atlas, villagerSprite(villager.id), bobbed(spot, pose, frame.clock))
+    }
+    // Moods and names after every sprite, so that nobody standing in front paints over one.
+    for ((villager, spot) in standing) {
+        drawMood(measurer, frame.poses[villager.id] ?: Pose.STANDING, spot)
     }
     drawNames(measurer, standing)
 }

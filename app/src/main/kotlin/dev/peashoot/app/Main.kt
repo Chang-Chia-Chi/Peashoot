@@ -4,13 +4,13 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.Checkbox
-import androidx.compose.material.Divider
 import androidx.compose.material.MaterialTheme
+import androidx.compose.material.Tab
+import androidx.compose.material.TabRow
 import androidx.compose.material.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -71,8 +71,10 @@ private const val TICK_MS = 5_000L
  */
 private const val IDLE_MINUTES = 30L
 
-/** The event list is a strip under the farm now; #20 moves it to a tab of its own. */
-private val EVENTS_HEIGHT = 120.dp
+/** The window's two tabs, farm first: the farm is the point, and the lines are how to check it. */
+private val TABS = listOf("farm", "events")
+
+private const val FARM_TAB = 0
 
 fun main() = application {
     val model = remember { AppModel() }
@@ -94,8 +96,8 @@ private fun proxyPort(env: (String) -> String? = System::getenv): Int =
 /**
  * What the window shows and the one thing that fills it: health as it is polled, the feed's lines
  * newest first, the farm every line has been folded into, and whatever the connection is doing. #19
- * made the farm the main view and left the lines in a short pane below it, which #20 moves to a tab
- * of its own; everything worth testing is in [ControlClient], in [reduce] and in the pure halves of
+ * made the farm the main view and #20 put the plain line list behind a tab of its own; everything
+ * worth testing is in [ControlClient], in [reduce] and in the pure halves of
  * `dev.peashoot.app.render`, none of which needs a window.
  */
 class AppModel(private val home: Path = homeDir(), private val port: Int = proxyPort()) {
@@ -250,15 +252,26 @@ private fun summary(farm: FarmState): String {
 @Composable
 private fun Dashboard(model: AppModel) {
     MaterialTheme {
+        // ponytail: leaving the farm tab throws the canvas away and the `FarmScene` it remembers
+        // with it, so coming back puts every villager at its target rather than where it had walked
+        // to — one settled frame, on a tab the eye has just arrived at. Upgrade: hoist the scene up
+        // here, if that frame is ever worth the renderer's per-frame state living in the window.
+        var tab by remember { mutableStateOf(FARM_TAB) }
         Column(Modifier.fillMaxSize().padding(all = 12.dp)) {
             Text(model.status, style = MaterialTheme.typography.subtitle1)
             HealthLines(model.health)
             Text(summary(model.farm))
             ShowPaths(!model.farm.labelsHidden, model::showPaths)
-            FarmCanvas(model.farm, Modifier.fillMaxWidth().weight(1f))
-            Divider(Modifier.padding(vertical = 8.dp))
-            Text("events, newest first", style = MaterialTheme.typography.caption)
-            EventLines(model.lines, Modifier.height(EVENTS_HEIGHT))
+            TabRow(selectedTabIndex = tab) {
+                TABS.forEachIndexed { index, title ->
+                    Tab(selected = index == tab, onClick = { tab = index }, text = { Text(title) })
+                }
+            }
+            if (tab == FARM_TAB) {
+                FarmCanvas(model.farm, Modifier.fillMaxWidth().weight(1f))
+            } else {
+                EventLines(model.lines, Modifier.weight(1f))
+            }
         }
     }
 }
