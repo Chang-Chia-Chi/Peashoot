@@ -25,9 +25,12 @@ import kotlinx.coroutines.flow.filter
  * ArchUnit rule keeps the server out of `core`.
  */
 
-/** Where a response is created; everything under `$RESPONSE_PATH/` is one response's own. */
-private const val RESPONSE_PATH = "/v1/responses"
-private const val RESPONSE_PREFIX = "$RESPONSE_PATH/"
+/**
+ * Everything under the create path is one response's own. The stem itself is [Responses.PATH] and
+ * not a second spelling of it: the surface already owns that constant, and two copies of a protocol
+ * string are two things to keep true.
+ */
+private const val RESPONSE_PREFIX = "${Responses.PATH}/"
 
 private const val STARTING_AFTER = "starting_after"
 private const val STREAM = "stream"
@@ -55,7 +58,7 @@ private const val FROM_THE_START = -1
  * neither holds a stream at all.
  */
 internal fun Exchange.createsResponse(): Boolean =
-    request.method == "POST" && request.path.substringBefore('?') == RESPONSE_PATH
+    request.method == "POST" && request.path.substringBefore('?') == Responses.PATH
 
 /**
  * The response this request asks for the events of, or null when it is not a cursor at all.
@@ -133,9 +136,10 @@ internal fun Exchange.badCursor(): Refusal =
  *
  * ponytail: every frame is parsed as JSON again here, once per cursor, where the Deriver's reader
  * has already parsed the same text for the same response. A cursor over a thousand-event answer is
- * a thousand small parses, which is microseconds against a stream that took seconds to arrive, and
- * it keeps [dev.peashoot.core.Frame] what it is — bytes nothing has to understand. Upgrade: the
- * buffer remembering each frame's number as it appends, if a cursor is ever on a hot path.
+ * a thousand small parses — microseconds each, so milliseconds in all, against a stream that took
+ * seconds to arrive — and it keeps [dev.peashoot.core.Frame] what it is: bytes nothing has to
+ * understand. Upgrade: the buffer remembering each frame's number as it appends, if a cursor is
+ * ever on a hot path.
  */
 internal fun Flow<Frame>.after(sequence: Int): Flow<Frame> = filter { frame ->
     val number = Responses.sequenceNumber(frame)

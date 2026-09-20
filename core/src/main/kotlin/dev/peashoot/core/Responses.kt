@@ -21,7 +21,12 @@ import kotlinx.serialization.json.JsonObject
 object Responses : Surface {
     override val name = "openai-responses"
 
-    private const val PATH = "/v1/responses"
+    /**
+     * Where a response is created, and the stem of every path that belongs to one. Public because
+     * the proxy's cursor path has to tell a create from a get-by-id and a cancel, and a second
+     * spelling of a protocol constant is a second thing to keep true.
+     */
+    const val PATH = "/v1/responses"
 
     /**
      * `POST /v1/responses`, and everything under it: `GET /v1/responses/{id}` with or without

@@ -1,5 +1,6 @@
 package dev.peashoot.proxy
 
+import dev.peashoot.core.Client
 import dev.peashoot.core.Exchange
 import dev.peashoot.core.Frame
 import dev.peashoot.core.FrameParser
@@ -85,7 +86,13 @@ private val hopByHop =
  */
 private val notForwardedToUpstream =
     hopByHop +
-        setOf("host", "content-length", "content-type", "accept-encoding", "x-peashoot-session")
+        setOf(
+            "host",
+            "content-length",
+            "content-type",
+            "accept-encoding",
+            Client.PEASHOOT_SESSION,
+        )
 
 /**
  * Engine-owned response headers. content-type travels as the response's own property; the body is
