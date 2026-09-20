@@ -210,7 +210,15 @@ internal class ResumeRig(
         const val TIMEOUT_MS = 5_000L
         const val POLL_MS = 20L
         const val READ_BUFFER = 4096
-        const val PING_MS = 100L
+        /**
+         * Short enough that the client writer looks at its channel, and so hears its client leave,
+         * while the upstream is held and no frame is coming to wake it — that look is the whole of
+         * how a mid-stream drop is heard here. Not shorter: a keep-alive comment goes into the body
+         * the tests compare byte for byte, so every interval that passes between a joiner draining
+         * the buffer and the upstream being released is a chance to fail a comparison that has
+         * nothing to do with pings.
+         */
+        const val PING_MS = 250L
 
         /**
          * How long a close is given to reach the engine where nothing observable says it has.

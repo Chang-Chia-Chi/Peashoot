@@ -283,12 +283,14 @@ The demo: start an answer, cut the connection, let the client ask again, and rea
 4. What proves nothing was re-billed, in `~/.peashoot/events.jsonl`:
 
    ```
-   grep -E '"exchange.(completed|client_gone)"' ~/.peashoot/events.jsonl | tail -n 4
+   grep -E '"exchange.(completed|client_gone)"' ~/.peashoot/events.jsonl | tail -n 3
    ```
 
-   Three lines tell the story. The `exchange.client_gone` line names the exchange whose client went and how many bytes it had taken. Its `exchange.completed` line says `"clientDisconnected":true` and carries the provider's `usage` and `costUsd` — that call happened and was billed. The next `exchange.completed` line says `"resumed":true`, `"clientDisconnected":false` and `"costUsd":0.0`, with the same `usage` read back out of the same frames: a second answer delivered, and nothing billed for it, exactly as `"replayHit":true` reads on a replay. Two answers, one bill.
+   Three lines tell the story. The `exchange.client_gone` line names the exchange whose client went and how many bytes it had taken. Its `exchange.completed` line says `"clientDisconnected":true` and carries the provider's `usage` — that call happened and was billed. The next `exchange.completed` line says `"resumed":true`, `"clientDisconnected":false` and `"costUsd":0.0`, with the same `usage` read back out of the same frames: a second answer delivered, and nothing billed for it, exactly as `"replayHit":true` reads on a replay. Two answers, one bill.
 
-   `~/.peashoot/peashoot.db` holds both exchanges as their own rows; the resumed one never overwrites the original, which stays the single record of the provider call.
+   `usage` is the honest field to read here, not `costUsd`. On the saved claude.ai login the original's `costUsd` is `null`, because subscription traffic is billed by the plan and not by the token, so the two lines for the one call are priced by different rules: `null` for "we cannot say", `0.0` for "there was nothing to say it about". With an API key the original carries a figure and the contrast is direct.
+
+   `~/.peashoot/peashoot.db` holds both exchanges as their own rows, each under its own id; the resumed one never overwrites the original, which stays the single record of the provider call. The `resumed` flag is on the event line only — the store keeps no column for it — so `events.jsonl` is where that question is asked.
 
 **This demo is written down and has not yet been performed.** What is proven is the seam: `ResumeSeamTest`, `ResumeMatchTest` and `ResumeBoundsTest` run real servers against the fake upstream and assert the whole of it — byte-equal streams across the hand-over, one upstream call, the flags and the cost on the event lines, the window and the cap evicting. What the spike behind this (`docs/research/claude-code-stream-drop-retry.md`) measured against the real provider was an abrupt reset mid-stream and a clean close before the first byte, on one client version, one OS, one model, and a prompt with no tool use. It did **not** establish the laptop-sleep case itself: a connection that goes silent without closing looks open to the proxy until a write to it fails, and what ends it is Claude Code's own byte watchdog rather than anything on this side of the socket. Nor did it establish a drop on a turn that had already produced a `tool_use` block, or what a client does when it is cut a second time. Pulling the cable is the closer of the two to what was measured; sleeping the laptop is the case worth watching and the one still unproven.
 

@@ -30,8 +30,8 @@ import kotlinx.coroutines.withContext
  * reader that is cancelled ends its own collection and nothing else. The owner never waits for a
  * reader.
  *
- * It is `Responses`' to reuse (#27): serving `starting_after=N` is this same read with a filter on
- * it.
+ * It is #27's to reuse from this side of the module boundary: serving the Responses surface's
+ * `starting_after=N` from the proxy's own buffer is this same read with a filter on it.
  */
 internal class FrameLog {
     /** How far the response has got; [failure] only ever comes with [ended]. */
@@ -78,10 +78,16 @@ internal class FrameLog {
         }
 
     /**
-     * Every frame from the first, then each later one as it is appended, then the end. A response
-     * that ended short ends the reader short too, with a failure, because a broken answer must
-     * never pass for a whole one: the resumed exchange is cut where the original was, and its
-     * client sees a stream with no terminal frame, as it would have from the provider.
+     * Every frame from the first, then each later one as it is appended, then the end.
+     *
+     * A reader ends the way the response ended, which is usually not with a failure. An upstream
+     * cut short mostly does not raise at all — the socket ends and the body is simply over — so the
+     * reader completes normally on the frames that arrived, and the only thing that says the answer
+     * was cut is that its surface's terminal frame is missing from them. Judging that is `Resume`'s
+     * and not this class's, which knows nothing of surfaces. A response that did raise, or that was
+     * cancelled under a stopping proxy, ends its readers with that failure instead. Either way the
+     * resumed exchange is cut where the original was, and its client sees a stream with no terminal
+     * frame, as it would have from the provider.
      */
     fun frames(): Flow<Frame> = flow {
         var next = 0

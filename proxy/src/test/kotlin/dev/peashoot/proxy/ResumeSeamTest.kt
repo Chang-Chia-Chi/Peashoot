@@ -234,10 +234,13 @@ class ResumeSeamTest {
         }
 
     /**
-     * The hand-over at every point there is one. The upstream is parked at frame N when the
-     * re-issue arrives, so the buffer holds exactly N frames and the rest come live, and the
-     * release is not waited for: the joiner attaches while frames are still being appended. Every N
-     * must give the fixture back whole — no frame lost at the seam, none sent twice.
+     * The hand-over swept across every point there is one. The upstream is parked at frame N when
+     * the re-issue is posted, so the buffer holds N frames at that moment, and the release is fired
+     * without waiting for the joiner to attach — deliberately, because that is what varies where in
+     * the stream the attach actually lands: sometimes mid-append, sometimes after the end, and at a
+     * different depth each time round. Every N must give the fixture back whole, so no arrival
+     * point loses a frame at the seam or sends one twice. The awaited, certainly-in-flight
+     * hand-over is the first test in this class and the first in `ResumeMatchTest`.
      */
     @Test
     fun `a joiner at any point of an in-flight stream gets exactly the fixture`() =
