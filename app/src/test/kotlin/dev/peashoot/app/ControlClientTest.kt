@@ -6,8 +6,10 @@ import kotlin.test.assertContains
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertIs
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.toList
@@ -26,6 +28,32 @@ class ControlClientTest {
                 assertTrue(health.version.isNotEmpty(), "a version")
                 assertTrue(health.uptimeSeconds >= 0, "an uptime")
                 assertEquals(mapOf("default" to "record"), health.routes)
+            }
+        }
+
+    @Test
+    fun `a GET answers the body, says why it could not, and stays cancelled when cancelled`() =
+        withTestProxy { proxy ->
+            ControlClient(proxy.url, { proxy.token }).use { client ->
+                assertContains(client.get("/exchanges").getOrThrow(), "exchanges")
+                // A refusal is a failure whose message names the status and the path, and never
+                // what came back: a body is the one thing that must not reach a pane by accident.
+                val missing = client.get("/exchanges/01NOSUCHTHING").exceptionOrNull()
+                assertContains(missing?.message.orEmpty(), "404")
+                coroutineScope {
+                    // Started here and now, so it is suspended on the socket when the cancel
+                    // lands. `CancellationException` is an `IllegalStateException`, so a catch
+                    // wide enough to take a missing token would take this too and hand the caller
+                    // a failure to write over whatever replaced it.
+                    var answered: Result<String>? = null
+                    val asking =
+                        launch(start = CoroutineStart.UNDISPATCHED) {
+                            answered = client.get("/exchanges")
+                        }
+                    asking.cancel()
+                    asking.join()
+                    assertNull(answered, "a cancelled call answers nothing at all")
+                }
             }
         }
 

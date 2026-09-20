@@ -1,6 +1,7 @@
 package dev.peashoot.app.render
 
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -14,8 +15,10 @@ import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.translate
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.TextMeasurer
 import androidx.compose.ui.text.rememberTextMeasurer
+import androidx.compose.ui.unit.toSize
 import dev.peashoot.app.farm.FarmState
 import dev.peashoot.app.farm.Villager
 
@@ -28,9 +31,12 @@ private const val LONGEST_STEP = 0.1f
  * `docs/research/canvas-frame-rate.md` §5 measured.
  */
 @Composable
-fun FarmCanvas(farm: FarmState, modifier: Modifier = Modifier) {
+fun FarmCanvas(farm: FarmState, onHit: (Hit) -> Unit, modifier: Modifier = Modifier) {
     val measurer = rememberTextMeasurer(cacheSize = LABEL_CACHE)
     val scene = remember { FarmScene() }
+    // Read here rather than captured by the gesture, for the same reason `latest` is read inside
+    // the frame callback: the handler outlives every frame it might answer for.
+    val report by rememberUpdatedState(onHit)
     // The effect runs once and the farm changes under it, so the latest state has to be read inside
     // the frame callback rather than captured when the effect started.
     val latest by rememberUpdatedState(farm)
@@ -43,7 +49,14 @@ fun FarmCanvas(farm: FarmState, modifier: Modifier = Modifier) {
             }
         }
     }
-    Canvas(modifier) {
+    Canvas(
+        // The tap is answered from the same frame the eye clicked, which is the one `scene.frame`
+        // holds now: the gesture is not a composition, so there is nothing to invalidate and the
+        // farm carries on animating under it.
+        modifier.pointerInput(scene) {
+            detectTapGestures { at -> hitAt(scene.frame, at, size.toSize())?.let(report) }
+        }
+    ) {
         // `scene.frame` is read here, in the draw phase: a new frame then redraws this canvas and
         // nothing around it recomposes — the dashboard's text and event list are untouched 165
         // times a second.
@@ -154,7 +167,8 @@ private fun standing(frame: Frame): List<Pair<Villager, Spot>> =
         .mapNotNull { villager -> frame.positions[villager.id]?.let { villager to it } }
         .sortedBy { (_, spot) -> spot.y }
 
-private fun margin(canvas: Float, tiles: Int): Float =
+/** Internal, not private, because [hitAt] has to undo exactly the offset this puts on. */
+internal fun margin(canvas: Float, tiles: Int): Float =
     ((canvas - tiles * TILE_PX) / 2).toInt().coerceAtLeast(0).toFloat()
 
 /**

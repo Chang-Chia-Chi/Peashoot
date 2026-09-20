@@ -124,7 +124,8 @@ private fun stills(out: File) {
 private fun still(file: File, farm: FarmState) {
     val scene =
         ImageComposeScene(STILL_WIDTH, STILL_HEIGHT, Density(STILL_DENSITY)) {
-            FarmCanvas(farm, Modifier.fillMaxSize())
+            // Nothing clicks a still or a bench: the hit test has a seam test of its own.
+            FarmCanvas(farm, onHit = {}, modifier = Modifier.fillMaxSize())
         }
     try {
         scene.render(0L)
@@ -155,7 +156,8 @@ private fun FrameWindowScope.Bench(onDone: () -> Unit, label: String, out: File)
     }
     FarmCanvas(
         farm,
-        Modifier.fillMaxSize().onSizeChanged { size -> measured.canvas = size },
+        onHit = {},
+        modifier = Modifier.fillMaxSize().onSizeChanged { size -> measured.canvas = size },
     )
 }
 

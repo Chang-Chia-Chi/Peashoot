@@ -58,6 +58,5 @@ private fun cropsOf(directory: String, crops: Int): Map<String, Crop> =
                 label = path,
                 growth = Growth.entries[crop % Growth.entries.size],
                 inspections = 0,
-                lastTouched = null,
             )
     }

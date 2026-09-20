@@ -96,6 +96,42 @@ class ControlClient(
         }
 
     /**
+     * One control API `GET` under [path], as text, or why there is none. Never throws, for the
+     * reason [probe] does not: what asks for these is a click, and a pane with an error in it is a
+     * window that still works — an exception out of a click handler is not.
+     *
+     * The caller parses it. Everything under `/_peashoot/v1/` answers JSON, and what each endpoint
+     * answers is that endpoint's business rather than this class's.
+     */
+    suspend fun get(path: String): Result<String> {
+        // The token read is its own `runCatching` — as it is in [connect] — and the request is
+        // caught on IOException alone. Widening that catch to IllegalStateException would swallow
+        // cancellation with it, since `CancellationException` is one: a load cancelled by the next
+        // click would come back as a failure and write its message over the newer load's.
+        val bearer = runCatching {
+            "Bearer ${token()}"
+        }
+            .getOrElse {
+                return Result.failure(it)
+            }
+        return try {
+            val response =
+                client.get("$baseUrl$CONTROL_BASE$path") {
+                    header(HttpHeaders.Authorization, bearer)
+                }
+            // Read either way, as [probe] reads it, so the connection is released rather than held
+            // until something collects it — and then deliberately dropped on a refusal: a
+            // refusal's detail is about the request, and the one thing a pane must never put on
+            // screen or in a log is what came back.
+            val body = response.bodyAsText()
+            if (response.status == HttpStatusCode.OK) Result.success(body)
+            else Result.failure(IOException("the proxy answered ${response.status} to $path"))
+        } catch (e: IOException) {
+            Result.failure(e)
+        }
+    }
+
+    /**
      * Every line after [since], and the feed's connection as it changes, until the collector stops.
      * A dropped feed or a restarted proxy reconnects from the last id it delivered, so the ids
      * continue where they left off and no line goes missing. A refused token is the one failure
