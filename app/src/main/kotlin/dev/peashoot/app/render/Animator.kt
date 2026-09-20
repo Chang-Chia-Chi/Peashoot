@@ -106,16 +106,23 @@ internal fun headings(
     }
 }
 
-/** Everyone's pose this frame: walking until they arrive, and then whatever the reducer says. */
+/**
+ * Everyone's pose this frame: walking while they are moving, and whatever the reducer says once
+ * they have stopped.
+ *
+ * Moving and not "off its target", which is the same thing for everyone but a helper and wrong for
+ * a helper: one trailing a walking parent aims at where that parent was last frame, so its target
+ * is exactly one step away and it lands on it every frame — on its target, and plainly walking. So
+ * arrival is [was] against [now], which needs no epsilon, is right under a snapped frame too, and
+ * costs a villager the farm has only just heard of one frame of walking before it settles.
+ */
 internal fun poses(
     state: FarmState,
-    positions: Map<String, Spot>,
-    headings: Map<String, Heading>,
+    was: Map<String, Spot>,
+    now: Map<String, Spot>,
 ): Map<String, Pose> =
     state.villagers.mapValues { (id, villager) ->
-        // `toward` ends exactly on the target rather than near it, so this is an honest equality
-        // and not a distance under some epsilon nobody would know how to pick.
-        poseOf(villager.activity, arrived = positions[id] == headings[id]?.target)
+        poseOf(villager.activity, arrived = was[id] == now[id])
     }
 
 /**

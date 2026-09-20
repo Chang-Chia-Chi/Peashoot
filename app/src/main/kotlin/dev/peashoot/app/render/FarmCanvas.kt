@@ -90,18 +90,17 @@ internal class FarmScene {
      */
     fun advance(farm: FarmState, deltaNanos: Long) {
         val seconds = (deltaNanos / NANOS_A_SECOND).toFloat().coerceAtMost(LONGEST_STEP)
-        var popping = aged(effects, seconds)
+        effects = aged(effects, seconds)
         if (farm !== last) {
-            popping = popping + cropEffects(last, farm)
+            effects = effects + cropEffects(last, farm)
             last = farm
             layout = farmLayout(farm)
         }
-        effects = popping
         clock = (clock + seconds).mod(1f)
-        val aim = headings(farm, layout, frame.positions)
+        val was = frame.positions
         val snapped = meter.frame(deltaNanos)
-        val positions = step(frame.positions, aim, seconds, snapped)
-        frame = Frame(farm, layout, positions, poses(farm, positions, aim), popping, clock)
+        val positions = step(was, headings(farm, layout, was), seconds, snapped)
+        frame = Frame(farm, layout, positions, poses(farm, was, positions), effects, clock)
     }
 }
 

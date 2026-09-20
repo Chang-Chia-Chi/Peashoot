@@ -29,8 +29,15 @@ private const val LINES = 20
  * Issue #20's fourth criterion: heavy animation must not stall the control client. The renderer and
  * the feed share one thread by design — `AppModel` says so on [AppModel.tickFarm], and a Compose
  * Desktop frame callback runs on the same UI thread the collector does — so the only thing keeping
- * the feed moving is that a frame hands the thread back when it is done. This drives real frames
- * over a real farm against a real proxy and asserts every line still arrives.
+ * the feed moving is that a frame hands the thread back when it is done.
+ *
+ * What this proves, exactly: that [FarmScene.advance]'s per-frame work over a 200-entity farm hands
+ * the thread back, and that frames really ran while a real feed from a real proxy delivered every
+ * one of its lines. A frame loop that blocked — on a lock, on the disk, on a `runBlocking` of its
+ * own — fails it. What it does not prove is that *drawing* is cheap: nothing here loads Skia, and
+ * no test in this repo does, because a headless CI box is a poor place to bet on a GPU. The draw
+ * cost is bounded instead by the bench in `docs/research/canvas-frame-rate.md` §12, and a live
+ * window is the check by eye.
  *
  * `runBlocking` by way of [withTestProxy], like its neighbours: every wait here is on a socket,
  * where a virtual clock would fire the timeouts before the bytes came.
@@ -61,10 +68,14 @@ class FarmStallTest {
                         yield()
                     }
                 }
+                val before = frames
                 repeat(LINES) { proxy.emit("exchange.started") }
                 until { model.lines.size >= LINES }
                 assertEquals(LINES, model.lines.size, "the feed lost a line to the animation")
-                assertTrue(frames > TURN_FRAMES, "the renderer never got a frame in, at $frames")
+                assertTrue(
+                    frames > before,
+                    "not one frame ran while the lines were arriving, at $frames",
+                )
                 // And the farm was really moving while all that arrived, rather than settled.
                 val was = scene.frame.positions
                 assertTrue(was.isNotEmpty(), "the renderer placed nobody")

@@ -206,11 +206,13 @@ private fun drawCalls(farm: FarmState, canvas: IntSize): Int {
     val ground = (canvas.width / TILE_PX + 1) * (canvas.height / TILE_PX + 1)
     val furrows = layout.plots.size * PLOT_ROWS * PLOT_COLUMNS
     val crops = layout.plots.sumOf { it.crops.size }
-    // A villager is a sprite and a name; names are not paths, so they are always drawn. One at the
-    // well carries a mood over its head as well, once it has arrived. A crop part-way through
-    // growing costs nothing extra — the pop is the same `drawImage` with a bigger destination —
-    // and an inspection costs one `drawRect` for the half second it lasts, which no steady state
-    // of this bench holds.
+    // A villager is a sprite and a name; names are not paths, so they are always drawn. The mood
+    // term is an upper bound and not a count: it is every villager bound for the well, where only
+    // the ones that have got there carry a `...` or a `zzz`, because arrival is a position and this
+    // works from the state alone. It is exact in the steady state the bench measures, where they
+    // have all arrived. A crop part-way through growing costs nothing extra — the pop is the same
+    // `drawImage` with a bigger destination — and an inspection costs one `drawRect` for the half
+    // second it lasts, which no steady state of this bench holds.
     val villagers = farm.villagers.size * 2 + farm.villagers.values.count { it.activity in MOODY }
     val labels = if (farm.labelsHidden) 0 else crops + layout.plots.size + BADGE_CALLS
     val marker = if (layout.hiddenFields > 0) 1 else 0

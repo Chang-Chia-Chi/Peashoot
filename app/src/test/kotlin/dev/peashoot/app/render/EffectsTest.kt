@@ -11,6 +11,9 @@ import kotlin.test.assertTrue
 private const val A_FIELD = "src/field0"
 private const val A_CROP = "src/field0/File0.kt"
 
+/** More files than one turn plausibly touches, so that nothing quietly caps the diff again. */
+private const val A_BIG_FIELD = 40
+
 /**
  * What the crops do between two reducer states: the diff and the ageing, both pure, so that a pop
  * can be tested without a window. The reducer is not asked to hold any of this — a crop that has
@@ -45,12 +48,24 @@ class EffectsTest {
     }
 
     @Test
-    fun `a farm that arrives all at once pops nothing rather than popping everything`() {
-        val before = syntheticFarm(fields = 2, crops = MOST_AT_ONCE + 1)
-        val after = syntheticFarm(fields = 3, crops = MOST_AT_ONCE + 1)
-        assertTrue(
-            cropEffects(before, after).isEmpty(),
-            "a backfill folded into one frame is not a farm at work",
+    fun `a crop both edited and read in one turn pops rather than ringing`() {
+        val before = oneCrop(Growth.SEED, inspections = 0)
+        val after = oneCrop(Growth.SPROUT, inspections = 1)
+        assertEquals(
+            EffectKind.GROW,
+            cropEffects(before, after).getValue(A_CROP).kind,
+            "one tile cannot say two things at once, and growth is the news",
+        )
+    }
+
+    @Test
+    fun `a whole field arriving at once pops every crop of it`() {
+        val before = syntheticFarm(fields = 2, crops = A_BIG_FIELD)
+        val after = syntheticFarm(fields = 3, crops = A_BIG_FIELD)
+        assertEquals(
+            A_BIG_FIELD,
+            cropEffects(before, after).size,
+            "a turn that touched a lot of files still shows every one of them growing",
         )
     }
 

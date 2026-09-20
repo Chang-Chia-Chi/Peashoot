@@ -14,18 +14,6 @@ import dev.peashoot.app.farm.FarmState
  */
 internal const val EFFECT_SECONDS = 0.5f
 
-/**
- * How many crops may change in one step and still be a farm at work.
- *
- * ponytail: a feed backfilled into one frame — a window opening onto a proxy that has been running
- * all day — would otherwise pop every crop in the repository at once, which reads as a glitch and
- * not as growth, so past this the whole diff is dropped rather than shown. The diff is against the
- * last farm *drawn* and not the last one reduced, so what it counts is every turn that landed
- * between two frames; the cost is that a burst that big shows none of its crops growing. Upgrade:
- * pop them in sequence, a few frames apart, if a burst that large turns out to be worth watching.
- */
-internal const val MOST_AT_ONCE = 8
-
 /** How much bigger a crop is at the top of its pop: half a tile again, and back down from there. */
 private const val POP_SCALE = 0.5f
 
@@ -48,17 +36,21 @@ internal data class Effect(val kind: EffectKind, val age: Float = 0f)
  * since a crop's field is its path's directory. Pure, and the whole of the renderer's knowledge of
  * what a turn did: the reducer keeps the crop's stage, not the fact that it moved.
  *
- * ponytail: an inspection plays at the crop and not at the villager that read it. The event line
- * names the tools a turn used but not which villager is standing where by the time the window folds
- * it in — a completed turn's villager is walking home within milliseconds — so sending someone to
- * the tile would be a guess. Upgrade: the reducer records the inspector on the crop, and the
- * renderer walks that villager over.
+ * A crop both edited and read in one turn pops and does not ring: one tile cannot say two things at
+ * once, and growth is the news.
+ *
+ * ponytail: an inspection plays at the crop and not at the villager that read it. Recording who
+ * read a file is one field and not a guess — `completed` has the villager in hand when it grows
+ * that turn's crops — so what stops it is the timing: the same line sets that villager RETURNING
+ * and its next `started` walks it back to the well within milliseconds, and a detour to the tile
+ * would be fighting both. Upgrade: the reducer records the inspector, and the renderer walks that
+ * villager over when there is time in the turn for the walk.
  */
 internal fun cropEffects(before: FarmState?, after: FarmState): Map<String, Effect> {
-    // The first farm a window sees is not something that happened: it is everything that already
-    // had, which is the backfill case below by another name.
+    // The first farm a window sees is not something that happened but everything that already had,
+    // which is also every crop a window opening onto a running proxy would pop at once.
     if (before == null) return emptyMap()
-    val changed = buildMap {
+    return buildMap {
         for ((directory, field) in after.fields) {
             val had = before.fields[directory]?.crops.orEmpty()
             for ((path, crop) in field.crops) {
@@ -70,7 +62,6 @@ internal fun cropEffects(before: FarmState?, after: FarmState): Map<String, Effe
             }
         }
     }
-    return if (changed.size > MOST_AT_ONCE) emptyMap() else changed
 }
 
 /** Every effect one frame older, and the ones that have run their course gone. */

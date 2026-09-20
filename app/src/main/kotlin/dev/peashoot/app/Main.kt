@@ -252,10 +252,10 @@ private fun summary(farm: FarmState): String {
 @Composable
 private fun Dashboard(model: AppModel) {
     MaterialTheme {
-        // Leaving the farm tab throws the canvas away and the `FarmScene` it remembers with it, so
-        // coming back puts every villager at its target rather than where it had walked to. That is
-        // one settled frame on a tab the eye has just arrived at, and hoisting the scene up here
-        // would put the renderer's per-frame state in the window to avoid it.
+        // ponytail: leaving the farm tab throws the canvas away and the `FarmScene` it remembers
+        // with it, so coming back puts every villager at its target rather than where it had walked
+        // to — one settled frame, on a tab the eye has just arrived at. Upgrade: hoist the scene up
+        // here, if that frame is ever worth the renderer's per-frame state living in the window.
         var tab by remember { mutableStateOf(FARM_TAB) }
         Column(Modifier.fillMaxSize().padding(all = 12.dp)) {
             Text(model.status, style = MaterialTheme.typography.subtitle1)

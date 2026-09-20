@@ -164,6 +164,52 @@ class AnimatorTest {
     }
 
     @Test
+    fun `a helper trailing a walking parent is walking, not standing about`() {
+        val state = helped(Activity.RETURNING)
+        val layout = farmLayout(state)
+        // The parent starts at the well with its home to walk to, and the helper starts exactly
+        // where trailing it puts it. From there the two are in lockstep: the helper's target is
+        // one step away every frame and it lands on it every frame, which is precisely the case a
+        // pose judged by "am I on my target" calls standing still.
+        val beside = headings(state, layout, mapOf("s" to WELL)).getValue("s/help").entrance
+        var positions = mapOf("s" to WELL, "s/help" to beside)
+        // One frame for the parent to set off: a helper aims at where its parent *was*, so its
+        // first frame is the one frame it genuinely does stand still.
+        positions = step(positions, headings(state, layout, positions), A_FRAME, false)
+        repeat(FRAMES) { frame ->
+            val aim = headings(state, layout, positions)
+            val moved = step(positions, aim, A_FRAME, false)
+            // The precondition, and the whole point: the helper is on its target every frame, to
+            // within the last bit of a `Float` on a diagonal. A pose judged against the target
+            // would call this standing still, or flicker as the rounding fell either way.
+            assertTrue(
+                distance(moved.getValue("s/help"), aim.getValue("s/help").target) < A_WHISKER,
+                "the helper fell out of lockstep, so this no longer covers the case it was for",
+            )
+            assertEquals(
+                Pose.WALKING,
+                poses(state, positions, moved).getValue("s/help"),
+                "the helper slid along standing still on frame $frame",
+            )
+            positions = moved
+        }
+    }
+
+    @Test
+    fun `a villager that has stopped at the well is waiting the frame after it arrives`() {
+        val state = helped(Activity.WALKING_TO_WELL)
+        val layout = farmLayout(state)
+        val aim = headings(state, layout, emptyMap())
+        val home = mapOf("s" to layout.homes.getValue("s"))
+        val setOff = step(home, aim, A_FRAME, snapped = false)
+        assertEquals(Pose.WALKING, poses(state, home, setOff).getValue("s"), "it set off")
+        val arrived = step(setOff, aim, SECOND * 10, snapped = false)
+        assertEquals(Pose.WALKING, poses(state, setOff, arrived).getValue("s"), "it was still on")
+        val settled = step(arrived, aim, A_FRAME, snapped = false)
+        assertEquals(Pose.WAITING, poses(state, arrived, settled).getValue("s"), "it has stopped")
+    }
+
+    @Test
     fun `the pose is the walk, the wait, the rest, and standing about`() {
         assertEquals(Pose.WALKING, poseOf(Activity.WALKING_TO_WELL, arrived = false))
         assertEquals(Pose.WALKING, poseOf(Activity.RETURNING, arrived = false))
