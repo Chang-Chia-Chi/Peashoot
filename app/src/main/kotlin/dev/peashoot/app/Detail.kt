@@ -11,8 +11,10 @@ import dev.peashoot.core.text
 import io.ktor.http.encodeURLParameter
 import java.util.Locale
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
@@ -25,20 +27,14 @@ import kotlinx.serialization.json.longOrNull
 // a JSON answer in, rows out, with no window and no socket, which is the seam #22 is tested at.
 
 /**
- * How many of a session's exchanges the pane asks for: the endpoint's own default, which is a
- * screenful several times over.
+ * How much of a body the viewer shows. What is past it is counted and not shown.
  *
- * ponytail: one page, and `nextCursor` is ignored, so a session past this many turns shows its
- * newest [TIMELINE_LIMIT]. Upgrade: pass the cursor back when someone scrolls to the end.
- */
-private const val TIMELINE_LIMIT = 50
-
-/**
- * How much of a body the viewer shows.
+ * This caps what is *kept*, not what arrives: the whole answer is a string and a parsed tree for as
+ * long as it takes to read the one field out of it, which is why that parse is not done on the
+ * window's thread. Only the one body being looked at is held after that.
  *
- * ponytail: the rest is counted and not kept — a body is the one thing here that can be megabytes,
- * and only the one being looked at is held at all. Upgrade: a range request, if the control API
- * ever serves one.
+ * ponytail: the proxy has no way to be asked for part of a body. Upgrade: a range request, if the
+ * control API ever serves one.
  */
 private const val BODY_CAP = 64 * 1024
 
@@ -91,18 +87,23 @@ data class ExchangeRow(
  * with whatever [heard] has for that exchange id folded onto it. The endpoint decides which rows
  * there are and in what order; the feed only fills in what a summary row does not carry.
  *
- * An answer this cannot read at all is an empty list rather than a throw: it arrived over a socket
- * from another process, and a pane that shows nothing is better than a window that falls over.
+ * Null means the answer could not be read at all, which is a different thing from a session with
+ * nothing in it and must not be reported as one: "this session has done nothing" is the one wrong
+ * thing to say about a truncated answer. It is news rather than a throw, because the answer came
+ * over a socket from another process. A row naming no id is dropped rather than kept under a blank
+ * one, since the list is drawn keyed by it and two blanks would take the window down.
  */
-internal fun exchangeRows(body: String, heard: (String) -> JsonObject?): List<ExchangeRow> =
+internal fun exchangeRows(body: String, heard: (String) -> JsonObject?): List<ExchangeRow>? =
     runCatching {
+        // `exchanges` has to be there and has to be an array, or this is not the endpoint
+        // answering: absent or of another shape is unreadable, not a session with nothing in it.
         (Json.parseToJsonElement(body) as JsonObject)
-            .let { it["exchanges"] as? JsonArray }
-            .orEmpty()
+            .let { it["exchanges"] as JsonArray }
             .filterIsInstance<JsonObject>()
             .map { rowOf(it, heard(it["id"].text().orEmpty())) }
+            .filter { it.id.isNotEmpty() }
     }
-    .getOrDefault(emptyList())
+    .getOrNull()
 
 /** One summary row, and the completed line for it when the window heard one. */
 private fun rowOf(summary: JsonObject, line: JsonObject?): ExchangeRow =
@@ -269,7 +270,11 @@ class PaneModel {
                 .get("/exchanges/${id.encodeURLParameter()}")
                 .fold(
                     { answer ->
-                        body = bodyText(answer)
+                        // Off this thread: the feed collector, the health poll and the frame
+                        // loop are all on it, and an exchange of a few megabytes would stall
+                        // every one of them for as long as the parse took.
+                        val text = withContext(Dispatchers.Default) { bodyText(answer) }
+                        body = text
                         note = null
                     },
                     { note = "that exchange's body could not be read: ${it.message}" },
@@ -295,13 +300,22 @@ class PaneModel {
             return
         }
         note = "asking the proxy for $session's exchanges"
+        // ponytail: one page, at the endpoint's own default, and `nextCursor` is ignored, so a
+        // session past a page shows its newest. Upgrade: pass the cursor back when someone
+        // scrolls to the end.
         loading = scope?.launch {
             asking
-                .get("/exchanges?session=${session.encodeURLParameter()}&limit=$TIMELINE_LIMIT")
+                .get("/exchanges?session=${session.encodeURLParameter()}")
                 .fold(
                     { answer ->
-                        rows.addAll(exchangeRows(answer, lines::get))
-                        note = if (rows.isEmpty()) "no exchanges for $session yet" else null
+                        val read = exchangeRows(answer, lines::get)
+                        rows.addAll(read.orEmpty())
+                        note =
+                            when {
+                                read == null -> "that session's exchanges came back unreadable"
+                                read.isEmpty() -> "no exchanges for $session yet"
+                                else -> null
+                            }
                     },
                     { note = "that session's exchanges could not be read: ${it.message}" },
                 )

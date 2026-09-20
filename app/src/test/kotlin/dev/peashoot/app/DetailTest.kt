@@ -42,7 +42,7 @@ class DetailTest {
     @Test
     fun `a row is the endpoint's, with the event line filling in what a summary cannot carry`() {
         val heard = mapOf("01EX01" to json(A_LINE))
-        val rows = exchangeRows(TWO_ROWS, heard::get)
+        val rows = checkNotNull(exchangeRows(TWO_ROWS, heard::get))
         // The endpoint decides which rows there are and in what order; the feed only fills in.
         assertEquals(listOf("01EX02", "01EX01"), rows.map { it.id })
         val filled = rows.last()
@@ -60,7 +60,7 @@ class DetailTest {
 
     @Test
     fun `an exchange the window never heard shows what the endpoint knows and no more`() {
-        val bare = exchangeRows(TWO_ROWS) { null }.first()
+        val bare = checkNotNull(exchangeRows(TWO_ROWS) { null }).first()
         assertEquals("01EX02", bare.id)
         assertEquals("agent-two", bare.agent)
         assertEquals(200, bare.status)
@@ -75,10 +75,26 @@ class DetailTest {
     }
 
     @Test
-    fun `an answer this window cannot read is no rows rather than a throw`() {
-        assertTrue(exchangeRows("not json at all") { null }.isEmpty())
-        assertTrue(exchangeRows("""{"exchanges":"a string"}""") { null }.isEmpty())
-        assertTrue(exchangeRows("""{"nextCursor":null}""") { null }.isEmpty())
+    fun `an unreadable answer is told apart from a session that has done nothing`() {
+        // Null, not empty: the pane says "this session has done nothing" for an empty list, and
+        // saying that about a truncated answer would be the one wrong thing to tell someone.
+        assertNull(exchangeRows("not json at all") { null })
+        // `exchanges` of another shape, or missing altogether, is not the endpoint answering.
+        assertNull(exchangeRows("""{"exchanges":"a string"}""") { null })
+        assertNull(exchangeRows("""{"nextCursor":null}""") { null })
+        // A well-formed answer with an empty list really is a session with nothing in it.
+        assertEquals(emptyList(), exchangeRows("""{"exchanges":[],"nextCursor":null}""") { null })
+    }
+
+    @Test
+    fun `rows naming no id are dropped, because the list is drawn keyed by it`() {
+        // Two rows keyed on the same blank id is an IllegalArgumentException out of LazyColumn,
+        // which is a window falling over — the one thing these panes exist not to do.
+        val nameless =
+            """{"exchanges":[{"receivedAt":"2026-09-20T09:00:20Z"},
+                {"receivedAt":"2026-09-20T09:00:10Z"},
+                {"id":"01EX07","receivedAt":"2026-09-20T09:00:00Z"}]}"""
+        assertEquals(listOf("01EX07"), checkNotNull(exchangeRows(nameless) { null }).map { it.id })
     }
 
     @Test

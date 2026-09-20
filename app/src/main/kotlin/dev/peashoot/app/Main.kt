@@ -145,26 +145,25 @@ class AppModel(private val home: Path = homeDir(), private val port: Int = proxy
     suspend fun watch() {
         ControlClient(url, { readToken(home) }).use { client ->
             if (!ensureProxy(client)) return
-            try {
-                coroutineScope {
-                    val polling = launch { pollHealth(client) }
-                    val ticking = launch { tickFarm() }
-                    panes.attach(this, client)
-                    client.events(lastId).collect { feed ->
-                        when (feed) {
-                            is Feed.State -> status = feed.detail
-                            is Feed.Line -> add(feed)
-                        }
+            coroutineScope {
+                val polling = launch { pollHealth(client) }
+                val ticking = launch { tickFarm() }
+                panes.attach(this, client)
+                client.events(lastId).collect { feed ->
+                    when (feed) {
+                        is Feed.State -> status = feed.detail
+                        is Feed.Line -> add(feed)
                     }
-                    // The feed only ends when another attempt could not help, so there is nothing
-                    // left to poll for, or to age; without this the scope would wait on them for
-                    // ever.
-                    polling.cancel()
-                    ticking.cancel()
                 }
-            } finally {
-                // The client is about to be closed under the panes: a pane asking a closed client
-                // is a failure nobody could have read, so it is given nothing to ask instead.
+                // The feed only ends when another attempt could not help, so there is nothing
+                // left to poll for, or to age; without this the scope would wait on them for ever.
+                polling.cancel()
+                ticking.cancel()
+                // Inside the scope, not in a `finally` around it: a pane's load is a child of this
+                // scope, so a `finally` outside would not run until that load had finished anyway
+                // — and the client is built with no request timeout, so a body fetch in flight
+                // when the feed ends for good would hold the window here with nothing to cancel
+                // it. Detaching here cancels it, and gives the panes nothing to ask afterwards.
                 panes.detach()
             }
         }
@@ -240,6 +239,9 @@ class AppModel(private val home: Path = homeDir(), private val port: Int = proxy
      */
     fun showPaths(show: Boolean) {
         farm = farm.copy(labelsHidden = !show)
+        // Turning the toggle off drops the body being read rather than only ceasing to draw it: a
+        // body is nothing but paths, and it must not be one click from being on screen again.
+        if (!show) panes.hideBody()
     }
 
     /**

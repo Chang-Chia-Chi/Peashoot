@@ -41,6 +41,19 @@ class HitTest {
     }
 
     @Test
+    fun `the transform is the draw phase's, in pixels written down rather than computed`() {
+        // Every other case here builds its click from the production `margin`, which would pass
+        // just as happily if `margin` were wrong. These are worked out by hand: the world is
+        // 26 x 16 tiles of 48 px, so on a 1400 x 900 canvas the farm starts at (76, 66), and the
+        // first plot's first crop is the tile at (1, 3) — (76 + 48, 66 + 144).
+        assertEquals(Offset(76f, 66f), ROOMY.at(0f, 0f))
+        assertEquals(
+            Hit.OnCrop("src/field0/File0.kt"),
+            hitAt(frame(), Offset(124f, 210f), ROOMY),
+        )
+    }
+
+    @Test
     fun `the whole tile answers, and the tile past it does not`() {
         val frame = frame()
         val crop = frame.layout.plots.first().crops.first()

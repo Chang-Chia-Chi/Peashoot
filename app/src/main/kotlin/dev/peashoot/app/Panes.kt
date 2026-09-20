@@ -58,6 +58,13 @@ fun DetailPane(farm: FarmState, panes: PaneModel, modifier: Modifier = Modifier)
                 is Hit.OnVillager -> VillagerTimeline(panes, farm.labelsHidden, Modifier.weight(1f))
                 is Hit.OnCrop -> CropHistory(farm, hit.path, Modifier.weight(1f))
             }
+            // Under the list rather than inside it: a `LazyListScope` block is not a composable,
+            // and the one body being looked at is the pane's business and not a row's.
+            //
+            // Gated here as well as on the button that opens it. Gating the button alone left an
+            // open body on screen when the toggle went off — paths and prompts in full, with the
+            // badge gone, which is the screenshot the toggle exists to prevent.
+            if (!farm.labelsHidden) panes.body?.let { BodyViewer(it, panes::hideBody) }
         }
     }
 }
@@ -81,7 +88,6 @@ private fun VillagerTimeline(panes: PaneModel, hidden: Boolean, modifier: Modifi
         items(panes.rows, key = { it.id }) { row ->
             TimelineRow(row, hidden, onBody = { panes.showBody(row.id, hidden) })
         }
-        panes.body?.let { text -> item { BodyViewer(text, panes::hideBody) } }
     }
 }
 

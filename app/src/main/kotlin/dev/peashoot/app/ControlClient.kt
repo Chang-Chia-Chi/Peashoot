@@ -119,9 +119,12 @@ class ControlClient(
                 client.get("$baseUrl$CONTROL_BASE$path") {
                     header(HttpHeaders.Authorization, bearer)
                 }
-            // Deliberately not the problem body: a refusal's detail is about the request, and the
-            // one thing a pane must never put on screen or in a log is what came back.
-            if (response.status == HttpStatusCode.OK) Result.success(response.bodyAsText())
+            // Read either way, as [probe] reads it, so the connection is released rather than held
+            // until something collects it — and then deliberately dropped on a refusal: a
+            // refusal's detail is about the request, and the one thing a pane must never put on
+            // screen or in a log is what came back.
+            val body = response.bodyAsText()
+            if (response.status == HttpStatusCode.OK) Result.success(body)
             else Result.failure(IOException("the proxy answered ${response.status} to $path"))
         } catch (e: IOException) {
             Result.failure(e)

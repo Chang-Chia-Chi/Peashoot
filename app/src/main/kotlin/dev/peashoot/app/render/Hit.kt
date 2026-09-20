@@ -54,6 +54,13 @@ private fun cropAt(layout: FarmLayout, x: Float, y: Float): Hit? =
         .firstOrNull { covers(it.spot, x, y) }
         ?.let { Hit.OnCrop(it.crop.label) }
 
-/** A sprite fills the tile its spot names, which is where `drawSprite` puts it at scale 1. */
+/**
+ * A sprite fills the tile its spot names, which is where `drawSprite` puts it at scale 1.
+ *
+ * The walk's bob and a crop's pop are deliberately not undone: both move a sprite a pixel or two
+ * off its tile for a moment, so the very top of a walking villager and the overhang of a popping
+ * crop are not clickable. Undoing them would mean hit-testing a moving target to win back two
+ * pixels of a forty-eight pixel tile, and the body of the sprite answers either way.
+ */
 private fun covers(spot: Spot, x: Float, y: Float): Boolean =
     x >= spot.x && x < spot.x + 1 && y >= spot.y && y < spot.y + 1

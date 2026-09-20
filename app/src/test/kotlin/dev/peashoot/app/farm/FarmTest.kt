@@ -51,7 +51,10 @@ class FarmTest {
         assertEquals(listOf(0, 1, 1, 2), states.map { it.crops().size })
         assertNull(states.last().crop("docs/notes.md"))
         assertEquals(listOf("src/main", "src/test"), states.last().fields.keys.sorted())
-        assertEquals("2026-09-19T09:00:12Z", states.last().crop("src/main/App.kt")?.lastTouched)
+        assertEquals(
+            "2026-09-19T09:00:12Z",
+            states.last().crop("src/main/App.kt")?.touches?.last()?.ts,
+        )
     }
 
     @Test
@@ -119,14 +122,16 @@ class FarmTest {
             states.map { it.crop("docs/plan.md")?.growth },
         )
         assertEquals(listOf("docs", "src/main"), last.fields.keys.sorted())
-        // The last line of that file carries no `ts` at all: the crops keep the one they had
-        // rather than being stamped blank, and everything else about them still happens.
-        assertEquals("2026-09-19T12:00:20Z", last.crop("src/main/App.kt")?.lastTouched)
-        assertEquals("2026-09-19T12:00:20Z", last.crop("docs/plan.md")?.lastTouched)
+        // The last line of that file carries no `ts` at all. Its touches are kept all the same,
+        // with no time rather than a neighbour's, and the times already on the crop stand.
+        val app = checkNotNull(last.crop("src/main/App.kt")).touches
+        assertNull(app.last().ts, "the last line named no time and does not borrow one")
+        assertEquals("2026-09-19T12:00:20Z", app.last { it.ts != null }.ts)
+        assertEquals("2026-09-19T12:00:20Z", last.crop("docs/plan.md")?.touches?.first()?.ts)
         assertEquals(1, last.crop("docs/plan.md")?.inspections)
-        // A crop that line planted has no timestamp to keep, and says so rather than saying "".
+        // A crop that line planted has no timestamp at all, and says so rather than saying "".
         assertEquals(Growth.SEED, last.crop("docs/new.md")?.growth)
-        assertNull(last.crop("docs/new.md")?.lastTouched)
+        assertNull(last.crop("docs/new.md")?.touches?.single()?.ts)
         assertEquals(810, last.villager(DELTA).water)
     }
 
@@ -147,7 +152,6 @@ class FarmTest {
         )
         // A Grep names a path and touches nothing, so it leaves no crop and no touch.
         assertEquals(listOf("src/main/Shared.kt"), last.crops().map { it.label })
-        assertEquals("2026-09-20T09:00:18Z", crop.lastTouched)
     }
 
     @Test

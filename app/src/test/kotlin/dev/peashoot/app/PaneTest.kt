@@ -119,6 +119,11 @@ class PaneTest {
                 model.panes.showBody("01EX11", hidden = model.farm.labelsHidden)
                 until { model.panes.body != null }
                 assertContains(model.panes.body.orEmpty(), "claude-opus-4-1")
+                // Turning the toggle back off drops it. Ceasing to draw it would not be enough:
+                // the pane would be one click from putting every path in it back on screen with
+                // the badge gone, which is the screenshot the toggle exists to prevent.
+                model.showPaths(false)
+                assertNull(model.panes.body, "the toggle going off drops the body being read")
                 model.panes.hideBody()
                 assertNull(model.panes.body, "only the body being looked at is held")
                 watching.cancel()
@@ -136,7 +141,8 @@ class PaneTest {
                 model.panes.showBody("01NOSUCHEXCHANGE", hidden = false)
                 until { model.panes.note?.contains("could not be read") == true }
                 assertNull(model.panes.body)
-                // A session with nothing in it is an empty timeline and a line saying so.
+                // A session with nothing in it is an empty timeline and a line saying so — and
+                // that line is only ever said about an answer this window actually read.
                 model.panes.select(Hit.OnVillager("sess-nobody"))
                 until { model.panes.note?.contains("no exchanges") == true }
                 assertTrue(model.panes.rows.isEmpty())

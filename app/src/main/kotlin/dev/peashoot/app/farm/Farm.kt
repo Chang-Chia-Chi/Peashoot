@@ -172,17 +172,13 @@ data class Crop(
     val growth: Growth,
     /** Reads of this file: an inspection, which advances nothing. */
     val inspections: Int,
-    /** Every turn that touched it, oldest first, up to [TOUCH_HISTORY]: #22's pane reads this. */
+    /**
+     * Every turn that touched it, oldest first, up to [TOUCH_HISTORY]: #22's pane reads this. A
+     * touch whose line carried no `ts` is kept with none rather than dropped or stamped with a
+     * neighbour's time — the turn happened, and a made-up time is worse than an admitted gap.
+     */
     val touches: List<Touch> = emptyList(),
 ) {
-    /**
-     * When it was last touched, as the event line spelled it. The newest touch that named a time
-     * and not simply the newest: a line whose `ts` is missing or is not a string must leave the
-     * crop no worse, and no timestamp is worse than a stale one.
-     */
-    val lastTouched: String?
-        get() = touches.lastOrNull { it.ts != null }?.ts
-
     /** One more turn on this crop's history, the oldest dropped once it is [TOUCH_HISTORY] long. */
     internal fun touched(villager: String, ts: String?, kind: TouchKind): Crop =
         copy(touches = (touches + Touch(villager, ts, kind)).takeLast(TOUCH_HISTORY))
