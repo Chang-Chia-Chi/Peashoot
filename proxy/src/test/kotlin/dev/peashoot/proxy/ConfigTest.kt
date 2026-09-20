@@ -345,6 +345,43 @@ class ConfigTest {
             }
     }
 
+    /**
+     * The one key nothing in the proxy reads: it is carried for the app, whose farm ends a
+     * session's day with it. Absent is the default, and the file first start writes holds it.
+     */
+    @Test
+    fun `the file sets the idle window, and an absent key is the default`() {
+        val home = Files.createTempDirectory("peashoot-home")
+
+        assertEquals(30, loadConfig(home, env()).idleSessionMinutes)
+        assertContains(home.resolve("peashoot.toml").readText(), "idleSessionMinutes = 30")
+
+        val edited = Files.createTempDirectory("peashoot-home")
+        edited.resolve("peashoot.toml").writeText("idleSessionMinutes = 45\n")
+        assertEquals(45, loadConfig(edited, env()).idleSessionMinutes)
+    }
+
+    /**
+     * Bounded rather than trusted, and refused by name rather than clamped in silence: zero or less
+     * would end every session's day on the app's every tick, and more minutes than a day is not an
+     * end of day at all. Read as a Long for the reason the port is, so 5000000000 cannot truncate
+     * into a plausible number of minutes.
+     */
+    @Test
+    fun `an idle window no day could be measured in is refused, by name`() {
+        listOf("0", "-5", "1441", "5000000000").forEach { minutes ->
+            val home = Files.createTempDirectory("peashoot-home")
+            home.resolve("peashoot.toml").writeText("idleSessionMinutes = $minutes\n")
+
+            val error = assertFailsWith<IllegalStateException> { loadConfig(home, env()) }
+            assertContains(
+                error.message.orEmpty(),
+                "idleSessionMinutes must be 1 to 1440",
+                message = "for $minutes",
+            )
+        }
+    }
+
     /** Zero on either key is legal and is what turns resume off; `ResumeBoundsTest` runs it. */
     @Test
     fun `zero on either resume bound loads`() {

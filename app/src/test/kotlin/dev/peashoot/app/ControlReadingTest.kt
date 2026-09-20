@@ -2,6 +2,7 @@ package dev.peashoot.app
 
 import dev.peashoot.core.Mode
 import java.io.IOException
+import java.time.Duration
 import kotlin.test.Test
 import kotlin.test.assertContains
 import kotlin.test.assertEquals
@@ -29,6 +30,32 @@ class ControlReadingTest {
             "tick the box",
         )
         assertNull(saveBlocked("{}", "{}", risky = true, confirming = true))
+    }
+
+    /**
+     * The proxy owns the idle window, but this window talks to whatever is listening on the port: a
+     * proxy too old to serve the key, an answer that is not JSON at all, and a number no farm day
+     * could be measured in all leave the card where it was rather than moving it somewhere nobody
+     * asked for. The bound is this window's own and not the loader's: nothing in `main` here knows
+     * the proxy is even Kotlin, so what crosses the socket is checked on arrival.
+     */
+    @Test
+    fun `the idle window is read from the config, and anything unusable is the default`() {
+        assertEquals(Duration.ofMinutes(45), idleAfterOf("""{"idleSessionMinutes":45}"""))
+        assertEquals(Duration.ofMinutes(1), idleAfterOf("""{"idleSessionMinutes":1}"""))
+        assertEquals(Duration.ofMinutes(1440), idleAfterOf("""{"idleSessionMinutes":1440}"""))
+        listOf(
+                "{}",
+                "not json",
+                """{"idleSessionMinutes":0}""",
+                """{"idleSessionMinutes":-5}""",
+                """{"idleSessionMinutes":1441}""",
+                """{"idleSessionMinutes":9223372036854775807}""",
+                """{"idleSessionMinutes":"ten"}""",
+                """{"idleSessionMinutes":{"minutes":30}}""",
+                """{"idleSessionMinutes":null}""",
+            )
+            .forEach { answer -> assertEquals(Duration.ofMinutes(30), idleAfterOf(answer), answer) }
     }
 
     @Test

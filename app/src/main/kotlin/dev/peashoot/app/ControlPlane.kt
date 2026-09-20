@@ -9,14 +9,17 @@ import dev.peashoot.core.Mode
 import dev.peashoot.core.text
 import io.ktor.http.HttpMethod
 import io.ktor.http.encodeURLPathPart
+import java.time.Duration
 import kotlin.coroutines.cancellation.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.longOrNull
 import kotlinx.serialization.json.put
 
 // The control plane (#23): what every screen that writes to the proxy shares, and the routes and
@@ -27,6 +30,16 @@ import kotlinx.serialization.json.put
 
 /** How much of a refusal that is not a problem object is shown, when something else answered. */
 private const val REFUSAL_CAP = 300
+
+/**
+ * The farm's day boundary until a proxy has said otherwise, and again for one that cannot. It is
+ * `ProxyConfig`'s default written out a second time on purpose: nothing in this module knows the
+ * proxy is Kotlin, and a window with no boundary at all would never end a day.
+ */
+private val DEFAULT_IDLE: Duration = Duration.ofMinutes(30)
+
+/** The widest idle window this window will take from a proxy; see [idleAfterOf]. */
+private const val MAX_IDLE_MINUTES = 1440L
 
 /** Pretty, because a config and a rule set are read by people: the reason `rules.json` is. */
 private val PRETTY = Json { prettyPrint = true }
@@ -161,6 +174,18 @@ internal class ControlPlaneModel : Panel() {
     var config by mutableStateOf<String?>(null)
         private set
 
+    /**
+     * How long a session must be quiet before the farm ends its day with a card: the proxy's
+     * `idleSessionMinutes`, as the last read of the config answered it. The proxy owns the number
+     * because the day is about the traffic it sees, and it is read here because this is the one
+     * place that reads the config at all.
+     *
+     * Not Compose state: the farm's clock reads it, the window never draws it, and a read that is
+     * one poll old only ever moves a boundary measured in minutes.
+     */
+    var idleAfter: Duration = DEFAULT_IDLE
+        private set
+
     val export = ExportModel()
 
     /**
@@ -217,7 +242,13 @@ internal class ControlPlaneModel : Panel() {
             // config section stuck on "not read yet" because of a routes failure says nothing true.
             client
                 .send(HttpMethod.Get, "/config")
-                .fold({ config = pretty(it) }, { note = whyNot("read the config", it) })
+                .fold(
+                    {
+                        config = pretty(it)
+                        idleAfter = idleAfterOf(it)
+                    },
+                    { note = whyNot("read the config", it) },
+                )
         }
 
     /**
@@ -311,6 +342,19 @@ internal fun jsonOf(body: String): JsonObject? = runCatching {
     Json.parseToJsonElement(body) as JsonObject
 }
     .getOrNull()
+
+/**
+ * `idleSessionMinutes` out of a `GET /config` answer, or [DEFAULT_IDLE] for anything this window
+ * could not end a day on: a proxy old enough not to serve the key, an answer that is not readable
+ * at all, and a number outside 1 to [MAX_IDLE_MINUTES]. Checked here and not only at the proxy
+ * because this window connects to whatever is listening on the port, and because a day that ends on
+ * every tick — or never — is the kind of wrong nothing on screen would say out loud.
+ */
+internal fun idleAfterOf(body: String): Duration =
+    (jsonOf(body)?.get("idleSessionMinutes") as? JsonPrimitive)
+        ?.longOrNull
+        ?.takeIf { it in 1..MAX_IDLE_MINUTES }
+        ?.let(Duration::ofMinutes) ?: DEFAULT_IDLE
 
 /**
  * What a panel writes when a call did not work. A refusal is the proxy's own words, whole and
