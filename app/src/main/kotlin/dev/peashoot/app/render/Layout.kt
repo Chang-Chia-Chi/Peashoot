@@ -263,9 +263,16 @@ private class Homes(private val state: FarmState) {
         return spot
     }
 
+    /**
+     * The lift stops at the top row of homes (#75). A helper of a parent on the second row would
+     * otherwise stand at y 13.1, which laps the bottom row of plots, and a villager never stands on
+     * a field — a sprite over a plot hides the crops that are the only reason to draw the farm. A
+     * helper that cannot be lifted stands beside its parent instead: the step across is what says
+     * whose helper it is, and the lift only keeps the two sprites apart where there is room for it.
+     */
     private fun beside(parent: Spot, nth: Int): Spot =
         Spot(
             x = parent.x + HELPER_STEP * (nth.coerceAtMost(HELPERS_ABREAST - 1) + 1),
-            y = parent.y - HELPER_LIFT,
+            y = (parent.y - HELPER_LIFT).coerceAtLeast(HOME_Y - (HOME_ROWS - 1)),
         )
 }
