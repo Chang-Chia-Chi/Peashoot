@@ -19,9 +19,10 @@ internal const val EFFECT_SECONDS = 0.5f
  *
  * ponytail: a feed backfilled into one frame — a window opening onto a proxy that has been running
  * all day — would otherwise pop every crop in the repository at once, which reads as a glitch and
- * not as growth, so past this the whole diff is dropped rather than shown. The cost is that a
- * single turn editing more than [MOST_AT_ONCE] files shows none of them growing. Upgrade: pop them
- * in sequence, a few frames apart, if a turn that large ever turns out to be worth watching.
+ * not as growth, so past this the whole diff is dropped rather than shown. The diff is against the
+ * last farm *drawn* and not the last one reduced, so what it counts is every turn that landed
+ * between two frames; the cost is that a burst that big shows none of its crops growing. Upgrade:
+ * pop them in sequence, a few frames apart, if a burst that large turns out to be worth watching.
  */
 internal const val MOST_AT_ONCE = 8
 

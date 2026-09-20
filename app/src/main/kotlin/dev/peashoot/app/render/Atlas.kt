@@ -16,18 +16,22 @@ internal const val SCALE = 3
 internal const val TILE_PX = TILE * SCALE
 
 /**
- * The one image the farm is drawn from, decoded once from the PNG.
+ * The one image the farm is drawn from, decoded once for the life of the process.
  *
  * It matters that this is a decoded, immutable image and not a bitmap built here: Skia will not
  * cache a mutable bitmap's texture and re-uploads it on every draw call, which measured 17x slower
  * at 200 sprites (`docs/research/canvas-frame-rate.md` §5). Nothing in the renderer may compose a
  * texture at runtime for the same reason — no pre-rendered ground, no stitched atlas.
+ *
+ * Held here rather than `remember`ed in the canvas, because #20 put the farm behind a tab: a
+ * remembered atlas would be read off the disk and decoded again on every switch back, and an
+ * immutable image is exactly the thing there is no reason to hold twice.
  */
-internal fun farmAtlas(): ImageBitmap {
+internal val farmAtlas: ImageBitmap by lazy {
     val bytes =
         checkNotNull(Sprite::class.java.getResourceAsStream(ATLAS)) { "no $ATLAS on the classpath" }
             .use { it.readBytes() }
-    return Image.makeFromEncoded(bytes).toComposeImageBitmap()
+    Image.makeFromEncoded(bytes).toComposeImageBitmap()
 }
 
 /**

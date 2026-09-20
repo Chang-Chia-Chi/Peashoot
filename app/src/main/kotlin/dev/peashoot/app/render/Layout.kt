@@ -133,6 +133,19 @@ internal fun farmLayout(state: FarmState): FarmLayout =
     )
 
 /**
+ * A spot brought back inside the world. Everything this file places is already held inside a
+ * ceiling of its own — [wellSpot] into [QUEUE_CAPACITY], [mainHome] into [HOME_CAPACITY] — but a
+ * helper trailing its parent about is worked out from a live position and has none, so it borrows
+ * this one. A villager crowding its parent can at least be seen; one above the top of the canvas
+ * cannot.
+ */
+internal fun inWorld(spot: Spot): Spot =
+    Spot(
+        x = spot.x.coerceIn(0f, (WORLD_COLUMNS - 1).toFloat()),
+        y = spot.y.coerceIn(0f, (WORLD_ROWS - 1).toFloat()),
+    )
+
+/**
  * Where the villager [queueIndex] deep in the well queue waits: beside the well and never below it,
  * nearest spot first, alternating right and left, and onto the row above only once that row is
  * full. Queued villagers must not stand on the fields — a villager on a plot hides the crops that

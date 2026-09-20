@@ -4,6 +4,7 @@ import dev.peashoot.app.farm.Activity
 import dev.peashoot.app.farm.FarmState
 import dev.peashoot.app.farm.Villager
 import dev.peashoot.app.farm.parentOf
+import kotlin.math.PI
 import kotlin.math.abs
 import kotlin.math.hypot
 import kotlin.math.sin
@@ -15,17 +16,24 @@ internal const val WALK_TILES_PER_SECOND = 3f
 internal const val NANOS_A_SECOND = 1_000_000_000.0
 
 /**
- * How high a walking villager bobs, in tiles: a pixel and a half at a 48 px tile. The atlas has two
- * people in it and no walk frames, so the walk is the sprite going up and down rather than a cycle.
+ * How high a walking villager bobs, in tiles: a couple of pixels at a 48 px tile, which is as small
+ * as a bob can be and still survive the rounding to whole pixels that drawing pixel art needs. The
+ * atlas has two people in it and no walk frames, so the walk is the sprite going up and down.
  */
-private const val BOB_TILES = 0.03f
+private const val BOB_TILES = 0.05f
+
+/** Six steps a second, which is about what [WALK_TILES_PER_SECOND] would take. */
+private const val BOBS_A_SECOND = 6
 
 /**
- * A full bob every half tile walked, which at [WALK_TILES_PER_SECOND] is about six steps a second.
- * Phased on where the villager is and not on the clock, so the renderer still keeps no time of its
- * own and a snapped frame does not leave everyone mid-step.
+ * How fast the bob goes, in radians a second: `|sin|` repeats every half turn, so six bobs is six
+ * half turns. On a clock rather than on the distance walked, because any phase read off a position
+ * is constant along one direction of travel — a villager walking that way would slide along dead
+ * still. Where the villager is goes into the phase all the same, so a farm full of walkers is not a
+ * chorus line. Six whole bobs a second is also what lets [FarmScene] wrap its clock at one second
+ * without the step jumping.
  */
-private const val BOB_RADIANS_A_TILE = 6.283f
+private val BOB_RADIANS_A_SECOND = (BOBS_A_SECOND * PI).toFloat()
 
 /** What a villager is doing where it stands, which is the renderer's idea and not the reducer's. */
 internal enum class Pose {
@@ -123,10 +131,15 @@ internal fun poseOf(activity: Activity, arrived: Boolean): Pose =
 
 /**
  * A walking villager off the ground by a pixel or two; everyone else stands exactly where it is.
+ * [clock] is the scene's seconds, wrapped: see [BOB_RADIANS_A_SECOND] for why it is not the walk.
  */
-internal fun bobbed(spot: Spot, pose: Pose): Spot =
+internal fun bobbed(spot: Spot, pose: Pose, clock: Float): Spot =
     if (pose != Pose.WALKING) spot
-    else Spot(spot.x, spot.y - abs(sin((spot.x + spot.y) * BOB_RADIANS_A_TILE)) * BOB_TILES)
+    else
+        Spot(
+            spot.x,
+            spot.y - abs(sin(clock * BOB_RADIANS_A_SECOND + spot.x + spot.y)) * BOB_TILES,
+        )
 
 /**
  * Where a helper stands beside its parent: the parent's own spot, offset by the gap the layout put
@@ -134,6 +147,10 @@ internal fun bobbed(spot: Spot, pose: Pose): Spot =
  * goes. Null for a villager with nobody to follow — and for one whose lines named itself as its own
  * parent, which no feed of ours writes and which would otherwise be a villager chasing its own
  * tail.
+ *
+ * Brought back inside the world before it is answered: this is the one spot in the renderer worked
+ * out from a live position rather than from a place the layout chose, so a helper of a parent on
+ * the queue's back row would otherwise sit a tile above the canvas and not be drawn at all.
  */
 private fun beside(
     state: FarmState,
@@ -147,7 +164,7 @@ private fun beside(
     // and the well is the same harmless answer [headings] gives when the villager's own is missing.
     val parentHome = layout.homes[parent.id] ?: WELL
     val at = positions[parent.id] ?: parentHome
-    return Spot(at.x + home.x - parentHome.x, at.y + home.y - parentHome.y)
+    return inWorld(Spot(at.x + home.x - parentHome.x, at.y + home.y - parentHome.y))
 }
 
 /** Arrives exactly: a step longer than what is left of the walk ends on the target, not past it. */

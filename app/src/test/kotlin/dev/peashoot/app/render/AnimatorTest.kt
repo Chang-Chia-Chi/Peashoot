@@ -133,6 +133,17 @@ class AnimatorTest {
     }
 
     @Test
+    fun `a helper never trails its parent off the edge of the world`() {
+        val state = helped(Activity.RETURNING)
+        val layout = farmLayout(state)
+        // A parent on the well queue's back row stands on the world's top row, and a helper stands
+        // a little above its parent: the one place in the renderer with no ceiling of its own.
+        val onTheEdge = mapOf("s" to Spot(WELL.x, 0f))
+        val trailing = headings(state, layout, onTheEdge).getValue("s/help").target
+        assertEquals(inWorld(trailing), trailing, "a helper walked off the canvas to $trailing")
+    }
+
+    @Test
     fun `two villagers naming each other as parent neither loop nor drift off the farm`() {
         val state =
             FarmState(
@@ -165,16 +176,31 @@ class AnimatorTest {
     @Test
     fun `only a walking villager bobs, and never off its own tile`() {
         val spot = Spot(3f, 4f)
-        assertEquals(spot, bobbed(spot, Pose.STANDING))
-        assertEquals(spot, bobbed(spot, Pose.WAITING))
-        val walked = (0 until FRAMES).map { bobbed(Spot(it * 0.1f, 0f), Pose.WALKING).y }
-        assertTrue(walked.any { it < 0f }, "a walking villager never left the ground")
-        assertTrue(walked.all { it > -1f }, "a bob lifted a villager clean off its tile")
+        assertEquals(spot, bobbed(spot, Pose.STANDING, A_FRAME))
+        assertEquals(spot, bobbed(spot, Pose.WAITING, A_FRAME))
+        val lifts = (0 until FRAMES).map { spot.y - bobbed(spot, Pose.WALKING, it * A_FRAME).y }
+        assertTrue(lifts.any { it > 0f }, "a walking villager never left the ground")
+        assertTrue(lifts.all { it < 1f }, "a bob lifted a villager clean off its tile")
+    }
+
+    @Test
+    fun `a villager bobs whichever way it is walking`() {
+        // The anti-diagonal, where x + y never changes: a bob phased on the position alone would
+        // leave this villager sliding along dead still for the whole walk.
+        val lifts =
+            (0 until FRAMES).map {
+                val spot = Spot(it * 0.1f, -it * 0.1f)
+                spot.y - bobbed(spot, Pose.WALKING, it * A_FRAME).y
+            }
+        assertTrue(lifts.distinct().size > 1, "a villager walking the anti-diagonal never bobbed")
     }
 }
 
 /** Enough frames for a cycle to show, and for a pair of followers to run away if they would. */
 private const val FRAMES = 20
+
+/** A frame at 60 Hz, in the seconds the scene's clock counts. */
+private const val A_FRAME = 1f / 60
 
 private fun heading(id: String, target: Spot): Map<String, Heading> = mapOf(id to Heading(target))
 

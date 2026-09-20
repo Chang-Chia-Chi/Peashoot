@@ -27,7 +27,6 @@ private const val LONGEST_STEP = 0.1f
  */
 @Composable
 fun FarmCanvas(farm: FarmState, modifier: Modifier = Modifier) {
-    val atlas = remember { farmAtlas() }
     val measurer = rememberTextMeasurer(cacheSize = LABEL_CACHE)
     val scene = remember { FarmScene() }
     // The effect runs once and the farm changes under it, so the latest state has to be read inside
@@ -46,7 +45,7 @@ fun FarmCanvas(farm: FarmState, modifier: Modifier = Modifier) {
         // `scene.frame` is read here, in the draw phase: a new frame then redraws this canvas and
         // nothing around it recomposes — the dashboard's text and event list are untouched 165
         // times a second.
-        drawFarm(atlas, measurer, scene.frame)
+        drawFarm(farmAtlas, measurer, scene.frame)
     }
 }
 
@@ -57,6 +56,8 @@ internal data class Frame(
     val positions: Map<String, Spot>,
     val poses: Map<String, Pose> = emptyMap(),
     val effects: Map<String, Effect> = emptyMap(),
+    /** Seconds since the scene started, wrapped at one: what the walk's bob is phased on. */
+    val clock: Float = 0f,
 )
 
 /**
@@ -72,6 +73,12 @@ internal class FarmScene {
     private var layout = frame.layout
     private var effects = emptyMap<String, Effect>()
     private var last: FarmState? = null
+
+    /**
+     * Wrapped at one second, because the bob it drives goes a whole number of times a second: a
+     * `Float` counting up for the hours a window is open would lose the step to its own precision.
+     */
+    private var clock = 0f
 
     /**
      * One frame: age whatever the last farm set off, re-lay the farm and diff its crops if the
@@ -90,10 +97,11 @@ internal class FarmScene {
             layout = farmLayout(farm)
         }
         effects = popping
+        clock = (clock + seconds).mod(1f)
         val aim = headings(farm, layout, frame.positions)
         val snapped = meter.frame(deltaNanos)
         val positions = step(frame.positions, aim, seconds, snapped)
-        frame = Frame(farm, layout, positions, poses(farm, positions, aim), popping)
+        frame = Frame(farm, layout, positions, poses(farm, positions, aim), popping, clock)
     }
 }
 
@@ -172,8 +180,11 @@ private fun DrawScope.drawVillagers(atlas: ImageBitmap, measurer: TextMeasurer, 
             .sortedBy { (_, spot) -> spot.y }
     for ((villager, spot) in standing) {
         val pose = frame.poses[villager.id] ?: Pose.STANDING
-        drawSprite(atlas, villagerSprite(villager.id), bobbed(spot, pose))
-        drawMood(measurer, pose, spot)
+        drawSprite(atlas, villagerSprite(villager.id), bobbed(spot, pose, frame.clock))
+    }
+    // Moods and names after every sprite, so that nobody standing in front paints over one.
+    for ((villager, spot) in standing) {
+        drawMood(measurer, frame.poses[villager.id] ?: Pose.STANDING, spot)
     }
     drawNames(measurer, standing)
 }
