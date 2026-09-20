@@ -409,6 +409,45 @@ class CassetteTest {
         assertContains(error.message.orEmpty(), "predates cassettes")
     }
 
+    @Test
+    fun `an export carries no OpenAI organization or project id`() = runBlocking {
+        val source = home()
+        FakeUpstream().use { upstream ->
+            upstream.reply = {
+                FakeUpstream.Reply(body = """{"error":"no quota left for $ORG on $PROJECT"}""")
+            }
+            val request =
+                """{"model":"claude-sonnet-4-5","messages":[{"role":"user",""" +
+                    """"content":"bill this to $ORG on $PROJECT"}]}"""
+            // The headers a client sends are what surfaceOf routes a bare GET /v1/models by, so
+            // they are recorded; the ids reach a cassette through the bodies that name them.
+            record(
+                source,
+                upstream,
+                listOf(request),
+                mapOf("openai-organization" to ORG, "openai-project" to PROJECT),
+            )
+            val id = Store(source).use { it.list().single().exchange.id }
+
+            val preview = command(listOf("export", "demo", "--dry-run"), source, noEnv)
+            assertEquals(
+                listOf(
+                    "$id request /messages/0/content: org-FA... (${ORG.length} chars) -> [REDACTED]",
+                    "$id request /messages/0/content: proj_F... (${PROJECT.length} chars) -> [REDACTED]",
+                    "$id response body: org-FA... (${ORG.length} chars) -> [REDACTED]",
+                    "$id response body: proj_F... (${PROJECT.length} chars) -> [REDACTED]",
+                    "dry run: 1 exchanges, 4 redactions, nothing written",
+                ),
+                preview.lines(),
+            )
+
+            command(listOf("export", "demo"), source, noEnv)
+            val text = source.resolve("cassettes/demo.jsonl").readText()
+            assertFalse(ORG in text, text)
+            assertFalse(PROJECT in text, text)
+        }
+    }
+
     private companion object {
         const val STREAMING = "stream me"
         const val STREAM_REQUEST =
@@ -417,6 +456,8 @@ class CassetteTest {
         const val PLAIN_REQUEST =
             """{"model":"claude-sonnet-4-5","messages":[{"role":"user","content":"plain"}]}"""
         const val KEY = "sk-ant-api03-AbCdEfGhIjKlMnOpQrStUvWxYz0123456789"
+        const val ORG = "org-FAKEfake000000000000"
+        const val PROJECT = "proj_FAKEfake000000000000"
         const val AUTH_CANARY = "peashoot-authorization-canary"
         const val API_CANARY = "peashoot-api-key-canary"
     }
