@@ -1,5 +1,6 @@
 package dev.peashoot.app.render
 
+import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.graphics.FilterQuality
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.drawscope.DrawScope
@@ -40,13 +41,16 @@ internal val farmAtlas: ImageBitmap by lazy {
  *
  * [scale] draws it bigger or smaller about the middle of its tile, which is how a crop pops when it
  * grows: still one `drawImage` from the same immutable atlas, because scaling a destination rect is
- * the GPU's business and composing a bigger bitmap would be ours.
+ * the GPU's business and composing a bigger bitmap would be ours. [tint] is the season's, and is
+ * the same bargain: a filter the GPU applies to this one draw, where a recoloured sheet would be a
+ * texture built at runtime.
  */
 internal fun DrawScope.drawSprite(
     atlas: ImageBitmap,
     sprite: Sprite,
     spot: Spot,
     scale: Float = 1f,
+    tint: ColorFilter? = null,
 ) {
     val side = (TILE_PX * scale).roundToInt()
     val inset = (TILE_PX - side) / 2
@@ -61,5 +65,6 @@ internal fun DrawScope.drawSprite(
             ),
         dstSize = IntSize(side, side),
         filterQuality = FilterQuality.None,
+        colorFilter = tint,
     )
 }

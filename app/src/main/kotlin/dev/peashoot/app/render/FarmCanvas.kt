@@ -10,12 +10,14 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.translate
 import androidx.compose.ui.text.TextMeasurer
 import androidx.compose.ui.text.rememberTextMeasurer
 import dev.peashoot.app.farm.FarmState
+import dev.peashoot.app.farm.Villager
 
 /** A frame longer than this is a window that was dragged or a laptop that slept, not a walk. */
 private const val LONGEST_STEP = 0.1f
@@ -55,9 +57,10 @@ internal data class Frame(
     val layout: FarmLayout,
     val positions: Map<String, Spot>,
     val poses: Map<String, Pose> = emptyMap(),
-    val effects: Map<String, Effect> = emptyMap(),
-    /** Seconds since the scene started, wrapped at one: what the walk's bob is phased on. */
+    val effects: Effects = Effects(),
+    /** Seconds since the scene started, wrapped at one: the walk's bob and the rain's fall. */
     val clock: Float = 0f,
+    val sky: Sky = Sky(shade = 0f, rain = 0f, flash = 0f),
 )
 
 /**
@@ -71,7 +74,7 @@ internal class FarmScene {
 
     private val meter = FrameMeter()
     private var layout = frame.layout
-    private var effects = emptyMap<String, Effect>()
+    private var effects = Effects()
     private var last: FarmState? = null
 
     /**
@@ -92,7 +95,7 @@ internal class FarmScene {
         val seconds = (deltaNanos / NANOS_A_SECOND).toFloat().coerceAtMost(LONGEST_STEP)
         effects = aged(effects, seconds)
         if (farm !== last) {
-            effects = effects + cropEffects(last, farm)
+            effects = effects.raised(last, farm)
             last = farm
             layout = farmLayout(farm)
         }
@@ -100,47 +103,95 @@ internal class FarmScene {
         val was = frame.positions
         val snapped = meter.frame(deltaNanos)
         val positions = step(was, headings(farm, layout, was), seconds, snapped)
-        frame = Frame(farm, layout, positions, poses(farm, was, positions), effects, clock)
+        frame =
+            Frame(
+                farm,
+                layout,
+                positions,
+                poses(farm, was, positions),
+                effects,
+                clock,
+                skyOf(farm, effects.flash),
+            )
     }
 }
 
+/**
+ * One frame, in three passes: the world, then the weather over all of it, then everything that has
+ * to stay readable through the weather. The order is the whole of it — a night the villagers' names
+ * cannot be read through is a farm that has stopped saying anything, and a lantern under the
+ * night's own shade is a hole in it rather than a light.
+ */
 private fun DrawScope.drawFarm(atlas: ImageBitmap, measurer: TextMeasurer, frame: Frame) {
+    val tint = seasonTint(frame.farm.season)
+    val standing = standing(frame)
     // The ground covers the canvas whatever size it is; the farm is a fixed 26 x 16 tiles, so it
     // sits in the middle of whatever is left over. Whole pixels, or the pixel art would smear.
-    drawGround(atlas)
-    translate(left = margin(size.width, WORLD_COLUMNS), top = margin(size.height, WORLD_ROWS)) {
-        drawPlots(atlas, frame.layout)
-        drawCrops(atlas, frame.layout, frame.effects)
+    val left = margin(size.width, WORLD_COLUMNS)
+    val top = margin(size.height, WORLD_ROWS)
+    drawGround(atlas, tint)
+    translate(left = left, top = top) {
+        drawPlots(atlas, frame.layout, tint)
+        drawCrops(atlas, frame.layout, frame.effects.crops)
         drawWell(atlas)
-        drawVillagers(atlas, measurer, frame)
-        if (!frame.farm.labelsHidden) drawPathLabels(measurer, frame.layout)
-        drawHiddenFields(measurer, frame.layout)
+        drawSprite(atlas, Sprite.SHIPPING_CRATE, BIN)
+        drawVillagers(atlas, frame, standing)
     }
+    drawSky(frame.sky, frame.clock)
+    translate(left = left, top = top) {
+        if (frame.farm.night) drawLanterns()
+        drawOverlays(measurer, frame, standing)
+    }
+    drawFlash(frame.sky)
     // The badge belongs to the canvas and not to the farm: it must be in the same corner of every
     // screenshot, whatever the window is doing.
     if (!frame.farm.labelsHidden) drawBadge(measurer)
 }
 
+/** Sorted by y, so a villager standing nearer the bottom overlaps one standing behind it. */
+private fun standing(frame: Frame): List<Pair<Villager, Spot>> =
+    frame.farm.villagers.values
+        .mapNotNull { villager -> frame.positions[villager.id]?.let { villager to it } }
+        .sortedBy { (_, spot) -> spot.y }
+
 private fun margin(canvas: Float, tiles: Int): Float =
     ((canvas - tiles * TILE_PX) / 2).toInt().coerceAtLeast(0).toFloat()
 
-/** The ground under everything, one tile at a time: 660 draw calls at the spike's canvas size. */
-private fun DrawScope.drawGround(atlas: ImageBitmap) {
+/**
+ * The ground under everything, one tile at a time: 660 draw calls at the spike's canvas size. The
+ * season's [tint] rides along on each one, which costs nothing — it is a filter on a `drawImage`
+ * the GPU applies, not a second sheet of tiles.
+ */
+private fun DrawScope.drawGround(atlas: ImageBitmap, tint: ColorFilter?) {
     val columns = (size.width / TILE_PX).toInt() + 1
     val rows = (size.height / TILE_PX).toInt() + 1
     for (row in 0 until rows) {
         for (column in 0 until columns) {
-            drawSprite(atlas, groundSprite(column, row), Spot(column.toFloat(), row.toFloat()))
+            drawSprite(
+                atlas,
+                groundSprite(column, row),
+                Spot(column.toFloat(), row.toFloat()),
+                tint = tint,
+            )
         }
     }
 }
 
-/** A plot is drawn at its full footprint whether or not the field has filled it: it never moves. */
-private fun DrawScope.drawPlots(atlas: ImageBitmap, layout: FarmLayout) {
+/**
+ * A plot is drawn at its full footprint whether or not the field has filled it: it never moves.
+ * Tilled soil is ground too, so it takes the season with the grass — a snowed-over farm with
+ * midsummer furrows in it reads as a bug.
+ */
+private fun DrawScope.drawPlots(atlas: ImageBitmap, layout: FarmLayout, tint: ColorFilter?) {
     for (plot in layout.plots) {
         for (row in 0 until PLOT_ROWS) {
             for (column in 0 until PLOT_COLUMNS) {
-                drawSprite(atlas, furrow(column), Spot(plot.spot.x + column, plot.spot.y + row))
+                drawSprite(
+                    atlas,
+                    furrow(column),
+                    Spot(plot.spot.x + column, plot.spot.y + row),
+                    tint = tint,
+                )
             }
         }
     }
@@ -171,19 +222,14 @@ private fun DrawScope.drawWell(atlas: ImageBitmap) {
     drawSprite(atlas, Sprite.WELL_BASE, WELL)
 }
 
-/** Sorted by y, so a villager standing nearer the bottom overlaps one standing behind it. */
-private fun DrawScope.drawVillagers(atlas: ImageBitmap, measurer: TextMeasurer, frame: Frame) {
-    val standing =
-        frame.farm.villagers.values
-            .mapNotNull { villager -> frame.positions[villager.id]?.let { villager to it } }
-            .sortedBy { (_, spot) -> spot.y }
+/** Everyone where they are; the puddle under anyone who just lost a bucket is [drawOverlays]'s. */
+private fun DrawScope.drawVillagers(
+    atlas: ImageBitmap,
+    frame: Frame,
+    standing: List<Pair<Villager, Spot>>,
+) {
     for ((villager, spot) in standing) {
         val pose = frame.poses[villager.id] ?: Pose.STANDING
         drawSprite(atlas, villagerSprite(villager.id), bobbed(spot, pose, frame.clock))
     }
-    // Moods and names after every sprite, so that nobody standing in front paints over one.
-    for ((villager, spot) in standing) {
-        drawMood(measurer, frame.poses[villager.id] ?: Pose.STANDING, spot)
-    }
-    drawNames(measurer, standing)
 }

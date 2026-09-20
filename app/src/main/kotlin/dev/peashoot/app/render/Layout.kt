@@ -56,6 +56,29 @@ private const val PLOT_PITCH_Y = 4
  */
 internal val WELL = Spot(12f, 1f)
 
+/**
+ * Where the shipping bin stands, with its ledger on the row under it. Fixed, like the well, and in
+ * the corner the queue never reaches: the top two rows are the well's, but the queue only ever
+ * spreads eight spots either side of it, so the first four columns of them are nobody's.
+ */
+internal val BIN = Spot(1f, 1f)
+
+/**
+ * Where the lanterns hang once a route is replaying. The two columns the world keeps outside
+ * everything it places — plots run from x 1 to 24, homes from 1 to 24, the queue from 4 to 20 — so
+ * a lantern is never over a crop, never on a home and never in the queue. Not "never under a
+ * sprite": a helper's spot is worked out from a live parent position and held only by [inWorld],
+ * whose ceiling is column 25, so a helper of a parent at the right-hand edge can stand in a lantern
+ * column. It lands near the row of homes and the lanterns are on rows 4 and 8, so in practice they
+ * do not meet; nothing guarantees it, which is why this says so rather than claiming otherwise.
+ *
+ * ponytail: four, at fixed spots, rather than one per villager or one per plot. A lit farm is the
+ * point and four pools of light say it; lanterns that followed the work would be a second animator.
+ * Upgrade: a lantern at the well when someone is waiting under it, if night ever has to say more
+ * than "this route is replaying".
+ */
+internal val LANTERNS = listOf(Spot(0f, 4f), Spot(25f, 4f), Spot(0f, 8f), Spot(25f, 8f))
+
 /** Eight spots either side of the well on a row, the nearest taken first. */
 private const val QUEUE_ACROSS = 16
 private const val QUEUE_ROWS = 2

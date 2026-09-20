@@ -50,7 +50,9 @@ internal const val READ = "Read"
 /**
  * What a villager is doing. [IDLE] is only where one starts: its first line sets it walking or
  * coming home, and nothing in the feed ends a walk home. [tick] retires a villager whose session
- * has gone quiet rather than idling it, so an idle one is what the renderer (#20) would need.
+ * has gone quiet rather than idling it, so nothing the window draws ever sees an idle one — the
+ * renderer's own `Pose.STANDING` is what a villager that has arrived and has nothing out looks
+ * like, worked out from having stopped rather than from this.
  */
 enum class Activity {
     IDLE,
@@ -178,11 +180,12 @@ data class FarmState(
     /** What each session has run up today, keyed by session; [tick] ends the quiet ones. */
     val days: Map<String, Day> = emptyMap(),
     /**
-     * The cards ended days have left, for the window to show and then take away (#20).
+     * The cards ended days have left, oldest first: the window shows the front one and [dismissed]
+     * takes it away.
      *
-     * ponytail: nothing takes one away yet, so this grows by one small card per session per day for
-     * as long as the window is open. Upgrade: the renderer dismisses them; cap it here only if a
-     * window is ever left open for months.
+     * ponytail: no cap, because a card is only made when a day ends and only a person makes them go
+     * away. A window left open over a weekend with nobody at it holds one small card per session
+     * per day. Upgrade: drop the oldest past some number, if that is ever a real amount of memory.
      */
     val pendingCards: List<EndOfDayCard> = emptyList(),
 )

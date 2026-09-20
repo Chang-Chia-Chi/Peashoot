@@ -106,6 +106,33 @@ class LayoutTest {
     }
 
     @Test
+    fun `the bin and the lanterns stand on nothing, and nobody stands on them`() {
+        val state =
+            syntheticFarm(
+                fields = PLOTS,
+                crops = PLOT_CAPACITY,
+                villagers = HOME_CAPACITY + 5,
+                atWell = false,
+            )
+        val layout = farmLayout(state)
+        val queue = (0 until QUEUE_CAPACITY).map(::wellSpot)
+        for (fixture in LANTERNS + BIN) {
+            for (plot in layout.plots) {
+                assertTrue(!standsOn(plot, fixture), "$fixture is on ${plot.label}")
+            }
+            assertTrue(fixture !in queue, "a villager waits at the well on $fixture")
+            assertTrue(fixture !in layout.homes.values, "a villager lives on $fixture")
+            assertTrue(fixture !in wellTiles(), "$fixture is in the well")
+            assertTrue(
+                fixture.x in 0f..(WORLD_COLUMNS - 1).toFloat() &&
+                    fixture.y in 0f..(WORLD_ROWS - 1).toFloat(),
+                "$fixture is off the world",
+            )
+        }
+        assertTrue(BIN !in LANTERNS, "the bin is standing under a lantern")
+    }
+
+    @Test
     fun `nobody's home is on a field either`() {
         val state =
             syntheticFarm(

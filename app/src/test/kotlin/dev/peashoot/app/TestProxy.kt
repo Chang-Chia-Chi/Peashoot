@@ -59,14 +59,21 @@ internal class TestProxy(val home: Path) : AutoCloseable {
     fun stop() = server.close()
 
     /** One event line, stored and published under one id, as the deriver stores and publishes. */
-    suspend fun emit(name: String): Long {
-        val event = buildJsonObject {
-            put("ts", Instant.now().toString())
-            put("event", name)
-            put("exchangeId", name)
-        }
-        return store.putEvent(event).also { api.feed.publish(it, event) }
-    }
+    suspend fun emit(name: String): Long =
+        put(
+            buildJsonObject {
+                put("ts", Instant.now().toString())
+                put("event", name)
+                put("exchangeId", name)
+            }
+        )
+
+    /**
+     * A whole recorded line through the same door, so a test can put the reducer's own fixtures on
+     * a real feed and read what the proxy makes of them at the other end.
+     */
+    suspend fun put(event: JsonObject): Long =
+        store.putEvent(event).also { api.feed.publish(it, event) }
 
     /**
      * A line straight onto the feed, bypassing the store, which only accepts the shape this version

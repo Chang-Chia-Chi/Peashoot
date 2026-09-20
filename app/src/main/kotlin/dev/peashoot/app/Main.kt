@@ -1,5 +1,6 @@
 package dev.peashoot.app
 
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
@@ -7,8 +8,10 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.material.Button
 import androidx.compose.material.Checkbox
 import androidx.compose.material.MaterialTheme
+import androidx.compose.material.Surface
 import androidx.compose.material.Tab
 import androidx.compose.material.TabRow
 import androidx.compose.material.Text
@@ -27,7 +30,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Window
 import androidx.compose.ui.window.application
+import dev.peashoot.app.farm.EndOfDayCard
 import dev.peashoot.app.farm.FarmState
+import dev.peashoot.app.farm.dismissed
 import dev.peashoot.app.farm.reduce
 import dev.peashoot.app.farm.tick
 import dev.peashoot.app.render.FarmCanvas
@@ -75,6 +80,10 @@ private const val IDLE_MINUTES = 30L
 private val TABS = listOf("farm", "events")
 
 private const val FARM_TAB = 0
+
+/** How far the day's card stands off the farm behind it, and what a share reads as. */
+private const val CARD_LIFT = 8
+private const val PERCENT = 100
 
 fun main() = application {
     val model = remember { AppModel() }
@@ -218,6 +227,15 @@ class AppModel(private val home: Path = homeDir(), private val port: Int = proxy
         farm = farm.copy(labelsHidden = !show)
     }
 
+    /**
+     * The end-of-day card the window is showing, taken away. Safe beside [tickFarm] and [add] for
+     * exactly the reason [showPaths] is, and it is the only thing a click does to the farm besides
+     * that toggle: what a day came to is the reducer's, and dismissing it is one pure `dismissed`.
+     */
+    fun dismissCard() {
+        farm = farm.dismissed()
+    }
+
     private fun add(line: Feed.Line) {
         lastId = line.id
         farm = reduce(farm, line.event)
@@ -240,11 +258,20 @@ private fun describe(line: Feed.Line): String {
 private fun summary(farm: FarmState): String {
     val crops = farm.fields.values.sumOf { it.crops.size }
     val sky = farm.weather.name.lowercase(Locale.ROOT)
-    val ledger = String.format(Locale.ROOT, "%.2f", farm.bin.ledger)
     return "farm: ${farm.villagers.size} villagers, ${farm.wellQueue.size} at the well, " +
         "$crops crops, $sky, ${if (farm.night) "night" else "day"}, " +
-        "bin ${farm.bin.produce} / $$ledger"
+        "bin ${farm.bin.produce} / $${money(farm.bin.ledger)}"
 }
+
+/**
+ * Money the way the window writes it, always in [Locale.ROOT]: a ledger with a comma for a decimal
+ * point is a bug on half the machines that will ever run this. The canvas has its own copy of this
+ * one line in `render.binLine`, which is a line and not a module: the two do not share a file
+ * because `dev.peashoot.app.render` is not something the window reaches into for a formatter.
+ */
+private fun money(usd: Double): String = String.format(Locale.ROOT, "%.2f", usd)
+
+private fun percent(share: Double): String = String.format(Locale.ROOT, "%.0f%%", share * PERCENT)
 
 // Block bodies, not expression bodies, throughout: without type resolution the Compose rules
 // cannot tell what an expression-bodied composable returns, so `= Column { … }` puts a composable
@@ -268,10 +295,40 @@ private fun Dashboard(model: AppModel) {
                 }
             }
             if (tab == FARM_TAB) {
-                FarmCanvas(model.farm, Modifier.fillMaxWidth().weight(1f))
+                Box(Modifier.fillMaxWidth().weight(1f)) {
+                    FarmCanvas(model.farm, Modifier.fillMaxSize())
+                    // One card at a time, the oldest first, so that a window left alone over a
+                    // lunch break is read in the order the days ended rather than all at once.
+                    model.farm.pendingCards.firstOrNull()?.let { card ->
+                        DayCard(card, model::dismissCard, Modifier.align(Alignment.Center))
+                    }
+                }
             } else {
                 EventLines(model.lines, Modifier.weight(1f))
             }
+        }
+    }
+}
+
+/**
+ * What one session's day came to, over the farm, with the button that takes it away. Compose and
+ * not canvas: it is text to read and a thing to click, and putting either on the canvas would mean
+ * laying out and hit-testing by hand for something the window already does.
+ */
+@Composable
+private fun DayCard(card: EndOfDayCard, onDismiss: () -> Unit, modifier: Modifier = Modifier) {
+    Surface(modifier = modifier.padding(all = 24.dp), elevation = CARD_LIFT.dp) {
+        Column(Modifier.padding(all = 16.dp)) {
+            Text("${card.villager} has finished the day", style = MaterialTheme.typography.h6)
+            Text(card.session, fontFamily = FontFamily.Monospace, fontSize = 12.sp)
+            Text(
+                "tokens: ${card.tokens.input} in, ${card.tokens.output} out, " +
+                    "${card.tokens.cacheRead} cached, ${card.tokens.cacheWrite} written"
+            )
+            Text("cost: \$${money(card.cost)}")
+            Text("files touched: ${card.filesTouched}")
+            Text("cache hits: ${percent(card.cacheHitRate)}")
+            Button(onClick = onDismiss) { Text("goodnight") }
         }
     }
 }

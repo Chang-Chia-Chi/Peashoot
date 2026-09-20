@@ -20,9 +20,22 @@ import dev.peashoot.app.farm.Villager
  */
 internal const val LABEL_CACHE = 512
 
-private val LABEL_STYLE = TextStyle(color = Color(0xFF1B1B1F), fontSize = 11.sp)
+/**
+ * Two inks, not one recoloured on the fly: the weather's shade goes over the world and the text
+ * goes over the shade, so near-black on a darkened farm is the one thing that stops being readable.
+ * Which one is used is [Sky.pale]'s to say and not this file's — the thing that decides it is how
+ * dark the ground has been made, which is the sky's business. Kept as constants because
+ * [TextMeasurer] caches against the style, and a `copy` made per label per frame would be a new
+ * object 165 times a second for no gain.
+ */
+private val DARK_INK = Color(0xFF1B1B1F)
+private val PALE_INK = Color(0xFFF2F0EA)
 
-private val NAME_STYLE = TextStyle(color = Color(0xFF1B1B1F), fontSize = 10.sp)
+private val LABEL_STYLE = TextStyle(color = DARK_INK, fontSize = 11.sp)
+private val PALE_LABEL_STYLE = TextStyle(color = PALE_INK, fontSize = 11.sp)
+
+private val NAME_STYLE = TextStyle(color = DARK_INK, fontSize = 10.sp)
+private val PALE_NAME_STYLE = TextStyle(color = PALE_INK, fontSize = 10.sp)
 
 private val BADGE_STYLE =
     TextStyle(color = Color(0xFF1B1B1F), fontSize = 14.sp, fontWeight = FontWeight.Bold)
@@ -72,14 +85,14 @@ private const val MARKER_TILES = 5f
  * rather than covering its two neighbours. At a 48 px pitch nothing else fits. Upgrade: the whole
  * path belongs in #22's click-a-crop pane, which is where someone who needs to read it will look.
  */
-internal fun DrawScope.drawPathLabels(measurer: TextMeasurer, layout: FarmLayout) {
+internal fun DrawScope.drawPathLabels(measurer: TextMeasurer, layout: FarmLayout, pale: Boolean) {
     for (plot in layout.plots) {
         val label = if (plot.overflow > 0) "${plot.label} +${plot.overflow}" else plot.label
         drawLabel(
             measurer,
             label,
             Spot(plot.spot.x, plot.spot.y + ABOVE_A_PLOT),
-            LABEL_STYLE,
+            labelStyle(pale),
             PLOT_COLUMNS.toFloat(),
         )
         for (crop in plot.crops) {
@@ -87,31 +100,70 @@ internal fun DrawScope.drawPathLabels(measurer: TextMeasurer, layout: FarmLayout
                 measurer,
                 crop.crop.label.substringAfterLast('/'),
                 Spot(crop.spot.x, crop.spot.y + UNDER_A_TILE),
-                NAME_STYLE,
+                nameStyle(pale),
                 1f,
             )
         }
     }
 }
 
+/**
+ * Everything that has to be read rather than looked at, drawn after the weather rather than under
+ * it: the moods, the names, the stamina bars, the bin's ledger and — when the toggle is on — the
+ * paths. A sky that swallowed the names would be a farm that had stopped saying anything, and the
+ * ink switches with it for the same reason — with the shade, not with the night, because a daytime
+ * storm darkens the ground too and the night is only the deepest way it happens.
+ *
+ * The spilled bucket's puddle is here too, which costs it something: drawn after the sprites, it
+ * sits over the villager's feet rather than under them. That is the lesser loss. A spill only ever
+ * happens under lightning, so the shade is always over it — a quarter of the farm's light gone, and
+ * seven tenths under a replayed route — and the puddle is the only thing that says *which* villager
+ * dropped the bucket, the flash saying only that somebody did.
+ */
+internal fun DrawScope.drawOverlays(
+    measurer: TextMeasurer,
+    frame: Frame,
+    standing: List<Pair<Villager, Spot>>,
+) {
+    val pale = frame.sky.pale
+    for ((villager, spot) in standing) {
+        frame.effects.spills[villager.id]?.let { drawSpill(spot, it) }
+        drawMood(measurer, frame.poses[villager.id] ?: Pose.STANDING, spot, pale)
+        drawStamina(villager.stamina, spot)
+    }
+    drawNames(measurer, standing, pale)
+    drawLedger(measurer, frame.farm.bin, pale)
+    if (!frame.farm.labelsHidden) drawPathLabels(measurer, frame.layout, pale)
+    drawHiddenFields(measurer, frame.layout, pale)
+}
+
 /** Names are not paths, so they are drawn whether or not the paths are. */
-internal fun DrawScope.drawNames(measurer: TextMeasurer, standing: List<Pair<Villager, Spot>>) {
+internal fun DrawScope.drawNames(
+    measurer: TextMeasurer,
+    standing: List<Pair<Villager, Spot>>,
+    pale: Boolean,
+) {
     for ((villager, spot) in standing) {
         drawLabel(
             measurer,
             villager.name,
             Spot(spot.x + NAME_LEFT, spot.y + UNDER_A_TILE),
-            NAME_STYLE,
+            nameStyle(pale),
             NAME_TILES,
         )
     }
 }
 
+/** Which ink a name, a mood or a ledger is written in; [Sky.pale] is what decides it. */
+internal fun nameStyle(pale: Boolean): TextStyle = if (pale) PALE_NAME_STYLE else NAME_STYLE
+
+private fun labelStyle(pale: Boolean): TextStyle = if (pale) PALE_LABEL_STYLE else LABEL_STYLE
+
 /**
  * What a villager is at, over its head: waiting its turn at the well, or resting off a 429. Walking
  * and standing show nothing — a farm where every sprite carries a caption says less, not more.
  */
-internal fun DrawScope.drawMood(measurer: TextMeasurer, pose: Pose, spot: Spot) {
+internal fun DrawScope.drawMood(measurer: TextMeasurer, pose: Pose, spot: Spot, pale: Boolean) {
     val text =
         when (pose) {
             Pose.WAITING -> WAITING_TEXT
@@ -123,7 +175,7 @@ internal fun DrawScope.drawMood(measurer: TextMeasurer, pose: Pose, spot: Spot) 
         measurer,
         text,
         Spot(spot.x + NAME_LEFT, spot.y + OVER_A_HEAD),
-        NAME_STYLE,
+        nameStyle(pale),
         NAME_TILES,
     )
 }
@@ -132,13 +184,17 @@ internal fun DrawScope.drawMood(measurer: TextMeasurer, pose: Pose, spot: Spot) 
  * The fields there was no plot for. A count and not a path, so it does not wait for the toggle: a
  * farm that quietly drops directories is worse than one that says how many it dropped.
  */
-internal fun DrawScope.drawHiddenFields(measurer: TextMeasurer, layout: FarmLayout) {
+internal fun DrawScope.drawHiddenFields(
+    measurer: TextMeasurer,
+    layout: FarmLayout,
+    pale: Boolean,
+) {
     if (layout.hiddenFields <= 0) return
     drawLabel(
         measurer,
         "+${layout.hiddenFields} fields not shown",
         MARKER_SPOT,
-        LABEL_STYLE,
+        labelStyle(pale),
         MARKER_TILES,
     )
 }
@@ -165,7 +221,7 @@ internal fun DrawScope.drawBadge(measurer: TextMeasurer) {
  * One label, in the box [tiles] wide it is allowed. The box is part of what [TextMeasurer] caches
  * against, so an elided label is still measured once and reused for every later frame.
  */
-private fun DrawScope.drawLabel(
+internal fun DrawScope.drawLabel(
     measurer: TextMeasurer,
     text: String,
     spot: Spot,

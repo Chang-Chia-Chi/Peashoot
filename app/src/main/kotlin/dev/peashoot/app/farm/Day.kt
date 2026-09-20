@@ -38,7 +38,7 @@ data class Tokens(
     val cacheWrite: Int = 0,
 )
 
-/** What a session's day came to, waiting for the window to show it and take it away (#20). */
+/** What a session's day came to, waiting for the window to show it and [dismissed] to take it. */
 data class EndOfDayCard(
     val session: String,
     /** The villager's name and not its id: a card is read by a person. */
@@ -102,6 +102,17 @@ private fun endDay(state: FarmState, session: String): FarmState {
         pendingCards = state.pendingCards + card,
     )
 }
+
+/**
+ * The farm with the card the window is showing taken away. The oldest, because [endDay] appends and
+ * the window shows the front of the queue: cards are read one at a time and in the order the days
+ * ended, so which one is on screen is never in doubt and the call needs no argument.
+ *
+ * Pure, like everything else here, and the only thing in the farm a click leads to — which is why
+ * it lives beside the card rather than in the window: what a day came to is the farm's, and a
+ * button is not.
+ */
+fun FarmState.dismissed(): FarmState = copy(pendingCards = pendingCards.drop(1))
 
 /** The session's day with one more of its lines in it; a session heard first begins a new one. */
 internal fun Map<String, Day>.heard(session: String, event: JsonObject): Map<String, Day> =

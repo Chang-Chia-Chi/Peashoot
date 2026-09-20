@@ -3,6 +3,7 @@ package dev.peashoot.app.render
 import dev.peashoot.app.farm.Activity
 import dev.peashoot.app.farm.FarmState
 import dev.peashoot.app.farm.Villager
+import dev.peashoot.app.farm.replay
 import kotlin.math.hypot
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -19,6 +20,17 @@ private const val BESIDE = 2f
  * Two sums of the same offset in `Float` differ in the last bit; a pixel is a fiftieth of a tile.
  */
 private const val A_WHISKER = 0.001f
+
+/** The 429 in `rate-limit.jsonl`, and what the 200 before it said the key had. */
+private const val REFUSED = 3
+private const val A_FULL_KEY = 12_000L
+
+/**
+ * Enough one-second frames for a villager to walk the length of the farm and stand still for one
+ * more: the diagonal from the row of homes to the well is under nineteen tiles at three a second,
+ * and arrival is having stopped, which costs the frame after the last one.
+ */
+private const val SETTLING_FRAMES = 12
 
 /** The render-side positions: a pure step, so a walk can be tested without a frame clock. */
 class AnimatorTest {
@@ -239,6 +251,35 @@ class AnimatorTest {
                 spot.y - bobbed(spot, Pose.WALKING, it * A_FRAME).y
             }
         assertTrue(lifts.distinct().size > 1, "a villager walking the anti-diagonal never bobbed")
+    }
+
+    @Test
+    fun `a rate-limited villager settles at the well, with a bar showing what it has left`() {
+        // Issue #21's first criterion for the 429, on the fixture that causes it rather than on a
+        // villager built by hand: the reducer's half is SignalsTest's, the pose rule's half is the
+        // case above, and this is the two of them joined up by the animator that runs between.
+        val farm = replay("rate-limit.jsonl")[REFUSED]
+        val villager = farm.villagers.values.single()
+        assertEquals(Activity.RESTING, villager.activity, "the fixture no longer rests at line 3")
+        val layout = farmLayout(farm)
+        var positions = emptyMap<String, Spot>()
+        var settled = emptyMap<String, Pose>()
+        repeat(SETTLING_FRAMES) {
+            val was = positions
+            positions = step(was, headings(farm, layout, was), SECOND, snapped = false)
+            settled = poses(farm, was, positions)
+        }
+        // The rest: at the well and not at home, and showing it rather than merely standing there.
+        assertEquals(wellSpot(0), positions.getValue(villager.id))
+        assertEquals(Pose.RESTING, settled.getValue(villager.id))
+        // The bar: what the headers actually said, which is nothing left of the most it ever had.
+        assertEquals(0L, villager.stamina.remainingTokens)
+        assertEquals(A_FULL_KEY, villager.stamina.peakTokens)
+        assertEquals(
+            0f,
+            staminaFraction(villager.stamina),
+            "an empty bar and no bar say different things, and this villager gets the empty one",
+        )
     }
 }
 

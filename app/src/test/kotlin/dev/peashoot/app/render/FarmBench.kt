@@ -65,6 +65,13 @@ private const val BADGE_CALLS = 2
 /** The well is a roof and a base. */
 private const val WELL_CALLS = 2
 
+/** The shipping bin is one crate and the one line of money under it. */
+private const val BIN_CALLS = 2
+
+/** A stamina bar is the whole and what is left of it; a lantern is a pool of light and a flame. */
+private const val BAR_CALLS = 2
+private const val LANTERN_CALLS = 2
+
 /** The activities that put something over a villager's head: waiting its turn, and resting. */
 private val MOODY = setOf(Activity.WALKING_TO_WELL, Activity.RESTING)
 
@@ -212,11 +219,31 @@ private fun drawCalls(farm: FarmState, canvas: IntSize): Int {
     // works from the state alone. It is exact in the steady state the bench measures, where they
     // have all arrived. A crop part-way through growing costs nothing extra — the pop is the same
     // `drawImage` with a bigger destination — and an inspection costs one `drawRect` for the half
-    // second it lasts, which no steady state of this bench holds.
+    // second it lasts, which no steady state of this bench holds. Nor do #21's two other transient
+    // effects: a spilled bucket is one `drawOval` under one villager and a lightning flash is one
+    // `drawRect` over everything, both for half a second.
     val villagers = farm.villagers.size * 2 + farm.villagers.values.count { it.activity in MOODY }
+    // A villager the provider has reported a rate limit for carries a bar; one nothing has said
+    // anything about carries none, which is most of a synthetic farm.
+    val bars = farm.villagers.values.count { staminaFraction(it.stamina) != null } * BAR_CALLS
+    // The weather is two calls at most however hard it is raining: the whole of the rain is one
+    // `drawPoints`, and the shade over it is one `drawRect`. Night lights the lanterns.
+    val sky = skyOf(farm, flash = null)
+    val weather = (if (sky.rain > 0f) 1 else 0) + (if (sky.shade > 0f) 1 else 0)
+    val lanterns = if (farm.night) LANTERNS.size * LANTERN_CALLS else 0
     val labels = if (farm.labelsHidden) 0 else crops + layout.plots.size + BADGE_CALLS
     val marker = if (layout.hiddenFields > 0) 1 else 0
-    return ground + furrows + crops + WELL_CALLS + villagers + labels + marker
+    return ground +
+        furrows +
+        crops +
+        WELL_CALLS +
+        BIN_CALLS +
+        villagers +
+        bars +
+        weather +
+        lanterns +
+        labels +
+        marker
 }
 
 /** The reducer's own fixtures, so one still shows a farm the app would really have drawn. */
