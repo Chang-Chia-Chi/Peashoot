@@ -4,6 +4,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import dev.peashoot.app.farm.TOUCH_HISTORY
 import dev.peashoot.app.farm.Touch
 import dev.peashoot.app.farm.scalar
 import dev.peashoot.app.render.Hit
@@ -27,7 +28,7 @@ import kotlinx.serialization.json.longOrNull
 // a JSON answer in, rows out, with no window and no socket, which is the seam #22 is tested at.
 
 /**
- * How much of a body the viewer shows. What is past it is counted and not shown.
+ * How many characters of a body the viewer shows. What is past it is counted and not shown.
  *
  * This caps what is *kept*, not what arrives: the whole answer is a string and a parsed tree for as
  * long as it takes to read the one field out of it, which is why that parse is not done on the
@@ -40,17 +41,23 @@ private const val BODY_CAP = 64 * 1024
 
 /**
  * How many completed lines the window remembers, keyed by exchange. The exchanges endpoint serves
- * summary rows, and usage, cost, latency and the replay flag are on the event line alone, so this
- * is the only place they can come from for an exchange this window heard.
+ * summary rows, and usage, cost, latency and the replay flag are on the event line alone — so for
+ * an exchange whose line this window heard, this is where they come from.
+ *
+ * The line for an *older* exchange is not gone from the proxy: `GET /events?since=0` backfills the
+ * whole event table, those fields included. The window never asks for it, because
+ * `AppModel.watch`'s first connection deliberately takes no backfill, so what a pane can say about
+ * a turn from before it connected is bounded by that choice rather than by the API.
  *
  * ponytail: the newest [HEARD_EXCHANGES], which is `MAX_LINES`' order of magnitude for the same
- * reason — a scrollback, not a second copy of the table. An exchange older than that, or one from
- * before the window connected, shows what the endpoint knows and blanks for the rest. Upgrade: a
- * control API that serves usage and timings on a summary row, which would retire this outright.
+ * reason — a scrollback, not a second copy of the table. Upgrade: either backfill the feed, which
+ * is a decision with consequences beyond this pane (every long-finished session would end its day
+ * at the first tick, one card each), or a control API that serves usage and timings on a summary
+ * row, which would retire this outright.
  */
 private const val HEARD_EXCHANGES = 500
 
-/** Enough hex to tell two files apart in a pane, and not enough to be a path. */
+/** Enough hex to tell two files apart in a pane at a glance, and not enough to be a path. */
 private const val HASH_DIGITS = 6
 
 private const val HASH_RADIX = 16
@@ -60,7 +67,7 @@ private const val HASH_RADIX = 16
  * carries. A field the window never heard a line for is null rather than zero — "nobody said" and
  * "it cost nothing" are different, and a replay hit really does cost nothing.
  */
-data class ExchangeRow(
+internal data class ExchangeRow(
     val id: String,
     /** When the proxy received it, as the endpoint spells it. */
     val at: String,
@@ -83,9 +90,17 @@ data class ExchangeRow(
 )
 
 /**
- * The pane's rows for one session, from the exchanges endpoint's own answer, in its own order, each
- * with whatever [heard] has for that exchange id folded onto it. The endpoint decides which rows
- * there are and in what order; the feed only fills in what a summary row does not carry.
+ * One page of a session's timeline: the rows the endpoint gave, and whether it said there are more
+ * behind them. [more] is the `nextCursor` the endpoint sets when a page is full, kept because a
+ * pane that shows the newest fifty of two hundred turns and says nothing is a pane that lies by
+ * omission.
+ */
+internal data class Timeline(val rows: List<ExchangeRow>, val more: Boolean)
+
+/**
+ * The pane's page for one session, from the exchanges endpoint's own answer, in its own order, each
+ * row with whatever [heard] has for that exchange id folded onto it. The endpoint decides which
+ * rows there are and in what order; the feed only fills in what a summary row does not carry.
  *
  * Null means the answer could not be read at all, which is a different thing from a session with
  * nothing in it and must not be reported as one: "this session has done nothing" is the one wrong
@@ -93,17 +108,40 @@ data class ExchangeRow(
  * over a socket from another process. A row naming no id is dropped rather than kept under a blank
  * one, since the list is drawn keyed by it and two blanks would take the window down.
  */
-internal fun exchangeRows(body: String, heard: (String) -> JsonObject?): List<ExchangeRow>? =
-    runCatching {
-        // `exchanges` has to be there and has to be an array, or this is not the endpoint
-        // answering: absent or of another shape is unreadable, not a session with nothing in it.
-        (Json.parseToJsonElement(body) as JsonObject)
-            .let { it["exchanges"] as JsonArray }
-            .filterIsInstance<JsonObject>()
-            .map { rowOf(it, heard(it["id"].text().orEmpty())) }
-            .filter { it.id.isNotEmpty() }
-    }
+internal fun timelineOf(body: String, heard: (String) -> JsonObject?): Timeline? = runCatching {
+    // `exchanges` has to be there and has to be an array, or this is not the endpoint
+    // answering: absent or of another shape is unreadable, not a session with nothing in it.
+    val answer = Json.parseToJsonElement(body) as JsonObject
+    Timeline(
+        rows =
+            (answer["exchanges"] as JsonArray)
+                .filterIsInstance<JsonObject>()
+                .map { rowOf(it, heard(it["id"].text().orEmpty())) }
+                .filter { it.id.isNotEmpty() },
+        more = answer["nextCursor"].text() != null,
+    )
+}
     .getOrNull()
+
+/**
+ * The one line a timeline says about itself: why there is nothing, or that what is shown is not all
+ * there is. Null is a page that speaks for itself, which is the ordinary case.
+ */
+internal fun timelineNote(session: String, page: Timeline?): String? =
+    when {
+        page == null -> "that session's exchanges came back unreadable"
+        page.rows.isEmpty() -> "no exchanges for $session yet"
+        page.more -> "the newest ${page.rows.size} shown; this session has more"
+        else -> null
+    }
+
+/**
+ * The one line a touch history says about itself. A crop at [TOUCH_HISTORY] touches is a crop whose
+ * older ones the reducer has dropped, and a list that simply ends looks like a complete list.
+ */
+internal fun touchNote(touches: List<Touch>): String? =
+    "the newest $TOUCH_HISTORY touches shown; this file has been touched more"
+        .takeIf { touches.size >= TOUCH_HISTORY }
 
 /** One summary row, and the completed line for it when the window heard one. */
 private fun rowOf(summary: JsonObject, line: JsonObject?): ExchangeRow =
@@ -129,14 +167,20 @@ private fun rowOf(summary: JsonObject, line: JsonObject?): ExchangeRow =
 
 /**
  * What a pane writes where a path would go. The one function every path in every pane goes through,
- * so that the show-paths toggle has one place to be obeyed and no pane can forget it: hidden, a
- * file is its plant's short hash, which is stable for the life of the file and reveals nothing —
- * the same file reads the same in the timeline, in the touch history and in a screenshot of either.
+ * so the show-paths toggle has one place to be obeyed and no pane can forget it.
+ *
+ * Hidden, a file is [HASH_DIGITS] hex digits of its path's `String.hashCode`. What that buys is
+ * exactly two things: the spelling of the path does not appear on screen or in a screenshot, and
+ * one file stays recognisable as itself across the timeline, the touch history and the pane title.
+ * It is not anonymity and must not be sold as it: the stand-in is an equality-preserving pseudonym,
+ * so anyone holding a candidate path can confirm it by hashing, and 24 bits means two files in a
+ * repository of a few thousand can share one. Neither matters for what the toggle is for — keeping
+ * a path out of a picture — and widening the hash would not fix the first at all.
  *
  * `String.hashCode` is specified, so the stand-in is the same on every JVM, for the reason
  * `nameFor` relies on: a villager and a file both have to look the same in every run.
  */
-fun pathLabel(path: String, hidden: Boolean): String =
+internal fun pathLabel(path: String, hidden: Boolean): String =
     if (hidden) "file ${shortHash(path)}" else path
 
 /**
@@ -154,8 +198,14 @@ internal fun touchText(touch: Touch, name: String): String =
  */
 internal fun bodyText(detail: String): String = runCatching {
     val body = (Json.parseToJsonElement(detail) as JsonObject)["requestBody"].text().orEmpty()
-    if (body.length <= BODY_CAP) body
-    else body.take(BODY_CAP) + "\n\n… truncated, ${body.length} bytes in all"
+    if (body.length <= BODY_CAP) return@runCatching body
+    // Characters and not bytes: [BODY_CAP] counts `String` units, so calling them bytes was simply
+    // wrong for any prompt with a non-ASCII character in it. Counted as code points, so an emoji
+    // counts once, and never cut between the halves of a surrogate pair — half a pair is not a
+    // character and draws as a replacement box.
+    val end = if (body[BODY_CAP - 1].isHighSurrogate()) BODY_CAP - 1 else BODY_CAP
+    val characters = body.codePointCount(0, body.length)
+    body.take(end) + "\n\n… truncated, $characters characters in all"
 }
     .getOrDefault("the proxy answered something this window cannot read as an exchange")
 
@@ -183,14 +233,17 @@ private fun paths(line: JsonObject?): List<String> =
  *
  * Nothing here throws at a click: a load that fails leaves its reason in [note], and a load still
  * running is cancelled by the next one, so two quick clicks cannot answer in the wrong order.
+ *
+ * [labelsHidden] is read here and not taken as an argument, so that "no body while paths are
+ * hidden" is enforced where the fetch happens rather than trusted to every caller.
  */
-class PaneModel {
+class PaneModel(private val labelsHidden: () -> Boolean) {
     /** What was clicked, or nothing, which is a closed pane. */
     var selected by mutableStateOf<Hit?>(null)
         private set
 
     /** The selected villager's timeline, as the exchanges endpoint gave it, newest first. */
-    val rows = mutableStateListOf<ExchangeRow>()
+    internal val rows = mutableStateListOf<ExchangeRow>()
 
     /** What the pane is doing or why it cannot: one line, always safe to show. */
     var note by mutableStateOf<String?>(null)
@@ -204,7 +257,15 @@ class PaneModel {
 
     private var scope: CoroutineScope? = null
     private var client: ControlClient? = null
-    private var loading: Job? = null
+
+    /**
+     * One job each, rather than one between them: they are independent things to be waiting for,
+     * and sharing a job meant opening a body cancelled a timeline still arriving. Nothing can reach
+     * that today, because the button that opens a body is only drawn once rows exist — which is
+     * exactly the kind of reason that stops being true when someone moves the button.
+     */
+    private var loadingRows: Job? = null
+    private var loadingBody: Job? = null
 
     /** Given a proxy to ask and a scope to ask from, for as long as [AppModel.watch] has both. */
     internal fun attach(scope: CoroutineScope, client: ControlClient) {
@@ -217,8 +278,10 @@ class PaneModel {
      * fail in a way nobody could read, so it is given nothing to ask and says so instead.
      */
     internal fun detach() {
-        loading?.cancel()
-        loading = null
+        loadingRows?.cancel()
+        loadingBody?.cancel()
+        loadingRows = null
+        loadingBody = null
         scope = null
         client = null
     }
@@ -234,7 +297,8 @@ class PaneModel {
 
     /** A click on the farm. A crop answers from the farm itself; a villager asks the proxy. */
     fun select(hit: Hit) {
-        loading?.cancel()
+        loadingRows?.cancel()
+        loadingBody?.cancel()
         rows.clear()
         body = null
         selected = hit
@@ -243,7 +307,8 @@ class PaneModel {
     }
 
     fun dismiss() {
-        loading?.cancel()
+        loadingRows?.cancel()
+        loadingBody?.cancel()
         selected = null
         rows.clear()
         body = null
@@ -255,17 +320,17 @@ class PaneModel {
      * is nothing but paths and prompts, and a pane that would mask it line by line would be one
      * mask away from leaking the lot.
      */
-    fun showBody(id: String, hidden: Boolean) {
+    fun showBody(id: String) {
         val asking = client
-        if (hidden) return
+        if (labelsHidden()) return
         if (asking == null) {
             note = "there is no proxy to ask"
             return
         }
-        loading?.cancel()
+        loadingBody?.cancel()
         body = null
         note = "reading exchange $id"
-        loading = scope?.launch {
+        loadingBody = scope?.launch {
             asking
                 .get("/exchanges/${id.encodeURLParameter()}")
                 .fold(
@@ -300,22 +365,22 @@ class PaneModel {
             return
         }
         note = "asking the proxy for $session's exchanges"
-        // ponytail: one page, at the endpoint's own default, and `nextCursor` is ignored, so a
-        // session past a page shows its newest. Upgrade: pass the cursor back when someone
+        // ponytail: one page, at the endpoint's own default, and the cursor is read only to say
+        // that there are more rather than to fetch them. Upgrade: pass it back when someone
         // scrolls to the end.
-        loading = scope?.launch {
+        loadingRows = scope?.launch {
             asking
                 .get("/exchanges?session=${session.encodeURLParameter()}")
                 .fold(
                     { answer ->
-                        val read = exchangeRows(answer, lines::get)
-                        rows.addAll(read.orEmpty())
-                        note =
-                            when {
-                                read == null -> "that session's exchanges came back unreadable"
-                                read.isEmpty() -> "no exchanges for $session yet"
-                                else -> null
-                            }
+                        // Parsed on this thread, where a body deliberately is not. A page is
+                        // bounded by the endpoint's own limit and its rows are small flat
+                        // objects, where a body has no bound at all; and the fold reads `lines`,
+                        // which only this thread writes, so moving it would trade a parse nobody
+                        // can feel for a race on the map the feed is filling.
+                        val page = timelineOf(answer, lines::get)
+                        rows.addAll(page?.rows.orEmpty())
+                        note = timelineNote(session, page)
                     },
                     { note = "that session's exchanges could not be read: ${it.message}" },
                 )

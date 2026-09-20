@@ -86,7 +86,7 @@ private fun PaneHeader(title: String, onClose: () -> Unit, modifier: Modifier = 
 private fun VillagerTimeline(panes: PaneModel, hidden: Boolean, modifier: Modifier = Modifier) {
     LazyColumn(modifier.fillMaxWidth()) {
         items(panes.rows, key = { it.id }) { row ->
-            TimelineRow(row, hidden, onBody = { panes.showBody(row.id, hidden) })
+            TimelineRow(row, hidden, onBody = { panes.showBody(row.id) })
         }
     }
 }
@@ -113,9 +113,14 @@ private fun TimelineRow(
 }
 
 /**
- * Which agents touched this file and when. The farm's own record and not the control API's: no
- * endpoint under `/_peashoot/v1/` can answer which exchanges touched a path, so the reducer keeps
- * it as it folds the feed. `docs/design.md` §10 says so plainly rather than implying otherwise.
+ * Which agents touched this file and when: the farm's own record, folded from the feed, rather than
+ * a control API read.
+ *
+ * Not because the API lacks the history — `GET /events?since=0` serves the whole event table, every
+ * `tools` array in it — but because `AppModel.watch` opens the feed with no backfill, so this
+ * window only ever hears what happened after it connected. The reducer's touches are what that
+ * choice leaves, and the pane can show no more than the window was told. `docs/design.md` §10 says
+ * so plainly rather than implying the pane reads it from the proxy.
  */
 @Composable
 private fun CropHistory(farm: FarmState, path: String, modifier: Modifier = Modifier) {
@@ -123,6 +128,10 @@ private fun CropHistory(farm: FarmState, path: String, modifier: Modifier = Modi
     LazyColumn(modifier.fillMaxWidth()) {
         if (crop == null || crop.touches.isEmpty()) {
             item { Text("nothing has touched this file since the window opened") }
+        }
+        // A list that simply ends looks like a complete list, and this one is capped.
+        touchNote(crop?.touches.orEmpty())?.let { note ->
+            item { Text(note, fontSize = SMALL_TEXT.sp) }
         }
         items(crop?.touches.orEmpty()) { touch ->
             Text(
@@ -158,6 +167,13 @@ private fun title(farm: FarmState, hit: Hit, hidden: Boolean): String =
 /**
  * Four decimal places and not the window's two: a turn costing a fifth of a cent is a real number
  * here, where the shipping bin's two are a day's takings added up.
+ *
+ * This is the third `Locale.ROOT` money format in the app, after `Main.kt`'s `money` and
+ * `render.binLine`, and deliberately so: it is one line, the three disagree on precision on
+ * purpose, and `dev.peashoot.app.render` is not somewhere the window reaches into for a formatter —
+ * the argument `money`'s own KDoc already makes. Do not "fix" this by sharing it; the thing that
+ * must never vary is [Locale.ROOT], because a ledger with a comma for a decimal point is a bug on
+ * half the machines that will ever run this.
  */
 private fun spend(row: ExchangeRow): String {
     val cost = row.costUsd?.let { String.format(Locale.ROOT, "\$%.4f", it) } ?: "cost not heard"

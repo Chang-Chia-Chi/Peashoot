@@ -127,9 +127,11 @@ class AppModel(private val home: Path = homeDir(), private val port: Int = proxy
 
     /**
      * What clicking a villager or a crop opens (#22). Its state is written from the same thread
-     * this class's is, and for the same reason: see [showPaths].
+     * this class's is, and for the same reason: see [showPaths]. It reads the show-paths flag off
+     * the farm rather than being told it, so that "no body while paths are hidden" holds wherever
+     * the call comes from.
      */
-    val panes = PaneModel()
+    val panes = PaneModel { farm.labelsHidden }
 
     /** Only ever a proxy this app started: one that was already up belongs to whoever ran it. */
     private var owned: OwnedProxy? = null

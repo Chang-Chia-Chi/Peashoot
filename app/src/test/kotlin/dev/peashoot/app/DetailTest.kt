@@ -1,5 +1,6 @@
 package dev.peashoot.app
 
+import dev.peashoot.app.farm.TOUCH_HISTORY
 import dev.peashoot.app.farm.Touch
 import dev.peashoot.app.farm.TouchKind
 import kotlin.test.Test
@@ -13,6 +14,11 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonObject
 
 private const val A_PATH = "src/main/kotlin/dev/peashoot/app/ControlClient.kt"
+
+/**
+ * A `nextCursor` naming a row, which is what the endpoint sets when the page it served was full.
+ */
+private const val CURSOR = "\"nextCursor\":\"01EX01\""
 
 /** Two summary rows as `GET /exchanges?session=` serves them, newest first, as it orders them. */
 private const val TWO_ROWS =
@@ -42,7 +48,7 @@ class DetailTest {
     @Test
     fun `a row is the endpoint's, with the event line filling in what a summary cannot carry`() {
         val heard = mapOf("01EX01" to json(A_LINE))
-        val rows = checkNotNull(exchangeRows(TWO_ROWS, heard::get))
+        val rows = checkNotNull(timelineOf(TWO_ROWS, heard::get)).rows
         // The endpoint decides which rows there are and in what order; the feed only fills in.
         assertEquals(listOf("01EX02", "01EX01"), rows.map { it.id })
         val filled = rows.last()
@@ -60,7 +66,7 @@ class DetailTest {
 
     @Test
     fun `an exchange the window never heard shows what the endpoint knows and no more`() {
-        val bare = checkNotNull(exchangeRows(TWO_ROWS) { null }).first()
+        val bare = checkNotNull(timelineOf(TWO_ROWS) { null }).rows.first()
         assertEquals("01EX02", bare.id)
         assertEquals("agent-two", bare.agent)
         assertEquals(200, bare.status)
@@ -78,12 +84,39 @@ class DetailTest {
     fun `an unreadable answer is told apart from a session that has done nothing`() {
         // Null, not empty: the pane says "this session has done nothing" for an empty list, and
         // saying that about a truncated answer would be the one wrong thing to tell someone.
-        assertNull(exchangeRows("not json at all") { null })
+        assertNull(timelineOf("not json at all") { null })
         // `exchanges` of another shape, or missing altogether, is not the endpoint answering.
-        assertNull(exchangeRows("""{"exchanges":"a string"}""") { null })
-        assertNull(exchangeRows("""{"nextCursor":null}""") { null })
+        assertNull(timelineOf("""{"exchanges":"a string"}""") { null })
+        assertNull(timelineOf("""{"nextCursor":null}""") { null })
         // A well-formed answer with an empty list really is a session with nothing in it.
-        assertEquals(emptyList(), exchangeRows("""{"exchanges":[],"nextCursor":null}""") { null })
+        val none = checkNotNull(timelineOf("""{"exchanges":[],"nextCursor":null}""") { null })
+        assertEquals(emptyList(), none.rows)
+        // And the two say different things, because they are different things.
+        assertContains(timelineNote("sess-one", null).orEmpty(), "unreadable")
+        assertContains(timelineNote("sess-one", none).orEmpty(), "no exchanges for sess-one")
+    }
+
+    @Test
+    fun `a page with more behind it says so, and a whole one says nothing`() {
+        // The endpoint sets `nextCursor` when the page it served was full. A pane that shows the
+        // newest fifty of two hundred turns and says nothing is a pane that lies by omission.
+        val page = checkNotNull(timelineOf(TWO_ROWS) { null })
+        assertFalse(page.more, "this fixture's nextCursor is null")
+        assertNull(timelineNote("sess-one", page), "a whole page speaks for itself")
+        val partial =
+            checkNotNull(timelineOf(TWO_ROWS.replace("\"nextCursor\":null", CURSOR)) { null })
+        assertTrue(partial.more)
+        assertEquals("the newest 2 shown; this session has more", timelineNote("sess-one", partial))
+    }
+
+    @Test
+    fun `a touch history at its cap says so, and a short one does not`() {
+        val one = listOf(Touch("sess-x", null, TouchKind.GROWN))
+        assertNull(touchNote(one))
+        assertNull(touchNote(emptyList()))
+        val full = List(TOUCH_HISTORY) { Touch("sess-x", null, TouchKind.GROWN) }
+        assertContains(touchNote(full).orEmpty(), "$TOUCH_HISTORY")
+        assertContains(touchNote(full).orEmpty(), "touched more")
     }
 
     @Test
@@ -94,18 +127,25 @@ class DetailTest {
             """{"exchanges":[{"receivedAt":"2026-09-20T09:00:20Z"},
                 {"receivedAt":"2026-09-20T09:00:10Z"},
                 {"id":"01EX07","receivedAt":"2026-09-20T09:00:00Z"}]}"""
-        assertEquals(listOf("01EX07"), checkNotNull(exchangeRows(nameless) { null }).map { it.id })
+        assertEquals(
+            listOf("01EX07"),
+            checkNotNull(timelineOf(nameless) { null }).rows.map { it.id },
+        )
     }
 
     @Test
     fun `a path in a pane obeys the show-paths toggle, and says the same thing every time`() {
         assertEquals(A_PATH, pathLabel(A_PATH, hidden = false))
         val stood = pathLabel(A_PATH, hidden = true)
+        // The two things the stand-in is actually for: the spelling does not appear, and the same
+        // file reads the same in the timeline, in the touch history and in a still.
         assertFalse(stood.contains("ControlClient"), stood)
         assertFalse(stood.contains("/"), stood)
-        // Stable, so one file reads the same in the timeline, in the touch history and in a still.
         assertEquals(stood, pathLabel(A_PATH, hidden = true))
-        // And two files do not read alike, or the pane would be saying nothing.
+        // These two files do not read alike. That is a fact about these two and not a guarantee:
+        // the stand-in is a 24-bit hash, so some pair of paths somewhere shares one, and anybody
+        // holding a candidate path can confirm it by hashing. Neither matters for keeping a path
+        // out of a screenshot, which is what the toggle is for.
         assertTrue(stood != pathLabel("src/main/App.kt", hidden = true))
     }
 
@@ -119,15 +159,28 @@ class DetailTest {
     }
 
     @Test
-    fun `a body too long to show says how much of it there was`() {
-        val small = bodyText("""{"requestBody":"hello"}""")
-        assertEquals("hello", small)
+    fun `a body too long to show says how much of it there was, counted in characters`() {
+        assertEquals("hello", bodyText("""{"requestBody":"hello"}"""))
         val huge = "x".repeat(200_000)
         val capped = bodyText("""{"requestBody":"$huge"}""")
         assertTrue(capped.length < huge.length, "the viewer holds a cap's worth, not the body")
-        assertContains(capped, "200000 bytes")
+        assertContains(capped, "200000 characters")
         // An answer that is not an exchange says so rather than throwing at the window.
         assertContains(bodyText("{"), "cannot read")
+    }
+
+    @Test
+    fun `a body of emoji is counted as characters and never cut through one`() {
+        // Each of these is one character and two `String` units, so the count and the length
+        // disagree — which is the whole reason "bytes" was the wrong word. 40_000 of them is
+        // 80_000 units, comfortably past the 65_536-unit cap, and the cap lands mid-pair.
+        val emoji = "🌱".repeat(40_000)
+        val capped = bodyText("""{"requestBody":"$emoji"}""")
+        assertContains(capped, "40000 characters")
+        val shown = capped.substringBefore("\n\n…")
+        assertFalse(shown.last().isHighSurrogate(), "never cut between the halves of a pair")
+        // Whole pairs only: an odd number of units would mean a broken one at the end.
+        assertEquals(0, shown.length % 2, "every character shown is a whole one")
     }
 }
 

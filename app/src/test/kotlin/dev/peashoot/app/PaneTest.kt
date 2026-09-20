@@ -111,12 +111,15 @@ class PaneTest {
                 until { model.status.startsWith("connected") }
                 model.panes.select(Hit.OnVillager(MINE))
                 until { model.panes.rows.isNotEmpty() }
-                // Labels are hidden until something turns them on, and a body is nothing but paths.
+                // Labels are hidden until something turns them on, and a body is nothing but
+                // paths. `showBody` reads the flag itself rather than being told it, so this is
+                // the refusal the invariant rests on and not one a caller happened to honour.
                 assertTrue(model.farm.labelsHidden)
-                model.panes.showBody("01EX11", hidden = true)
+                model.panes.showBody("01EX11")
                 assertNull(model.panes.body)
+                assertNull(model.panes.note, "a refused fetch says nothing, because none was made")
                 model.showPaths(true)
-                model.panes.showBody("01EX11", hidden = model.farm.labelsHidden)
+                model.panes.showBody("01EX11")
                 until { model.panes.body != null }
                 assertContains(model.panes.body.orEmpty(), "claude-opus-4-1")
                 // Turning the toggle back off drops it. Ceasing to draw it would not be enough:
@@ -138,7 +141,7 @@ class PaneTest {
                 val watching = launch { model.watch() }
                 until { model.status.startsWith("connected") }
                 model.showPaths(true)
-                model.panes.showBody("01NOSUCHEXCHANGE", hidden = false)
+                model.panes.showBody("01NOSUCHEXCHANGE")
                 until { model.panes.note?.contains("could not be read") == true }
                 assertNull(model.panes.body)
                 // A session with nothing in it is an empty timeline and a line saying so — and

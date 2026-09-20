@@ -151,11 +151,16 @@ data class Touch(val villager: String, val ts: String?, val kind: TouchKind)
 /**
  * How many touches a crop remembers.
  *
+ * This is the whole of the history the window has, and not because the proxy lacks it: every touch
+ * is in a `tools` array on a stored `exchange.completed` line, and `GET /events?since=0` serves the
+ * whole event table. The window asks for no backfill on its first connection, so it only ever hears
+ * what happened after it opened, and these are what that leaves.
+ *
  * ponytail: the newest [TOUCH_HISTORY], oldest dropped, so a file a run edits a thousand times
- * costs a bounded amount of memory and the pane shows the recent past rather than the whole of it.
- * Nothing says so in the pane beyond the list ending. Upgrade: ask the control API for the rest,
- * once it can answer which exchanges touched a path — today nothing under `/_peashoot/v1/` can, so
- * this is where the whole history lives.
+ * costs a bounded amount of memory. `Detail.touchNote` is what says so in the pane, rather than
+ * letting the list simply end. Upgrade: a backfilled feed would give the pane the rest — though
+ * that is a decision beyond this pane, since folding a day-old feed would end every finished
+ * session's day at the first tick and put a card up for each.
  */
 internal const val TOUCH_HISTORY = 50
 
