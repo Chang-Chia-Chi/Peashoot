@@ -21,8 +21,16 @@ private const val OVERLOADED = 529
 /** This key is rate-limited: the villager rests at the well until the window comes round. */
 internal const val TOO_MANY_REQUESTS = 429
 
-/** A turn that ended, rather than one that stopped to call a tool and will carry on. */
-internal const val END_TURN = "end_turn"
+/**
+ * A turn that ended, rather than one that stopped to call a tool and will carry on — in both the
+ * vocabularies the feed carries. Anthropic's `stop_reason` says `end_turn`; the Responses surface
+ * has no stop reason at all, so its reader puts the response's own `status` on the line, and a turn
+ * that ended there says `completed` (#93). A set rather than one spelling because the farm reads
+ * both providers' lines and a farm that only knows `end_turn` ships none of a Codex run's produce.
+ * The other statuses that surface writes — `in_progress`, `cancelled`, `incomplete` — are not here,
+ * and that is what keeps a poll and a cancel off the list of things that ended.
+ */
+internal val ENDED = setOf("end_turn", "completed")
 
 /**
  * Answered, as against refused or failed: only these drop produce in the bin, and only one of these
@@ -91,8 +99,7 @@ internal fun Stamina.after(event: JsonObject): Stamina {
  */
 internal fun ShippingBin.shipped(event: JsonObject): ShippingBin {
     val cost = event.scalar("costUsd") { doubleOrNull }
-    val ended =
-        event["stopReason"].text() == END_TURN && status(event)?.let { it in ANSWERED } == true
+    val ended = event["stopReason"].text() in ENDED && status(event)?.let { it in ANSWERED } == true
     return ShippingBin(
         produce = if (ended) produce + 1 else produce,
         ledger = ledger + (cost ?: 0.0),

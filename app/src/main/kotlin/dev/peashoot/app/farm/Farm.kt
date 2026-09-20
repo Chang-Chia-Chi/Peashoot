@@ -267,9 +267,17 @@ fun reduce(state: FarmState, event: JsonObject): FarmState =
  * reads it, so the event line for one names a model like a turn's does. What guards the usage
  * instead are the three ways a turn can report none and still be a turn, each of them a fixture: a
  * status outside [ANSWERED] failed rather than generated nothing (`rate-limit.jsonl`'s 429,
- * `weather.jsonl`'s 529), an [END_TURN] ended whatever it reported (`odd-lines.jsonl`), and a
- * stream whose client left was being answered (`stream-cut.jsonl`). A replay hit and a resumed line
- * (#26) both report usage and a zero cost, so both stay turns, which is what they are.
+ * `weather.jsonl`'s 529), a stop reason that says it [ENDED] ended whatever it reported
+ * (`odd-lines.jsonl`), and a stream whose client left was being answered (`stream-cut.jsonl`). A
+ * replay hit and a resumed line (#26) both report usage and a zero cost, so both stay turns, which
+ * is what they are.
+ *
+ * That fence reads [ENDED] and not `end_turn` alone (#93), the same set the bin ships on, because
+ * it asks one question — does this line say the turn ended? — and the answer is spelled `completed`
+ * on the Responses surface. Widening it costs #81 nothing: none of the exchanges it removed says
+ * `completed`, since a poll of a running response says `in_progress` and a cancel says `cancelled`.
+ * What it buys is a Responses create whose usage never parsed, which says `completed` and is a turn
+ * for exactly the reason an `end_turn` that reported nothing is one.
  *
  * The walk is undone and not prevented. A `started` cannot know: what tells these apart is the
  * request's path, which is on no event line, and #81 ruled out putting it there. So a poll still
@@ -280,7 +288,7 @@ private fun nonGenerating(state: FarmState, event: JsonObject): FarmState? {
     val generated =
         usage(event) != null ||
             status(event)?.let { it in ANSWERED } != true ||
-            event["stopReason"].text() == END_TURN ||
+            event["stopReason"].text() in ENDED ||
             event.scalar("clientDisconnected") { booleanOrNull } == true
     if (generated) return null
     val session = event["session"].text()

@@ -229,6 +229,9 @@ class FarmTest {
         assertEquals(120, turn.villager(CODEX).water)
         assertEquals(Weather.RAIN, turn.weather, "the turn read from the cache")
         assertEquals(Growth.SEED, turn.crop("src/codex/Main.kt")?.growth)
+        // A Responses create ends by saying `completed`, which is what ending is called there
+        // (#93): the turn ships its produce like any other.
+        assertEquals(ShippingBin(produce = 1, ledger = 0.03, unpriced = 0), turn.bin)
 
         // The walk is undone and not prevented: nothing on a started line says what is coming, so
         // the poll sends its villager to the well and its completion is what brings it home.
@@ -249,6 +252,7 @@ class FarmTest {
             states.last().days.getValue(CODEX).tokens,
         )
         assertEquals(0.03, states.last().days.getValue(CODEX).cost)
+        assertEquals(turn.bin, states.last().bin, "and nothing after the turn ships anything")
     }
 
     /**
