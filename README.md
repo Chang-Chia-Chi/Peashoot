@@ -68,7 +68,7 @@ Every OpenCode provider is a Vercel AI SDK package and every one of them takes a
 }
 ```
 
-What config cannot say is which OpenCode *session* a request belongs to. A three-line `chat.headers` plugin sets `x-peashoot-session`, which the proxy honours over every other signal, keeps out of the fingerprint, and strips before the request goes upstream.
+What config cannot say is which OpenCode *session* a request belongs to. A `chat.headers` plugin — a three-line hook, in a file of seven once it has its import and its export — sets `x-peashoot-session`, which the proxy honours over every other signal, keeps out of the fingerprint, and strips before the request goes upstream.
 
 **Nobody has run this yet either: no OpenCode binary has been pointed at Peashoot.** Everything above is read from OpenCode's own documentation and source. The plugin, the OpenAI-compatible provider, and the smoke run that is owed to a human with a key are in [`docs/opencode.md`](docs/opencode.md).
 
