@@ -154,17 +154,63 @@ class ControlPlaneTest {
                 // Tested, and still not saved: this is the whole point of the view.
                 assertEquals(before, served(client))
 
-                // The first press only arms the second one, and writes nothing.
+                // Pressing save without ticking the box writes nothing and says why.
                 rules.save()
-                assertTrue(rules.confirming)
+                until { !rules.busy }
+                assertContains(rules.note.orEmpty(), "tick the box")
                 assertEquals(before, served(client), "a collision is confirmed before it is saved")
 
+                rules.confirm(true)
                 rules.save()
                 until { !rules.busy && rules.saved != before }
                 assertEquals(rules.saved, served(client), "the proxy matches on the draft now")
                 assertFalse(rules.confirming, "a saved draft is not still waiting to be confirmed")
+
+                // Saving rules changes what an export of the same rows would strip, so a preview
+                // taken before it is not a preview of what would be written now.
+                val export = model.export
+                export.select("demo", "")
+                export.dryRun()
+                until { !export.busy && export.mayWrite }
+                rules.edit(COLLIDING.replace("/note", "/other"))
+                rules.test()
+                until { !rules.busy && rules.tested != null }
+                rules.save()
+                until { !rules.busy && rules.note?.startsWith("the proxy is matching") == true }
+                assertFalse(export.mayWrite, "a rule change puts the export's preview out")
+                assertContains(export.note.orEmpty(), "preview this export again")
             }
         }
+
+    @Test
+    fun `switching a mode keeps the cassette the route was pinned to`() = withTestProxy { proxy ->
+        withControl(proxy) { model, client ->
+            // Pinned outside the window, as `proxy.toml` or another client would pin it.
+            client
+                .send(
+                    HttpMethod.Put,
+                    "/routes/default",
+                    """{"mode":"replay","strict":false,"cassette":"demo"}""",
+                )
+                .getOrThrow()
+            until { !model.busy }
+            model.reload()
+            until { !model.busy }
+            assertEquals("demo", model.routes.single().cassette)
+
+            model.setMode("default", "record", strict = false)
+            until { !model.busy }
+            // `PUT /routes/{name}` replaces the whole route, so a switch that said nothing
+            // about the cassette would unpin it and a later replay would answer from any
+            // recording at all.
+            assertEquals("demo", model.routes.single().cassette, "the pin survived the switch")
+            assertEquals(
+                RouteRow("default", "record", false, "demo"),
+                routesServed(client)?.single(),
+                "and the proxy holds it, not just this window",
+            )
+        }
+    }
 
     @Test
     fun `an export previews what would be stripped, writes nothing, and then writes the cassette`() =
@@ -232,6 +278,10 @@ private suspend fun HttpClient.call(url: String, body: String): HttpResponse =
 /** What `GET /rules` serves right now, read straight rather than through the editor's state. */
 private suspend fun served(client: ControlClient): String =
     pretty(client.send(HttpMethod.Get, "/rules").getOrThrow())
+
+/** What `GET /routes` serves right now, read the same way. */
+private suspend fun routesServed(client: ControlClient): List<RouteRow>? =
+    routesOf(client.send(HttpMethod.Get, "/routes").getOrThrow())
 
 /**
  * A control plane attached to a real proxy, in the test's own scope, given up again afterwards. The

@@ -17,10 +17,10 @@ import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.put
 
 // The cassette export dialog (#23): pick what to export, see what redaction would strip, and only
-// then write it. The preview is `POST /cassettes/export?dryRun=true`, which is the export itself
-// with the file left unwritten, so what is previewed is what is written and not a second guess at
-// it. Nothing here is ever logged: a preview's `matched` is the secret a redaction rule exists to
-// strip, masked by the proxy and still not something to put in a log file.
+// then write it. The preview is `POST /cassettes/export?dryRun=true`, which is the same export run
+// with the file left unwritten, rather than a second guess at it. Nothing here is ever logged: a
+// preview's `matched` is the secret a redaction rule exists to strip, masked by the proxy and still
+// not something to put in a log file.
 
 /** How many redaction hits are shown before the rest are counted instead. */
 private const val LISTED_HITS = 20
@@ -28,16 +28,31 @@ private const val LISTED_HITS = 20
 /** What an export is of: the name it is written under, and the session it is narrowed to. */
 internal data class Selection(val name: String, val session: String)
 
-/** An export answer as a screen shows it, and where it says it wrote; null path for a dry run. */
-internal data class ExportAnswer(val lines: List<String>, val path: String?)
+/**
+ * An export answer as a screen shows it: the lines, where it says it wrote — null for a dry run —
+ * and the two counts, which are what a write is checked against the preview by.
+ */
+internal data class ExportAnswer(
+    val lines: List<String>,
+    val path: String?,
+    val exchanges: Int,
+    val redactions: Int,
+)
 
 /**
  * What would be exported, what redaction would strip out of it, and then the file.
  *
  * The preview is of one selection and no other: change the name or the session and [previewed] no
- * longer matches, [mayWrite] is false, and the export button goes out. That is the whole of
- * "preview first, then write" — a preview of some other selection is not a preview of this one, and
- * the button being lit is the only claim the window makes about what is about to be written.
+ * longer matches, [mayWrite] is false, and the export button goes out. A preview of some other
+ * selection is not a preview of this one.
+ *
+ * What the lit button claims, exactly: the proxy was asked this same question a moment ago and
+ * answered *that*. It cannot claim more, and the KDoc used to. The export runs on the proxy against
+ * the store and the rules as they are when it runs, so a rule saved in the editor above, or a turn
+ * recorded in between, can make the file differ from what was shown. The first of those is why
+ * [invalidate] exists — a save in the editor puts this preview out — and the second cannot be
+ * closed from here at all, so a write that comes back with different counts says so rather than
+ * letting the preview stand as a description of the file.
  *
  * The cassette is written where the proxy writes it, under the data directory's `cassettes/`, and
  * the path it answers with is what is shown. No file dialog: the file is the proxy's, on the
@@ -59,6 +74,9 @@ internal class ExportModel : Panel() {
     var written by mutableStateOf<String?>(null)
         private set
 
+    /** The whole of the last preview's answer, which a write is compared against. */
+    private var shown: ExportAnswer? = null
+
     /**
      * Whether the export button is offered: a previewed selection, still the one in the fields, and
      * a name to write it under. A blank name is the proxy's to refuse, but there is no sense in
@@ -72,10 +90,18 @@ internal class ExportModel : Panel() {
         val wanted = Selection(name, session)
         if (wanted == selection) return
         selection = wanted
-        previewed = null
-        preview.clear()
-        written = null
+        forget()
         note = null
+    }
+
+    /**
+     * The preview put out by something other than a keystroke: a rule set saved in the editor
+     * above, which changes what an export of the very same selection would strip out of it.
+     */
+    internal fun invalidate() {
+        if (previewed == null) return
+        forget()
+        note = "the rules changed; preview this export again"
     }
 
     /** The export, with the file left unwritten: what would go in it and what would be stripped. */
@@ -85,6 +111,9 @@ internal class ExportModel : Panel() {
         // the window's thread and [Panel] allows one call at a time — but the fold reading a field
         // the user is typing in would be a bug waiting for the day either changes.
         val of = selection
+        // A fresh preview is not a description of the file already on disk, so the path a previous
+        // export answered with goes with it rather than sitting under new lines it does not match.
+        written = null
         start("asking what an export would strip") { client ->
             client
                 .send(HttpMethod.Post, "/cassettes/export?dryRun=true", bodyOf(of))
@@ -95,6 +124,7 @@ internal class ExportModel : Panel() {
                         preview.addAll(read?.lines.orEmpty())
                         // Unreadable is not previewed: the export button stays out rather than
                         // lighting up over a preview nobody could show.
+                        shown = read
                         previewed = if (read == null) null else of
                         note =
                             if (read == null) "the proxy answered a preview this window cannot read"
@@ -112,6 +142,7 @@ internal class ExportModel : Panel() {
             return
         }
         val of = selection
+        val promised = shown
         start("writing ${of.name}") { client ->
             client
                 .send(HttpMethod.Post, "/cassettes/export", bodyOf(of))
@@ -125,12 +156,32 @@ internal class ExportModel : Panel() {
                                     "the cassette was written, but the answer was not " +
                                         "one this window can read"
                                 read.path == null -> "the proxy wrote no file it would name"
+                                // The export ran again on the proxy, under whatever rules and
+                                // recordings it has now. Saying so is the only thing this window
+                                // can do about a file that is not what was previewed.
+                                !read.matches(promised) ->
+                                    "what was written is not what was previewed: " +
+                                        "${read.exchanges} exchanges and ${read.redactions} " +
+                                        "redactions, not ${promised?.exchanges} and " +
+                                        "${promised?.redactions}"
                                 else -> null
                             }
                     },
                     { note = whyNot("write ${of.name}", it) },
                 )
         }
+    }
+
+    /** What a preview and a write have to agree on for the preview to describe the file. */
+    private fun ExportAnswer.matches(promised: ExportAnswer?): Boolean =
+        exchanges == promised?.exchanges && redactions == promised.redactions
+
+    /** Everything a preview left behind, gone, and with it the right to press export. */
+    private fun forget() {
+        previewed = null
+        preview.clear()
+        shown = null
+        written = null
     }
 }
 
@@ -163,7 +214,7 @@ internal fun exportLines(body: String): ExportAnswer? = runCatching {
         if (hits.size > LISTED_HITS) add("… and ${hits.size - LISTED_HITS} more")
         path?.let { add("written to $it") }
     }
-    ExportAnswer(lines, path)
+    ExportAnswer(lines, path, exchanges, redactions)
 }
     .getOrNull()
 

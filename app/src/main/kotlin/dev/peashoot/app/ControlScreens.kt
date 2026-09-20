@@ -29,6 +29,15 @@ import dev.peashoot.core.Mode
 // may be saved, whether an export may be written, what a refusal says — is in the models beside
 // this, where it is asserted against a real proxy without a window. Block bodies, for the reason
 // `Main.kt`'s comment gives.
+//
+// ponytail: this tab is outside the show-paths toggle, deliberately and not by oversight. That
+// toggle keeps *repository* paths out of a picture of the farm — the paths an agent's tools named,
+// which came in over the wire — and what is written here is the proxy's own file system: where it
+// wrote a cassette, and `dumpFrames` and `cassetteFile` inside the config it serves. A cassette
+// path masked to `file 1a2b3c` would not tell the person who just exported it where to find their
+// file, which is the one thing that line is for. It does mean this tab is not screenshot-safe the
+// way the farm is, since those paths name a home directory. Upgrade: a toggle of its own if the
+// control plane ever ends up in a screenshot, or the farm's if the two ever have to mean one thing.
 
 /** Wide enough for the longest route name this proxy has, which is `default`. */
 private val NAME_WIDTH = 120.dp
@@ -63,21 +72,24 @@ internal fun ControlScreen(model: ControlPlaneModel, modifier: Modifier = Modifi
 }
 
 /**
- * A panel's heading: what it is, what it is doing, and the one button every panel has. The note is
- * the panel's own line — what is in flight, or why the last call did not work — and is shown
- * whatever it says, because a panel that hides its failures is a panel that lies.
+ * A panel's heading: what it is, what it is doing, and — for the two panels that read something
+ * from the proxy — the button that reads it again. The note is the panel's own line, what is in
+ * flight or why the last call did not work, and is shown whatever it says, because a panel that
+ * hides its failures is a panel that lies. [onReload] is null where there is nothing to re-read:
+ * the export panel's only read is its preview, which has a button of its own further down, and two
+ * controls doing one thing under two names is worse than one.
  */
 @Composable
 private fun SectionHead(
     title: String,
     panel: Panel,
-    onReload: () -> Unit,
+    onReload: (() -> Unit)?,
     modifier: Modifier = Modifier,
 ) {
     Column(modifier.fillMaxWidth()) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(title, style = MaterialTheme.typography.subtitle1, modifier = Modifier.weight(1f))
-            TextButton(onClick = onReload, enabled = !panel.busy) { Text("reload") }
+            onReload?.let { TextButton(onClick = it, enabled = !panel.busy) { Text("reload") } }
         }
         panel.note?.let { Text(it, fontSize = SMALL.sp) }
     }
@@ -87,8 +99,10 @@ private fun SectionHead(
 @Composable
 private fun RoutesSection(model: ControlPlaneModel, modifier: Modifier = Modifier) {
     Column(modifier.fillMaxWidth()) {
+        // No placeholder under an empty table: the note above says which of the three empties this
+        // is — nothing read yet, a proxy with no routes, or an answer nobody could read — and a
+        // fourth sentence here could only disagree with it.
         SectionHead("routes", model, model::reload)
-        if (model.routes.isEmpty()) Text("no routes read yet", fontSize = SMALL.sp)
         model.routes.forEach { route ->
             RouteControls(
                 route,
@@ -133,7 +147,9 @@ private fun RouteControls(
 /**
  * The rule set as text, with test, save and revert. Save is drawn disabled until the draft in the
  * box is the draft the proxy tested, and [RulesModel.blocked] says so in words beside it, so the
- * button being out is never a mystery.
+ * button being out is never a mystery. A test that found collisions or splits puts a box beside the
+ * button, which has to be ticked before that button will do anything — a tick and not a second
+ * press, for the reason [RulesModel] gives.
  */
 @Composable
 private fun RulesSection(rules: RulesModel, modifier: Modifier = Modifier) {
@@ -151,11 +167,18 @@ private fun RulesSection(rules: RulesModel, modifier: Modifier = Modifier) {
             Button(
                 onClick = rules::save,
                 modifier = Modifier.padding(horizontal = 8.dp),
-                enabled = !rules.busy && rules.mayTry,
+                enabled = !rules.busy && rules.mayTry && rules.blocked == null,
             ) {
-                Text(if (rules.confirming) "save anyway" else "save")
+                Text("save")
             }
             TextButton(onClick = rules::revert, enabled = !rules.busy) { Text("revert") }
+            if (rules.risky) {
+                Checkbox(
+                    checked = rules.confirming,
+                    onCheckedChange = rules::confirm,
+                    enabled = !rules.busy,
+                )
+            }
             rules.blocked?.let { Text(it, fontSize = SMALL.sp) }
         }
         rules.outcome.forEach { Text(it, fontFamily = FontFamily.Monospace, fontSize = SMALL.sp) }
@@ -169,7 +192,7 @@ private fun RulesSection(rules: RulesModel, modifier: Modifier = Modifier) {
 @Composable
 private fun ExportSection(export: ExportModel, modifier: Modifier = Modifier) {
     Column(modifier.fillMaxWidth()) {
-        SectionHead("cassette export", export, export::dryRun)
+        SectionHead("cassette export", export, onReload = null)
         Row(verticalAlignment = Alignment.CenterVertically) {
             OutlinedTextField(
                 value = export.selection.name,

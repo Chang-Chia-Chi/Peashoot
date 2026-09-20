@@ -8,6 +8,7 @@ import dev.peashoot.app.farm.scalar
 import dev.peashoot.core.text
 import io.ktor.http.HttpMethod
 import io.ktor.http.encodeURLPathPart
+import kotlin.coroutines.cancellation.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
@@ -65,8 +66,13 @@ internal class Asking(private val scope: CoroutineScope, private val client: Con
  * Nothing here throws at a click: [ControlClient.send] answers a `Result` and a panel folds it.
  */
 internal abstract class Panel {
-    /** What this panel is doing, or why it cannot: one line, always safe to show. */
-    var note by mutableStateOf<String?>(null)
+    /**
+     * What this panel is doing, or why it cannot: one line, always safe to show. It starts saying
+     * there is no proxy, because the window draws this tab from the moment it opens and `watch`
+     * attaches only once it has found or started one — a panel with nothing in it and nothing to
+     * say would otherwise read as a proxy that answered with nothing.
+     */
+    var note by mutableStateOf<String?>("no proxy yet")
         protected set
 
     /** Whether a call is out. Every button this panel draws is disabled while it is. */
@@ -78,6 +84,7 @@ internal abstract class Panel {
 
     internal open fun attach(asking: Asking) {
         this.asking = asking
+        note = null
     }
 
     /**
@@ -108,8 +115,17 @@ internal abstract class Panel {
                 busy = true
                 note = doing
                 job = asking.launch { client ->
-                    work(client)
+                    // These panels are children of `AppModel.watch`'s scope, so a throwable out of
+                    // one would cancel that scope and take the feed, the health poll and the farm
+                    // clock down with it — the whole window lost to one bad control answer. Every
+                    // call answers a `Result` and every parse is guarded, so nothing is expected
+                    // here; what is caught is the unexpected, and a panel saying so is a window
+                    // that still works. Cancellation is rethrown, because a cancelled panel is
+                    // [detach] doing its job and has no news to report.
+                    val failure = runCatching { work(client) }.exceptionOrNull()
+                    if (failure is CancellationException) throw failure
                     busy = false
+                    failure?.let { note = whyNot(doing, it) }
                 }
             }
         }
@@ -118,13 +134,16 @@ internal abstract class Panel {
 
 /**
  * The route table and the config as the proxy runs them, and the one thing this window changes
- * about either: a route's mode. `PUT /routes/{name}` takes effect on the proxy's next request, so a
- * switch here is a switch in what the next call through the relay does, not a preference this
- * window keeps.
+ * about either: a route's mode and its strictness. `PUT /routes/{name}` takes effect on the proxy's
+ * next request, so a switch here is a switch in what the next call through the relay does, not a
+ * preference this window keeps.
  *
  * Config is read-only on purpose. `GET /config` holds no secret by design — the token is not a
  * config value at all and `secretHeaders` is names only — so nothing here re-filters it; and a
  * general config editor is not what #23 asks for, where the route modes are.
+ *
+ * It also owns the other two panels, which is how the one thing they have to say to each other gets
+ * said: saving a rule set changes what an export would redact, so it retires the export's preview.
  */
 internal class ControlPlaneModel : Panel() {
     /** The routes as `GET /routes` last served them, in the proxy's own order. */
@@ -134,8 +153,14 @@ internal class ControlPlaneModel : Panel() {
     var config by mutableStateOf<String?>(null)
         private set
 
-    val rules = RulesModel()
     val export = ExportModel()
+
+    /**
+     * Declared after [export] and told to retire its preview on a save: redaction runs under the
+     * rules the proxy holds when the export runs, so a preview taken before a rule change is a
+     * preview of what would have happened.
+     */
+    val rules = RulesModel { export.invalidate() }
 
     /** Given a proxy to ask and a scope to ask from, for as long as [AppModel.watch] has both. */
     internal fun attach(scope: CoroutineScope, client: ControlClient) {
@@ -154,29 +179,34 @@ internal class ControlPlaneModel : Panel() {
     }
 
     /**
-     * The routes and the config, in that order and in one call's worth of waiting, because they are
-     * one screen. A config that could not be read leaves the routes that could.
+     * The routes and the config, in one call's worth of waiting, because they are one screen. One
+     * of them failing leaves the other alone: either can be the half that arrived.
      */
     fun reload() =
         start("asking the proxy for its routes and config") { client ->
-            val table = client.send(HttpMethod.Get, "/routes")
-            table.fold(
-                { answer ->
-                    val read = routesOf(answer)
-                    routes.clear()
-                    routes.addAll(read.orEmpty())
-                    // Three answers, three sentences: unreadable is not empty, and empty is not
-                    // fine.
-                    note =
-                        when {
-                            read == null -> "the proxy answered routes this window cannot read"
-                            read.isEmpty() -> "the proxy serves no routes"
-                            else -> null
+            client
+                .send(HttpMethod.Get, "/routes")
+                .fold(
+                    { answer ->
+                        val read = routesOf(answer)
+                        // Replaced only when something was read: one truncated answer must not
+                        // throw away a table that is on screen and right. Three answers, three
+                        // sentences — unreadable is not empty, and empty is not fine.
+                        read?.let {
+                            routes.clear()
+                            routes.addAll(it)
                         }
-                },
-                { note = whyNot("read the routes", it) },
-            )
-            if (table.isFailure) return@start
+                        note =
+                            when {
+                                read == null -> "the proxy answered routes this window cannot read"
+                                read.isEmpty() -> "the proxy serves no routes"
+                                else -> null
+                            }
+                    },
+                    { note = whyNot("read the routes", it) },
+                )
+            // Asked for whatever the routes did: either half can be the one that arrived, and a
+            // config section stuck on "not read yet" because of a routes failure says nothing true.
             client
                 .send(HttpMethod.Get, "/config")
                 .fold({ config = pretty(it) }, { note = whyNot("read the config", it) })
@@ -189,9 +219,15 @@ internal class ControlPlaneModel : Panel() {
      */
     fun setMode(name: String, mode: String, strict: Boolean) =
         start("switching $name to $mode") { client ->
+            // The cassette is sent back as it stands, and is read off the row here rather than
+            // asked for by the caller: `PUT /routes/{name}` replaces the *whole* route, so a body
+            // that says nothing about the cassette unpins a pinned one — and a route that was
+            // replaying one cassette would come back replaying any recording at all. Reading it
+            // here is what keeps that invariant in one place instead of in every call site.
             val body = buildJsonObject {
                 put("mode", mode)
                 put("strict", strict)
+                put("cassette", routes.firstOrNull { it.name == name }?.cassette)
             }
             client
                 .send(HttpMethod.Put, "/routes/${name.encodeURLPathPart()}", body.toString())

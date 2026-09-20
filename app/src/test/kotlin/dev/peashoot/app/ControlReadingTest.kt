@@ -22,10 +22,10 @@ class ControlReadingTest {
         assertEquals("test this draft before saving it", saveBlocked("{}", "{ }", true, true))
         // Tested and clean: the first press saves it, and a confirmation is not asked for.
         assertNull(saveBlocked("{}", "{}", risky = false, confirming = false))
-        // Tested and risky: once to arm, once to mean it.
+        // Tested and risky: the box has to be ticked, which a held key on the button cannot do.
         assertContains(
             saveBlocked("{}", "{}", risky = true, confirming = false).orEmpty(),
-            "press save again",
+            "tick the box",
         )
         assertNull(saveBlocked("{}", "{}", risky = true, confirming = true))
     }
