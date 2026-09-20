@@ -77,6 +77,34 @@ object Responses : Surface {
     private const val RESPONSE_INCOMPLETE = "response.incomplete"
 
     /**
+     * The `sequence_number` a streamed event carries, which is the number `?starting_after=N`
+     * counts by, or null for a frame that has none: a non-streaming body, the unterminated tail of
+     * a cut stream, or an event of some later grammar than this one.
+     *
+     * This is what #25's As-built said #27 would have to add. It is read on demand rather than kept
+     * as a field on [Frame], because only this surface has sequence numbers and only the proxy's
+     * cursor path ever asks: a field would cost every frame of every surface a parse for it, and
+     * frames are recorded and replayed as bytes precisely so that nothing has to understand them.
+     */
+    fun sequenceNumber(frame: Frame): Int? =
+        jsonObjectOrNull(chunkText(frame.raw))?.get("sequence_number").int()
+
+    /**
+     * Which response this frame belongs to, as the stream itself announced it: `response.created`
+     * carries the response object with its `id`, and so does every later `response.*` event, while
+     * a non-streaming body, a get-by-id and a cancel are that object on their own. The events
+     * between — an item added, an argument fragment — name only their item, so they answer null and
+     * the id read from an earlier frame stands.
+     */
+    fun responseId(frame: Frame): String? {
+        val json = jsonObjectOrNull(chunkText(frame.raw)) ?: return null
+        val response = json["response"] as? JsonObject
+        return (response ?: json.takeIf { it["object"].text() == RESPONSE_OBJECT })
+            ?.get("id")
+            .text()
+    }
+
+    /**
      * One response's frames. A key a later frame names overrides what an earlier one said and the
      * rest keep what they had, so the reader is correct at every point in the stream and not only
      * at its end. Usage arrives on the terminal event alone and a response that carries none leaves

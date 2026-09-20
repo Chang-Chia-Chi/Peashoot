@@ -3,6 +3,7 @@ package dev.peashoot.proxy
 import dev.peashoot.core.FrameParser
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.cio.CIO
+import io.ktor.client.request.get
 import io.ktor.client.request.post
 import io.ktor.client.request.setBody
 import io.ktor.client.statement.HttpResponse
@@ -30,6 +31,34 @@ internal const val RESPONSES_PATH = "/v1/responses"
 internal const val RESPONSES_REQUEST =
     """{"model":"gpt-5","stream":true,"input":[{"type":"message","role":"user",""" +
         """"content":[{"type":"input_text","text":"count to three"}]}]}"""
+
+/** The same turn asked for in background mode, which #27 serves from no buffer of ours. */
+internal const val BACKGROUND_REQUEST =
+    """{"model":"gpt-5","stream":true,"background":true,"input":[{"type":"message",""" +
+        """"role":"user","content":[{"type":"input_text","text":"count to three"}]}]}"""
+
+/**
+ * The response id the Responses fixture's own stream announces, on `response.created` and on every
+ * later event that carries the response object. A cursor request names it in the path.
+ */
+internal const val RESPONSES_ID = "resp_REDACTED"
+
+/**
+ * `GET /v1/responses/{id}?stream=true&starting_after=N`, with [after] written exactly as given so a
+ * test can ask with a value that is no number at all; null leaves the parameter off entirely.
+ */
+internal fun cursorPath(
+    after: String?,
+    id: String = RESPONSES_ID,
+    stream: Boolean = true,
+): String =
+    "$RESPONSES_PATH/$id" +
+        listOfNotNull(
+                "stream=true".takeIf { stream },
+                after?.let { "starting_after=$it" },
+            )
+            .joinToString("&")
+            .let { if (it.isEmpty()) "" else "?$it" }
 
 /** How many frames a leaving client reads first: mid-stream, with frames on both sides of it. */
 internal const val LEFT_AFTER = 6
@@ -200,6 +229,13 @@ internal class ResumeRig(
                 setBody(TextContent(body, ContentType.Application.Json))
             }
         }
+
+    /** The Responses cursor is a GET, so it has no body and none of [post]'s content type. */
+    suspend fun get(path: String): HttpResponse =
+        HttpClient(CIO).use { client -> client.get("${proxy.url}$path") }
+
+    /** [get] read back as the provider's own frames alone, for a byte comparison. */
+    suspend fun streamedGet(path: String): String = get(path).bodyAsText().withoutPings()
 
     /** The event lines of one kind, in the order the deriver stored them. */
     suspend fun events(kind: String): List<JsonObject> =

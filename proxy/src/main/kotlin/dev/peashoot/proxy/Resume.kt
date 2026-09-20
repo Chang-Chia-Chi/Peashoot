@@ -7,6 +7,7 @@ import dev.peashoot.core.FrameSource
 import dev.peashoot.core.Interceptor
 import dev.peashoot.core.Mode
 import dev.peashoot.core.Outcome
+import dev.peashoot.core.Responses
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.isSuccess
 import java.io.IOException
@@ -21,6 +22,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.onCompletion
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.onStart
+import kotlinx.serialization.json.JsonPrimitive
 import org.slf4j.LoggerFactory
 import org.tomlj.TomlParseResult
 
@@ -60,6 +62,12 @@ internal val CONTINUATION_GRACE = 5.seconds
  * measured story of its own, a [Continuable] request continued (ADR 0002), which finds its
  * candidates by the fingerprint of the request's stem and then compares the rest exactly, never
  * matching on that hash alone.
+ *
+ * Or, on the Responses surface alone, a cursor: `GET
+ * /v1/responses/{id}?stream=true&starting_after=N` naming a buffered answer by the response id its
+ * own stream announced (#27). That path is [cursor], which reads the buffer rather than claiming
+ * it, needs no client-gone fence, and stands aside entirely for a response created in background
+ * mode, where the provider holds the events itself.
  *
  * One drop buys one resume. A claim takes the exchange out of [claimable], so the next equal
  * request goes upstream: one buffered answer would otherwise be served to every retry for the whole
@@ -126,9 +134,28 @@ class Resume(
          */
         val stream = exchange.request.json?.get("stream")
 
+        /**
+         * Whether the request asked for background mode, which is the one thing that takes this
+         * answer's cursor out of the proxy's hands (#27). A background response is the provider's
+         * own to resume: it holds the events for about ten minutes and answers `starting_after`
+         * itself, so the cursor, the create and the cancel all go upstream and are recorded and
+         * replayed as #25 built them. Only the JSON boolean counts — absent, `false`, and a string
+         * `"true"` are all not background, the last because it is a request OpenAI would refuse.
+         */
+        val background = exchange.request.json?.get("background") == JsonPrimitive(true)
+
         /** Only what a continuation is judged by; the request itself is not kept past its end. */
         val continuable: Continuable? = exchange.normalized?.let(exchange.surface::continuable)
         val answer = FrameLog()
+
+        /**
+         * Which response this answer is, as its own stream announced it, or null before it has.
+         * Written by the drive alone, in frame order, and read by any request coroutine, exactly as
+         * [last] is: a cursor arriving before the first frame is buffered finds nothing and goes
+         * upstream, which is honest — a client can only know the id from the `response.created` it
+         * must already have received.
+         */
+        @Volatile var responseId: String? = null
 
         /**
          * The last frame appended, which is the only thing that says whether a finished answer is
@@ -157,6 +184,24 @@ class Resume(
          */
         fun servable(): Boolean =
             !answer.done || (!answer.failed && last?.let(surface::terminates) == true)
+
+        /**
+         * Whether a cursor naming [id] is asking for this answer. Deliberately not [servable]: that
+         * rule protects a client that asked for an *answer* from being handed a broken one as
+         * though it were whole, and a cursor asked for something else — the events of one named
+         * response after a number. The truthful reply to that is the ones that exist, ending where
+         * the original ended. Refusing instead would send the client to an upstream that has
+         * nothing to resume, since this response was not created in background mode.
+         */
+        fun answers(id: String): Boolean = responseId == id && !background
+
+        /**
+         * Reads the response id off a frame, on the one surface that has one and only until the
+         * stream has named it, so no other surface pays a parse for a field it cannot have.
+         */
+        fun noteResponseId(frame: Frame) {
+            if (surface == Responses && responseId == null) responseId = Responses.responseId(frame)
+        }
 
         /**
          * Inside its [window] once the chain has heard it go; before that, on the engine's word.
@@ -206,7 +251,12 @@ class Resume(
         if (!enabled || exchange.mode == Mode.REPLAY) return null
         val asked = Entry(exchange)
         evict()
-        val original = claim(asked)
+        // A cursor names one response id and is matched by that alone, where every other request is
+        // matched by its fingerprint or its continuation. Nothing is ever both, so the two paths
+        // never race for one entry — and a cursor takes nothing out of the buffer, so there is
+        // nothing for them to race over even if one day they could.
+        val cursor = cursor(exchange)
+        val original = if (cursor == null) claim(asked) else null
         // Tracked whether or not it was answered from the buffer: a resumed exchange whose own
         // client goes is the next one to be resumed.
         inFlight[exchange.id] = asked
@@ -214,8 +264,45 @@ class Resume(
         // A claim made on the engine's word can be ahead of the upstream's first byte: wait for
         // the response it is about to have, or for the word that it never had one.
         val response = original.awaited()
-        return if (original == null || response == null) null
-        else served(exchange, original, response)
+        return cursor
+            ?: if (original == null || response == null) null
+            else served(exchange, original, response, original.answer.frames())
+    }
+
+    /**
+     * The buffered answer a Responses cursor asks for (#27, design section 9), or null for an
+     * honest miss that goes upstream, or a [Refusal] for a cursor that named no sequence number.
+     *
+     * A cursor **reads** where a re-issued POST **claims**, and that is the one decision this path
+     * turns on. A GET is a read by nature and [FrameLog] serves any number of readers; more to the
+     * point, #26's one-drop-one-resume rule exists to stop a buffered answer being handed to every
+     * retry of the same *prompt*, where the second ask may well be a user wanting a fresh sample. A
+     * cursor cannot mean that: it names one response id and one number, so it has exactly one true
+     * answer however often it is asked. Reading also leaves the entry where eviction can find it,
+     * so the window and the cap still bound what is held, and it needs none of [awaited]'s put-back
+     * dance — a cursor cancelled mid-wait removed nothing and so resurrects nothing, which is the
+     * race [live] exists to guard on the claiming path.
+     *
+     * Eligibility is looser than a re-issued POST's for the same reason. A POST is fenced by "the
+     * client has gone", because two equal requests from two live clients are a user asking twice; a
+     * cursor is an explicit request to resume one named response and needs no such fence, so
+     * [claimable] — every exchange in flight, plus those that completed after their client left —
+     * is scanned as it stands. An exchange whose client stayed to the end is gone from that map
+     * by #26's rule, and a cursor for it is then an honest miss that goes upstream.
+     */
+    private suspend fun cursor(exchange: Exchange): FrameSource? {
+        val id = exchange.cursorId() ?: return null
+        val after = exchange.startingAfter()
+        val original = if (after == null) null else claimable.values.firstOrNull { it.answers(id) }
+        // The same wait a re-issue makes, for the same reason: the original may have been claimed
+        // on the engine's word before the upstream's first byte. Without the claim, so nothing has
+        // to be given back if this cursor's own client leaves while it waits.
+        val response = original?.started?.await()?.takeIf { it.streamable() }
+        return when {
+            after == null -> exchange.badCursor()
+            original == null || response == null -> null
+            else -> served(exchange, original, response, original.answer.frames().after(after))
+        }
     }
 
     /**
@@ -250,22 +337,25 @@ class Resume(
     private fun Entry.live(): Boolean = inFlight.containsKey(id) || goneAt != null
 
     /**
-     * The buffered answer as a source. Only the [FrameLog] is captured, so what recognised the
-     * original — its normalized shape, its continuation blocks — is free to go when it ends.
+     * The buffered [answer] as a source, under the original's own status and headers. Only the flow
+     * is captured, so what recognised the original — its normalized shape, its continuation blocks
+     * — is free to go when it ends. A re-issued POST passes the whole of the answer; a cursor
+     * passes the same read with a filter on it, which is all the difference there is between them
+     * once the original has been found.
      */
     private fun served(
         exchange: Exchange,
         original: Entry,
         response: Exchange.Response,
+        answer: Flow<Frame>,
     ): FrameSource {
         log.info("exchange {} resumed from the answer to {}", exchange.id, original.id)
         exchange.resumed = true
-        val answer = original.answer
         return object : FrameSource {
             override val status = response.status
             override val headers = response.headers
 
-            override fun frames() = answer.frames()
+            override fun frames() = answer
         }
     }
 
@@ -280,6 +370,7 @@ class Resume(
             .onEach {
                 entry.answer.append(it)
                 entry.last = it
+                entry.noteResponseId(it)
             }
             .onCompletion { failure -> entry.answer.end(failure) }
     }
@@ -297,15 +388,19 @@ class Resume(
     }
 
     /**
-     * An exchange whose client stayed to the end has nothing to resume, and one that ended short
-     * has nothing worth resuming. Ending the log and the wait here as well is what frees a re-issue
-     * that claimed an exchange which then never streamed: refused, unreachable, or stopped.
+     * An exchange whose client stayed to the end has nothing to resume, so it goes. One that ended
+     * short stays, though nothing may be served it as a whole answer: [claim] refuses it there, on
+     * the same [Entry.servable] rule #26 wrote, while a cursor may still read the frames that did
+     * arrive — which is the whole of why this is not the completion's decision to make. Held no
+     * longer than any other buffered answer: [evict] counts it against the window and the cap like
+     * the rest. Ending the log and the wait here as well is what frees a re-issue that claimed an
+     * exchange which then never streamed: refused, unreachable, or stopped.
      */
     override suspend fun onComplete(exchange: Exchange, outcome: Outcome) {
         val entry = inFlight.remove(exchange.id) ?: return
         entry.started.complete(null)
         entry.answer.end(IOException("exchange ${entry.id} ended before its stream did"))
-        if (entry.goneAt == null || !entry.servable()) claimable.remove(entry.id, entry)
+        if (entry.goneAt == null) claimable.remove(entry.id, entry)
     }
 
     /**
@@ -335,11 +430,23 @@ class Resume(
             .dropLast(capacity)
             .forEach { claimable.remove(it.id, it) }
     }
-
-    /** Only a success is an answer anyone paid for; a 429 served again would only be obeyed. */
-    private fun Exchange.Response.worthServing(): Boolean =
-        HttpStatusCode.fromValue(status).isSuccess()
 }
+
+/**
+ * Only a success is an answer anyone paid for; a 429 served again would only be obeyed. Beside the
+ * class rather than inside it, with [streamable], so `Resume` stays clear of detekt's eleven-member
+ * ceiling now that the cursor path has a method of its own; neither reads any of its state.
+ */
+private fun Exchange.Response.worthServing(): Boolean = HttpStatusCode.fromValue(status).isSuccess()
+
+/**
+ * Whether a cursor's client, which asked for `stream=true`, can be handed these frames. A buffered
+ * answer to a `stream: false` create is one JSON document with no sequence numbers in it, and
+ * serving that under the cursor's name would hand a client expecting events a body it has no parser
+ * for — the same mismatch #26 refuses on the `stream` field for a re-issued POST.
+ */
+private fun Exchange.Response.streamable(): Boolean =
+    worthServing() && headers.declaresEventStream()
 
 /** Any TOML number of seconds that is not negative; zero is how the file turns resume off. */
 internal fun TomlParseResult.resumeWindow(default: Duration): Duration =
