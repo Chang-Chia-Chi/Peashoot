@@ -46,9 +46,11 @@ private val TOOL_COLOURS =
     )
 
 /**
- * A pipe or a line break inside a path would forge a field or a whole line: Gource cannot escape.
+ * A pipe or a control character (a line break, most sharply) inside a field would forge another
+ * field or a whole line: Gource cannot escape. `\r` and `\n` are themselves control characters, so
+ * one class covers both the path (already checked below) and the session, which is used here too.
  */
-private val FIELD_BREAKERS = Regex("[|\r\n]")
+private val FIELD_BREAKERS = Regex("[|\\p{Cntrl}]")
 
 /**
  * The Gource custom-format log, so a repository can be watched as its agents move through it: one
@@ -65,7 +67,7 @@ class GourceLog(private val file: Path) {
      * file leaves the log untouched.
      */
     suspend fun append(session: String?, tools: List<ToolCall>) {
-        val user = session?.substringAfterLast(':')?.take(USER_LENGTH) ?: "unknown"
+        val user = session?.substringAfterLast(':')?.sanitisedUser() ?: "unknown"
         val fields = tools.mapNotNull { it.gourceFields() }
         if (fields.isEmpty()) return
         withContext(Dispatchers.IO + NonCancellable) {
@@ -85,6 +87,13 @@ class GourceLog(private val file: Path) {
         }
     }
 }
+
+/**
+ * The session comes straight off a client header, so whoever sends the request chooses it: a
+ * breaker sanitised before the truncation still yields one well-formed line, attributed to a
+ * harmless name, rather than a forged field or a forged line.
+ */
+private fun String.sanitisedUser(): String = FIELD_BREAKERS.replace(this, "_").take(USER_LENGTH)
 
 /**
  * The type, file, and colour fields of a line, or null for a tool that named no file the line can
