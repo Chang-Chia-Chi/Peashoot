@@ -22,10 +22,13 @@ private const val OVERLOADED = 529
 internal const val TOO_MANY_REQUESTS = 429
 
 /** A turn that ended, rather than one that stopped to call a tool and will carry on. */
-private const val END_TURN = "end_turn"
+internal const val END_TURN = "end_turn"
 
-/** Answered, as against refused or failed: only these drop produce in the bin. */
-private val ANSWERED = 200..299
+/**
+ * Answered, as against refused or failed: only these drop produce in the bin, and only one of these
+ * can be a line that is no turn at all — a failure reported no usage because it failed.
+ */
+internal val ANSWERED = 200..299
 
 /** What one event line says, read the way a line from another process has to be read: as maybe. */
 internal fun status(event: JsonObject): Int? = event.scalar("status") { intOrNull }
