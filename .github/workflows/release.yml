@@ -62,8 +62,9 @@ jobs:
           if [ "$REF_TYPE" = tag ]; then
             version="${REF_NAME#v}"
             # Exactly three numbers, because this string becomes a Gradle argument and a
-            # `case` glob would have let most of a tag name through.
-            if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            # `case` glob would have let most of a tag name through. The major may not be 0:
+            # jpackage would refuse it, but only on the Windows leg, twenty minutes from here.
+            if ! [[ "$version" =~ ^[1-9][0-9]*\.[0-9]+\.[0-9]+$ ]]; then
               echo "a release tag must read vMAJOR.MINOR.PATCH, not $REF_NAME"
               exit 1
             fi

@@ -52,13 +52,14 @@ jobs:
             echo "no event lines to upload"
             exit 0
           fi
-          if grep -Eq 'sk-ant-|sk-[A-Za-z0-9_-]{16,}|[Bb]earer [A-Za-z0-9._-]{16,}' "$EVENTS"; then
+          if grep -Eqi 'sk-ant-|sk-[a-z0-9_-]{16,}|bearer [a-z0-9._-]{16,}' "$EVENTS"; then
             echo "::error::an event line holds something shaped like an API key; not uploading"
             exit 1
           fi
           echo "clean=true" >>"$GITHUB_OUTPUT"
 
-      - if: steps.scrub.outputs.clean == 'true'
+      # `always()`, because the run whose event lines are worth reading is the one that failed.
+      - if: always() && steps.scrub.outputs.clean == 'true'
         uses: actions/upload-artifact@v7
         with:
           name: live-smoke-events

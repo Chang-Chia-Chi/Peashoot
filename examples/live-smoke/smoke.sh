@@ -31,8 +31,15 @@ out=${PEASHOOT_SMOKE_EVENTS:-}
 url=
 proxy=
 
+# Before anything can fail: two temp directories and a child process are already at stake.
+trap cleanup EXIT
+
 cleanup() {
   stop
+  # Here and not at the end of a passing run: the lines worth reading are a failed run's.
+  if [ -n "$out" ] && [ -f "$events" ]; then
+    cp "$events" "$out"
+  fi
   rm -rf "$home" "$conf"
 }
 
@@ -70,8 +77,11 @@ start() {
 # A key belongs in a file curl reads, never in an argument list: `ps` shows the arguments of every
 # process on the machine, and a failing command prints its own.
 keyfile() {
-  umask 077
-  printf 'header = "%s: %s"\n' "$2" "$3" >"$conf/$1.conf"
+  # A subshell, so the umask is this one file's business and not every write after it.
+  (
+    umask 077
+    printf 'header = "%s: %s"\n' "$2" "$3" >"$conf/$1.conf"
+  )
 }
 
 anthropic_call() {
@@ -144,16 +154,23 @@ expect2xx() {
   esac
 }
 
+# Waits for one more matching line than there was. The proxy ends the client's response before its
+# sinks run, so the line is written after curl has already returned, and a count read on the spot
+# can miss one that is on its way. Ten seconds is many times what an insert and an append take.
 gained() {
-  if [ "$3" -le "$2" ]; then
-    echo "$1: no new event line ($2 before, $3 after)"
-    tail -n 3 "$events" 2>/dev/null || true
-    cat "$log"
-    exit 1
-  fi
+  local tries=0
+  while [ "$tries" -lt 20 ]; do
+    if [ "$(completed "$2" "$3")" -gt "$4" ]; then
+      return 0
+    fi
+    sleep 0.5
+    tries=$((tries + 1))
+  done
+  echo "$1: no new event line after 10s (there were $4)"
+  tail -n 3 "$events" 2>/dev/null || true
+  cat "$log"
+  exit 1
 }
-
-trap cleanup EXIT
 
 # A word list and not an array: the names hold no spaces, and `${#array[@]}` on an empty array is
 # an unbound variable under `set -u` in the bash macOS still ships.
@@ -181,8 +198,7 @@ for provider in $providers; do
   before=$(completed "$provider" '"usage":{')
   status=$(call "$provider")
   expect2xx "$provider (record)" "$status"
-  after=$(completed "$provider" '"usage":{')
-  gained "$provider (record)" "$before" "$after"
+  gained "$provider (record)" "$provider" '"usage":{' "$before"
   echo "$provider: $status, and one more exchange.completed with usage"
 done
 stop
@@ -208,14 +224,9 @@ for provider in $providers; do
   before=$(completed "$provider" '"replayHit":true')
   status=$(call "$provider")
   expect2xx "$provider (replay)" "$status"
-  after=$(completed "$provider" '"replayHit":true')
-  gained "$provider (replay)" "$before" "$after"
+  gained "$provider (replay)" "$provider" '"replayHit":true' "$before"
   echo "$provider: $status from the store, with nothing listening upstream"
 done
 stop
 
-if [ -n "$out" ]; then
-  cp "$events" "$out"
-  echo "event lines left in $out"
-fi
 echo "live smoke passed for:$providers"

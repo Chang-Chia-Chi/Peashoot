@@ -88,14 +88,24 @@ compose.desktop {
             copyright = "Copyright 2026 The Peashoot authors"
             licenseFile.set(rootProject.file("LICENSE"))
             appResourcesRootDir.set(layout.buildDirectory.dir("appResources"))
-            // The runtime image the app ships is also the JVM it starts the proxy on, so it has to
-            // hold what the proxy needs as well as what the window does. From
+            // The runtime image the app ships is also the JVM it starts the proxy on, so it has
+            // to hold what the proxy needs as well as what the window does. All but the last are
             //   jdeps --multi-release 21 --ignore-missing-deps --print-module-deps peashoot.jar
-            // (java.sql for SQLite, jdk.unsupported for Netty's Unsafe, java.naming for CIO's TLS)
-            // with `./gradlew :app:suggestRuntimeModules` for Compose and Skiko, which asks for
-            // java.instrument, java.management and jdk.unsupported. java.base is in
-            // every image. Re-run both when a dependency is added, or a start fails on a module
-            // that is not here.
+            // (java.sql for SQLite, jdk.unsupported for Netty's Unsafe, java.naming for HikariCP's
+            // JNDI lookup and Netty's `LdapName` in certificate hostnames), together with
+            // `./gradlew :app:suggestRuntimeModules` for Compose and Skiko, which asks for
+            // java.instrument, java.management and jdk.unsupported. java.base is in every image,
+            // and jlink adds what these require: java.logging and java.xml come with java.sql.
+            //
+            // jdk.crypto.ec is the one jdeps cannot see, because SunEC is a service and not an
+            // import — and it is the whole TLS handshake to the providers. It is an empty
+            // placeholder on the JDK this was built with (22: `sun.security.ec` is in java.base
+            // now), but CI packages on 21, where it may still carry SunEC, and a missing one
+            // fails nowhere but on a user's machine.
+            //
+            // ponytail: a hand-kept list, so re-run both commands when a dependency is added, and
+            // suspect this first when an installed app cannot reach a provider. Upgrade:
+            // `includeAllModules = true`, which cannot be wrong, for something like 40 MB.
             modules(
                 "java.desktop",
                 "java.instrument",
@@ -104,16 +114,19 @@ compose.desktop {
                 "java.sql",
                 "jdk.jfr",
                 "jdk.unsupported",
+                "jdk.crypto.ec",
             )
         }
     }
 }
 
 // Compose stages the resources for every packaging task through this one, so the jar is in place
-// whether the build is making an image, an installer, or `runDistributable`.
-tasks
-    .matching { it.name.startsWith("prepareAppResources") }
-    .configureEach { dependsOn(bundleProxy) }
+// whether the build is making an image, an installer, `runDistributable`, or the minified
+// variants of any of them. Inside `afterEvaluate`, and named rather than matched: the plugin
+// registers this task from its own `afterEvaluate`, so it does not exist while this script runs,
+// and a pattern that matched nothing would ship installers with an empty `resources/proxy/` and
+// say nothing. Named, a rename breaks the build instead of the installer.
+afterEvaluate { tasks.named("prepareAppResources") { dependsOn(bundleProxy) } }
 
 /**
  * The `java` an installed app starts its proxy with. jlink strips a runtime image's own launchers,
@@ -132,6 +145,9 @@ tasks.withType<AbstractJLinkTask>().configureEach {
     doLast {
         val target = image.get().asFile.resolve("bin").resolve(name)
         launcher.get().copyTo(target, overwrite = true)
-        target.setExecutable(true)
+        // Executable by everyone, not only its owner: `copyTo` writes 0644 and the one-argument
+        // `setExecutable` means owner-only, which a .deb installs root-owned — and then the user
+        // who runs the app cannot start the runtime it was given.
+        target.setExecutable(true, false)
     }
 }
