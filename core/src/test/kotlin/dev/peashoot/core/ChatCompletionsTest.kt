@@ -25,6 +25,12 @@ class ChatCompletionsTest {
 
     private fun json(text: String): JsonObject = Json.parseToJsonElement(text).jsonObject
 
+    /**
+     * One streamed chunk carrying [toolCall] in its delta, as a server that omits `index` sends.
+     */
+    private fun chunk(toolCall: String): Frame =
+        Frame("""data: {"choices":[{"index":0,"delta":{"tool_calls":[$toolCall]}}]}""" + "\n\n", 0)
+
     @Test
     fun `a streamed turn gives its model, usage, finish reason, and every tool call`() {
         val reader = readFixture("stream-with-tool-calls.sse")
@@ -90,6 +96,49 @@ class ChatCompletionsTest {
 
         assertEquals(reported, reader.usage)
         assertEquals(Usage(input = 28, output = 48, cacheRead = 64, cacheWrite = 0), reader.usage)
+    }
+
+    @Test
+    fun `a server that streams whole calls with no index keeps them apart by id`() {
+        val reader = ChatCompletions.reader()
+
+        // Ollama and friends send each call complete, in its own chunk, with no `index` at all.
+        // Keyed by position they would all be call 0 and their arguments would run together.
+        listOf(
+                chunk(
+                    """{"id":"call_a","type":"function","function":""" +
+                        """{"name":"Read","arguments":"{\"file_path\":\"a.kt\"}"}}"""
+                ),
+                chunk(
+                    """{"id":"call_b","type":"function","function":""" +
+                        """{"name":"Bash","arguments":"{\"command\":\"echo hi\"}"}}"""
+                ),
+            )
+            .forEach(reader::read)
+
+        assertEquals(
+            listOf(
+                ToolCall("Read", path = "a.kt", command = null),
+                ToolCall("Bash", path = null, command = "echo hi"),
+            ),
+            reader.tools,
+        )
+    }
+
+    @Test
+    fun `a fragment with no index and no id continues the call still open`() {
+        val reader = ChatCompletions.reader()
+
+        listOf(
+                chunk(
+                    """{"id":"call_a","type":"function","function":""" +
+                        """{"name":"Bash","arguments":"{\"comm"}}"""
+                ),
+                chunk("""{"function":{"arguments":"and\":\"echo hi\"}"}}"""),
+            )
+            .forEach(reader::read)
+
+        assertEquals(listOf(ToolCall("Bash", path = null, command = "echo hi")), reader.tools)
     }
 
     @Test

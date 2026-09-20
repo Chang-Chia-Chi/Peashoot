@@ -21,6 +21,7 @@ import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertNotEquals
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlinx.coroutines.delay
@@ -29,6 +30,7 @@ import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.boolean
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -84,9 +86,8 @@ class ChatCompletionsSeamTest {
     private suspend fun awaitRecordings(store: Store, count: Int) =
         withTimeout(TIMEOUT_MS) { while (store.list().size < count) delay(POLL_MS) }
 
-    private fun completedEvent(home: Path): JsonObject =
-        home
-            .resolve(EVENTS_FILE)
+    private fun completedEvent(events: Path): JsonObject =
+        events
             .readLines()
             .map { Json.parseToJsonElement(it).jsonObject }
             .single { it["event"]?.jsonPrimitive?.content == "exchange.completed" }
@@ -95,35 +96,29 @@ class ChatCompletionsSeamTest {
     fun `a streamed turn records, then replays byte-equal with zero upstream calls`() =
         runBlocking {
             val home = home()
+            val recorded = home.resolve("recording-$EVENTS_FILE")
+            val replayed = home.resolve(EVENTS_FILE)
             val frames = frames("stream-with-tool-calls.sse")
+            // What the client was given on the way past the real upstream. The replay is compared
+            // to this, not only to the file: the claim is that a replay reproduces the recording.
+            var live = ""
             Store(home).use { store ->
                 FakeUpstream().use { upstream ->
                     upstream.reply = { streamReply(frames) }
                     val record = config(upstream)
-                    ProxyServer(record, listOf(Replay(store, record), Recorder(store))).use { proxy
-                        ->
-                        assertEquals(frames.joinToString(""), post(proxy).bodyAsText())
-                    }
+                    val recording =
+                        listOf(Replay(store, record), Recorder(store), Deriver(store, recorded))
+                    ProxyServer(record, recording).use { proxy -> live = post(proxy).bodyAsText() }
                     awaitRecordings(store, 1)
                     upstream.received.clear()
 
                     val replay = config(upstream, mode = Mode.REPLAY)
                     val chain =
-                        listOf(
-                            Replay(store, replay),
-                            Recorder(store),
-                            Deriver(store, home.resolve(EVENTS_FILE)),
-                        )
+                        listOf(Replay(store, replay), Recorder(store), Deriver(store, replayed))
                     ProxyServer(replay, chain).use { proxy ->
                         val response = post(proxy)
-                        val body = response.bodyAsText()
                         assertEquals(200, response.status.value)
-                        // Byte for byte, the done marker and the blank line after it included.
-                        assertContentEquals(
-                            fixture("stream-with-tool-calls.sse"),
-                            body.toByteArray(),
-                        )
-                        assertTrue(frames.last().trimEnd().endsWith("[DONE]"), frames.last())
+                        assertEquals(live, response.bodyAsText(), "the replay is the recording")
                         assertEquals(
                             "9000",
                             response.headers["x-ratelimit-remaining-tokens"],
@@ -134,9 +129,28 @@ class ChatCompletionsSeamTest {
                 }
                 assertEquals(1, store.list().size, "a replay hit is never re-recorded")
             }
+            // And what the client was given is the upstream's own bytes, the done marker and the
+            // blank line after it included, so both passes are byte-equal to the provider.
+            assertContentEquals(fixture("stream-with-tool-calls.sse"), live.toByteArray())
+            assertTrue(frames.last().trimEnd().endsWith("[DONE]"), frames.last())
 
-            assertToolTurn(completedEvent(home))
+            assertToolTurn(completedEvent(recorded))
+            assertToolTurn(completedEvent(replayed))
+            assertBilling(completedEvent(recorded), completedEvent(replayed))
         }
+
+    /**
+     * The recording reported usage and still costs nothing to name, because the bundled price table
+     * carries no OpenAI model: an unpriced model is a null cost, never a free turn. The replay of
+     * it costs 0.0 for the other reason — it was billed nothing at all.
+     */
+    private fun assertBilling(recorded: JsonObject, replayed: JsonObject) {
+        assertNotEquals(JsonNull, recorded.getValue("usage"), "the recording read the usage chunk")
+        assertEquals(JsonNull, recorded.getValue("costUsd"), "and no gpt model has a price here")
+        assertFalse(recorded.getValue("replayHit").jsonPrimitive.boolean)
+        assertTrue(replayed.getValue("replayHit").jsonPrimitive.boolean)
+        assertEquals("0.0", replayed.getValue("costUsd").jsonPrimitive.content)
+    }
 
     /** What the deriver read out of that turn's frames, which is the whole point of the surface. */
     private fun assertToolTurn(completed: JsonObject) {
@@ -181,7 +195,7 @@ class ChatCompletionsSeamTest {
                 awaitRecordings(store, 1)
             }
         }
-        val completed = completedEvent(home)
+        val completed = completedEvent(home.resolve(EVENTS_FILE))
         assertEquals(JsonNull, completed.getValue("usage"))
         assertEquals(
             JsonNull,
@@ -210,7 +224,7 @@ class ChatCompletionsSeamTest {
                 awaitRecordings(store, 1)
             }
         }
-        val completed = completedEvent(home)
+        val completed = completedEvent(home.resolve(EVENTS_FILE))
         assertEquals(
             """{"input":80,"output":17,"cacheRead":0,"cacheWrite":0}""",
             completed.getValue("usage").toString(),
@@ -336,7 +350,7 @@ class ChatCompletionsSeamTest {
                 "and it is not in the row",
             )
         }
-        val completed = completedEvent(home)
+        val completed = completedEvent(home.resolve(EVENTS_FILE))
         assertEquals("sdk-python", completed.getValue("client").jsonPrimitive.content)
         assertFalse(home.resolve(EVENTS_FILE).readText().contains(SECRET), "nor on the event line")
     }

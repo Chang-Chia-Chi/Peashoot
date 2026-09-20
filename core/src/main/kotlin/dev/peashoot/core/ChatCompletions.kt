@@ -107,23 +107,47 @@ object ChatCompletions : Surface {
             stopReason = choice["finish_reason"].text() ?: stopReason
             // Each cast on its own: a server that sends `"delta": null` beside a real `message`
             // would otherwise have its whole message thrown away, JSON null not being Kotlin's.
-            val part = choice["delta"] as? JsonObject ?: choice["message"] as? JsonObject ?: return
-            toolCalls(part).forEachIndexed(::readToolCall)
+            val delta = choice["delta"] as? JsonObject
+            val part = delta ?: choice["message"] as? JsonObject ?: return
+            // A finished message holds every call at once, so its array positions name them. A
+            // delta holds fragments, and its array is one element long chunk after chunk, so
+            // position there names only the first call and must not be used.
+            toolCalls(part).forEachIndexed { position, call ->
+                readToolCall(call, position.takeIf { delta == null })
+            }
         }
 
         /**
-         * A streamed fragment names the `index` it belongs to; a finished message's calls are a
-         * plain array with no index at all, so their [position] in it stands in. One body is one
-         * frame, so those positions cannot shift under us.
+         * A streamed fragment names the `index` it belongs to. A finished message's calls carry
+         * none, so their [position] in its array stands in; one body is one frame, so those
+         * positions cannot shift under us. A delta that names neither is [streamedKey]'s to place.
          */
-        private fun readToolCall(position: Int, call: JsonObject) {
+        private fun readToolCall(call: JsonObject, position: Int?) {
             val function = call["function"] as? JsonObject ?: return
-            val tool = open.getOrPut(call["index"].int() ?: position) { OpenTool() }
+            val id = call["id"].text()
+            val tool =
+                open.getOrPut(call["index"].int() ?: position ?: streamedKey(id)) { OpenTool() }
+            id?.let { tool.id = it }
             function["name"].text()?.let { tool.name = it }
             tool.arguments.append(function["arguments"].text().orEmpty())
         }
 
+        /**
+         * Where a streamed fragment that named no `index` belongs. Servers exist that send each
+         * call whole in its own chunk and number none of them — Ollama among them, which is the
+         * setup this surface is meant to be testable against — and keyed by position every one of
+         * those would be call 0, running two calls' arguments together into one that parses as
+         * nothing. The id is what is left to tell them apart: a fragment naming an id the open call
+         * does not have starts the next call, and one naming no id at all continues the open one,
+         * which is how the halves of a split `arguments` string stay together.
+         */
+        private fun streamedKey(id: String?): Int {
+            val last = open.keys.lastOrNull() ?: return 0
+            return if (id == null || id == open.getValue(last).id) last else last + 1
+        }
+
         private class OpenTool(
+            var id: String? = null,
             var name: String? = null,
             val arguments: StringBuilder = StringBuilder(),
         )

@@ -22,6 +22,7 @@ and one turn through it, then copy the response section for `/v1/chat/completion
 file and replace every `id`, `system_fingerprint`, and `call_*` with `REDACTED`:
 
 ```
+./gradlew installDist
 PEASHOOT_PORT=8790 PEASHOOT_DUMP_FRAMES=dump.txt proxy/build/install/proxy/bin/proxy &
 OPENAI_BASE_URL=http://127.0.0.1:8790/v1 OPENAI_API_KEY=$YOUR_KEY \
   python -c "$(cat <<'PY'
@@ -53,11 +54,15 @@ upstream = "http://127.0.0.1:11434"
 ```
 ollama serve &
 ollama pull qwen2.5:0.5b
+./gradlew installDist
 PEASHOOT_PORT=8790 PEASHOOT_DUMP_FRAMES=dump.txt proxy/build/install/proxy/bin/proxy &
-curl -s http://127.0.0.1:8790/v1/chat/completions -H 'content-type: application/json' \
-  -d '{"model":"qwen2.5:0.5b","stream":true,"stream_options":{"include_usage":true},
-       "messages":[{"role":"user","content":"say peashoot"}]}'
+curl -s http://127.0.0.1:8790/v1/chat/completions -H 'content-type: application/json' -d '{"model":"qwen2.5:0.5b","stream":true,"stream_options":{"include_usage":true},"messages":[{"role":"user","content":"say peashoot"}]}'
 ```
 
-Then replay it with the upstream pointed at a dead port (`upstream = "http://127.0.0.1:1"`) and
-`PEASHOOT_MODE=replay`: the same bytes come back and nothing is dialled.
+Then replay it. Stop the proxy, point the upstream at a port nothing listens on
+(`upstream = "http://127.0.0.1:1"`), start it again with `PEASHOOT_MODE=replay`, and re-issue **the
+identical request**: the same `curl` line, the same body byte for byte. That is what makes the
+fingerprints match and the recording answer. The same bytes come back, and nothing is dialled — a
+dead port is the proof, because a replay that reached for the upstream would fail rather than
+quietly succeed. Change any of the body and the fingerprint changes with it: a lenient route would
+then call the dead port and return 502 `upstream_unreachable`, which is the miss telling you so.
