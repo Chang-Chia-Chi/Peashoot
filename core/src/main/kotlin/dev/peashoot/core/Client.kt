@@ -54,7 +54,7 @@ data class Client(
                         else -> Client(userAgentToken(headers), session = null)
                     }
             val session = injected ?: detected.session ?: fallbackSession(detected.type, json)
-            return detected.copy(session = session)
+            return detected.copy(session = session).bounded()
         }
 
         /**
@@ -98,3 +98,31 @@ data class Client(
             MessageDigest.getInstance("SHA-256").digest(text.toByteArray()).toHexString()
     }
 }
+
+/**
+ * How much of a client-chosen identifier is kept. Generous against every real one — a UUID is 36
+ * characters, Codex's thread ids and Claude Code's session ids are shorter — and small enough that
+ * a client sending a megabyte under this name cannot put a megabyte on every event line, in every
+ * stored row, and in the farm's own labels.
+ */
+private const val IDENTIFIER_LENGTH = 128
+
+/**
+ * A line break, a tab, or any other control character: what would forge a field or a whole line in
+ * anything that writes one of these as text rather than as JSON. `\r` and `\n` are control
+ * characters themselves, so the one class covers them.
+ */
+private val CONTROL_CHARACTERS = Regex("\\p{Cntrl}")
+
+/**
+ * Every field of a [Client] comes off a header or a user-agent that whoever sent the request chose,
+ * and each is then written into `events.jsonl`, into the store, into the Gource log, and onto the
+ * farm's labels. Bounded here, where they enter, rather than at each of those: #80 fixed exactly
+ * this hole in one writer, and a rule that has to be remembered by the next writer is one that will
+ * not be. Sanitising before truncating leaves one well-formed value rather than a forged field, and
+ * the writers keep their own guards — this is the first of two, not the replacement for either.
+ */
+private fun Client.bounded(): Client =
+    Client(type.bounded(), session?.bounded(), agent?.bounded(), parentAgent?.bounded())
+
+private fun String.bounded(): String = CONTROL_CHARACTERS.replace(this, "_").take(IDENTIFIER_LENGTH)
