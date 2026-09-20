@@ -122,6 +122,42 @@ class ClientTest {
         )
     }
 
+    /**
+     * Every field here came off a header or a user-agent that whoever sent the request chose, and
+     * each is written into `events.jsonl`, into the store, into the Gource log, and onto the farm's
+     * labels. A live request's header values are checked by the engine's own decoder first, so a
+     * bare line break cannot arrive that way — but `detect` also runs over the headers of an
+     * exchange rebuilt from the store, and a cassette is a file that may have been hand-edited or
+     * imported from somewhere else. Bounded where they enter, so the next writer of a session
+     * inherits a value that is already safe rather than a rule it has to remember (#80).
+     */
+    @Test
+    fun `client-chosen identifiers are sanitised and capped where they enter`() {
+        val detected =
+            Client.detect(
+                headersOf(
+                    "x-peashoot-session" to listOf("ses\n1790|forged|A|/etc/passwd"),
+                    "x-claude-code-agent-id" to listOf("agent\u0000one"),
+                    "x-claude-code-parent-agent-id" to listOf("parent\tone"),
+                    "x-claude-code-session-id" to listOf("ignored"),
+                ),
+                null,
+            )
+
+        assertEquals("ses_1790|forged|A|/etc/passwd", detected.session, "no line break survives")
+        assertEquals("agent_one", detected.agent)
+        assertEquals("parent_one", detected.parentAgent, "a tab is a control character too")
+
+        val long = "x".repeat(IDENTIFIER_CAP * 2)
+        val capped = Client.detect(headersOf("x-peashoot-session", long), null)
+        assertEquals(IDENTIFIER_CAP, assertNotNull(capped.session).length)
+        assertEquals(
+            IDENTIFIER_CAP,
+            Client.detect(headersOf("user-agent", long), null).type.length,
+            "the client type comes off a user-agent and is bounded with the rest",
+        )
+    }
+
     @Test
     fun `an official SDK is detected from its stainless headers`() {
         assertEquals(
@@ -207,6 +243,9 @@ class ClientTest {
     }
 
     private companion object {
+        /** What `Client` caps a client-chosen identifier at; a UUID is 36 characters. */
+        const val IDENTIFIER_CAP = 128
+
         const val ONE_TURN =
             """{"model":"claude-sonnet-4-5-20250929",""" +
                 """"messages":[{"role":"user","content":"hello peashoot"}]}"""
