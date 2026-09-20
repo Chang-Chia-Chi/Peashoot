@@ -334,12 +334,15 @@ class PaneModel(private val labelsHidden: () -> Boolean) {
     private var client: ControlClient? = null
 
     /**
+     * Whichever list the pane is filling — a villager's timeline rows or a crop's touches, since
+     * only one pane is open at a time — and, beside it, the one body being read.
+     *
      * One job each, rather than one between them: they are independent things to be waiting for,
      * and sharing a job meant opening a body cancelled a timeline still arriving. Nothing can reach
      * that today, because the button that opens a body is only drawn once rows exist — which is
      * exactly the kind of reason that stops being true when someone moves the button.
      */
-    private var loadingRows: Job? = null
+    private var loadingList: Job? = null
     private var loadingBody: Job? = null
 
     /** Given a proxy to ask and a scope to ask from, for as long as [AppModel.watch] has both. */
@@ -353,9 +356,9 @@ class PaneModel(private val labelsHidden: () -> Boolean) {
      * fail in a way nobody could read, so it is given nothing to ask and says so instead.
      */
     internal fun detach() {
-        loadingRows?.cancel()
+        loadingList?.cancel()
         loadingBody?.cancel()
-        loadingRows = null
+        loadingList = null
         loadingBody = null
         scope = null
         client = null
@@ -386,7 +389,7 @@ class PaneModel(private val labelsHidden: () -> Boolean) {
     }
 
     private fun clear() {
-        loadingRows?.cancel()
+        loadingList?.cancel()
         loadingBody?.cancel()
         rows.clear()
         touches.clear()
@@ -482,7 +485,7 @@ class PaneModel(private val labelsHidden: () -> Boolean) {
             return
         }
         note = "asking the proxy for $what"
-        loadingRows = scope?.launch {
+        loadingList = scope?.launch {
             asking
                 .get(path)
                 .fold({ note = read(it) }, { note = "$what could not be read: ${it.message}" })

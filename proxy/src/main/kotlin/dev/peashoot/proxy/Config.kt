@@ -29,8 +29,9 @@ private const val MAX_PORT = 65535L
 
 /**
  * The longest idle window a day boundary can mean: a day. Past that the card is not about a day at
- * all, and the app that reads this turns it into a `java.time.Duration`, which a number of minutes
- * near `Long.MAX_VALUE` overflows.
+ * all. Nothing here is about overflow — the field is an `Int`, far from any of it: what keeps a
+ * larger number from truncating into a plausible one is that the file is read as a `Long` and
+ * checked against this before it is narrowed.
  */
 private const val MAX_IDLE_MINUTES = 1440L
 

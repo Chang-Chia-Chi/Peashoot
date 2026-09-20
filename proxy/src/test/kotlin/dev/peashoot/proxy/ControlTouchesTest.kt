@@ -2,6 +2,7 @@ package dev.peashoot.proxy
 
 import dev.peashoot.core.text
 import io.ktor.client.statement.bodyAsText
+import io.ktor.http.ContentType
 import io.ktor.http.HttpMethod
 import kotlin.test.Test
 import kotlin.test.assertContains
@@ -79,6 +80,24 @@ class ControlTouchesTest {
     }
 
     @Test
+    fun `a path is one file however a caller spells its separators`() = withProxy {
+        upstream.reply = { windowsReply() }
+        relay(REQUEST, mapOf("x-claude-code-session-id" to "s1"))
+        awaitEvents(2)
+
+        // The turn named a Windows path, and the endpoint normalises the stored side. Asking in
+        // either spelling must find it: `%5C` is the backslash, which a query string escapes.
+        listOf("src%5CMain.kt", TOUCHED).forEach { spelling ->
+            val page = touches("/touches?path=$spelling")
+            assertEquals(1, page.size, "nothing matched $spelling")
+            assertEquals(
+                listOf("Read", "Edit"),
+                page.single().getValue("tools").jsonArray.map { it.text() },
+            )
+        }
+    }
+
+    @Test
     fun `a path that cannot be used is a 400, and a hostile one is never echoed back`() =
         withProxy {
             listOf("", "%20", "x".repeat(MAX_PATH_LENGTH + 1)).forEach {
@@ -103,6 +122,15 @@ class ControlTouchesTest {
             assertFalse("script" in body, body)
             assertEquals(0, upstream.received.size)
         }
+
+    /** The fixture's turn with its tool paths spelled as a Windows client sends them. */
+    private fun windowsReply(): FakeUpstream.Reply =
+        FakeUpstream.Reply(
+            contentType = ContentType.Text.EventStream,
+            // Four backslashes in the frame text: the tool input is JSON inside the JSON of an
+            // SSE line, so one separator is escaped twice before the reader sees it.
+            frames = streamReply(FIXTURE).frames.map { it.replace("src/", """src\\\\""") },
+        )
 
     /** The rows of a touch page that must have worked. */
     private suspend fun Proxy.touches(path: String): List<JsonObject> =

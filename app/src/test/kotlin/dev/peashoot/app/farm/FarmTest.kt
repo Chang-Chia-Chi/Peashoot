@@ -284,9 +284,35 @@ class FarmTest {
         assertEquals(0.03, states.last().days.getValue(CODEX).cost)
     }
 
+    /**
+     * The fourth way a turn reports no usage and is a turn all the same: its client left before the
+     * reader parsed any. No usage, a 200, no `end_turn` — everything a poll looks like — but the
+     * stream was being answered, so the sky turns, the bucket it was filling carries nothing home,
+     * and the tools it had named by then still work the fields.
+     */
+    @Test
+    fun `a cut stream that parsed no usage is still the turn it was`() {
+        val states = replay("stream-cut.jsonl")
+        assertEquals(1, states[1].villager(CUT).spills, "the departure spilled its bucket")
+        // The other turn finished in between and cleared the sky, so the lightning at the end is
+        // this line's own rather than the departure's still standing.
+        assertEquals(Weather.CLEAR, states[3].weather)
+        assertEquals(90, states[3].villager(CUT).water, "the turn that did end carried its water")
+
+        val farm = states.last()
+        assertEquals(Weather.LIGHTNING, farm.weather)
+        assertEquals(Growth.SEED, farm.crop("src/cut/Stream.kt")?.growth)
+        val villager = farm.villager(CUT)
+        assertEquals(90, villager.water, "the cut turn's own bucket spilled")
+        assertEquals(Activity.RETURNING, villager.activity)
+        assertTrue(villager.inFlight.isEmpty(), "both exchanges ended")
+        assertTrue(farm.wellQueue.isEmpty())
+    }
+
     private companion object {
         const val RESUME = "sess-resume"
         const val CODEX = "sess-codex"
+        const val CUT = "sess-cut"
     }
 }
 

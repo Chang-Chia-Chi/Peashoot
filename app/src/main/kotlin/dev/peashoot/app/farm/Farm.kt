@@ -273,8 +273,8 @@ fun reduce(state: FarmState, event: JsonObject): FarmState =
  * instead are the three ways a turn can report none and still be a turn, each of them a fixture: a
  * status outside [ANSWERED] failed rather than generated nothing (`rate-limit.jsonl`'s 429,
  * `weather.jsonl`'s 529), an [END_TURN] ended whatever it reported (`odd-lines.jsonl`), and a
- * stream whose client left was being answered. A replay hit and a resumed line (#26) both report
- * usage and a zero cost, so both stay turns, which is what they are.
+ * stream whose client left was being answered (`stream-cut.jsonl`). A replay hit and a resumed line
+ * (#26) both report usage and a zero cost, so both stay turns, which is what they are.
  *
  * The walk is undone and not prevented. A `started` cannot know: what tells these apart is the
  * request's path, which is on no event line, and #81 ruled out putting it there. So a poll still

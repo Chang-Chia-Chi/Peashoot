@@ -268,8 +268,14 @@ private fun Route.exchanges(api: ControlApi) {
 
 /**
  * `GET /touches?path=&cursor=&limit=`: which turns touched one file, newest first, a page at a
- * time, in the shape `/exchanges` pages in. `cursor` is the `eventId` of the last row of the page
- * before, since these are event lines and their ids are what orders them.
+ * time. `cursor` is the `eventId` of the last row of the page before, since these are event lines
+ * and their ids are what orders them, and `limit` is bounded as `/exchanges` bounds its own.
+ *
+ * The one place the two differ is what they make of a cursor that names no row, and the difference
+ * is in what a cursor *is*. `/exchanges` pages from an exchange id, which is a name: one naming
+ * nothing would quietly answer with the newest page, so it is refused instead. An `eventId` is a
+ * position on a monotonic column, so any positive number means "everything before here" whether or
+ * not a row was ever given that id, and is answered rather than refused.
  *
  * The path is a client's own text, so it is bounded and bound: it goes into the query as a
  * parameter, never into the SQL and never into the answer, which names the tools and the turns and
@@ -294,6 +300,10 @@ private fun Route.touches(api: ControlApi) =
         val page = api.store.touches(path, limit, cursor)
         call.json(
             buildJsonObject {
+                // This row's shape is built here rather than beside `summaryJson` and
+                // `Session.toJson` in `ControlJson.kt`, where it belongs: that file already holds
+                // the eleven functions detekt allows one, and a twelfth fails the build. It moves
+                // there the day one of them leaves.
                 put(
                     "touches",
                     JsonArray(
