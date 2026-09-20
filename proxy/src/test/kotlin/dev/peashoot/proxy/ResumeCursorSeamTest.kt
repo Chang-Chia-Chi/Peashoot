@@ -202,6 +202,31 @@ class ResumeCursorSeamTest {
             assertEquals(1, upstream.received.size)
         }
 
+    /**
+     * The filter swept across every cursor there is, with the upstream still in flight.
+     *
+     * This is the case a sequence filter gets wrong: the cursor attaches while the owner is still
+     * appending, so part of its tail is drained out of the buffer and the rest arrives live, and
+     * the frame at that seam is the one that would be lost or sent twice. The release is fired
+     * without waiting for the cursor to attach — deliberately, because that is what varies where in
+     * the stream the attach actually lands, sometimes mid-append and sometimes after the end, at a
+     * different depth each time round. Every N must give back exactly that N's tail.
+     * `ResumeSeamTest` runs the same sweep for an unfiltered re-issue.
+     */
+    @Test
+    fun `a cursor at any sequence of an in-flight stream gets exactly that tail`() =
+        events.indices.forEach(::cursorAt)
+
+    private fun cursorAt(after: Int) = withResume {
+        droppedMidStream()
+
+        val resumed = async { streamedGet(cursorPath("$after")) }
+        release.complete(Unit)
+
+        assertEquals(tailAfter(after), resumed.await(), "the cursor at $after")
+        assertEquals(1, upstream.received.size, "one call, cursor at $after")
+    }
+
     private companion object {
         /**
          * Where a cursor asks from: before the drop, so frames on both sides of it are filtered.
