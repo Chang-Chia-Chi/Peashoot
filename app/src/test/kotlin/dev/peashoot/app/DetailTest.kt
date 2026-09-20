@@ -1,8 +1,5 @@
 package dev.peashoot.app
 
-import dev.peashoot.app.farm.TOUCH_HISTORY
-import dev.peashoot.app.farm.Touch
-import dev.peashoot.app.farm.TouchKind
 import kotlin.test.Test
 import kotlin.test.assertContains
 import kotlin.test.assertEquals
@@ -20,17 +17,42 @@ private const val A_PATH = "src/main/kotlin/dev/peashoot/app/ControlClient.kt"
  */
 private const val CURSOR = "\"nextCursor\":\"01EX01\""
 
-/** Two summary rows as `GET /exchanges?session=` serves them, newest first, as it orders them. */
+/** The same, for a page of touches: its cursor is the event id of the last row it served. */
+private const val CURSOR_ID = "\"nextCursor\":17"
+
+/**
+ * Two summary rows as `GET /exchanges?session=` serves them, newest first, as it orders them.
+ * Since #85 each carries what the completed line said about it, so a row needs no line to be whole.
+ */
 private const val TWO_ROWS =
     """{"exchanges":[
         {"id":"01EX02","receivedAt":"2026-09-20T09:00:20Z","route":"default","mode":"record",
          "method":"POST","path":"/v1/messages","status":200,"fingerprint":"fp2",
          "session":"sess-one","agent":"agent-two","client":"claude-code","cassette":null,
-         "clientDisconnected":true},
+         "clientDisconnected":true,
+         "usage":{"input":7,"output":9,"cacheRead":0,"cacheWrite":0},"costUsd":0.5,
+         "latencyMs":900,"replayHit":false},
         {"id":"01EX01","receivedAt":"2026-09-20T09:00:10Z","route":"default","mode":"record",
          "method":"POST","path":"/v1/messages","status":200,"fingerprint":"fp1",
          "session":"sess-one","agent":null,"client":"claude-code","cassette":null,
-         "clientDisconnected":false}],"nextCursor":null}"""
+         "clientDisconnected":false,
+         "usage":{"input":120,"output":340,"cacheRead":8,"cacheWrite":0},"costUsd":0.25,
+         "latencyMs":1500,"replayHit":true}],"nextCursor":null}"""
+
+/** A row from a proxy that has no completed line for it: an imported cassette's, for one. */
+private const val BARE_ROW =
+    """{"exchanges":[
+        {"id":"01EX02","receivedAt":"2026-09-20T09:00:20Z","status":200,"agent":"agent-two",
+         "clientDisconnected":true,"usage":null,"costUsd":null,"latencyMs":null,
+         "replayHit":null}],"nextCursor":null}"""
+
+/** One page of `GET /touches?path=`, newest first, as the endpoint serves it. */
+private const val TOUCHES =
+    """{"touches":[
+        {"eventId":42,"exchangeId":"01EX02","ts":"2026-09-20T09:00:20Z","session":"sess-one",
+         "agent":"agent-two","tools":["Read","Edit"]},
+        {"eventId":17,"exchangeId":"01EX01","ts":"2026-09-20T09:00:10Z","session":"sess-one",
+         "agent":null,"tools":["Edit"]}],"nextCursor":null}"""
 
 /** The completed line for the older of them, as the Deriver writes one. */
 private const val A_LINE =
@@ -65,19 +87,33 @@ class DetailTest {
     }
 
     @Test
-    fun `an exchange the window never heard shows what the endpoint knows and no more`() {
-        val bare = checkNotNull(timelineOf(TWO_ROWS) { null }).rows.first()
-        assertEquals("01EX02", bare.id)
-        assertEquals("agent-two", bare.agent)
-        assertEquals(200, bare.status)
+    fun `an exchange the window never heard still says what it used, cost and took`() {
+        // #85: usage, cost, latency and the replay flag are on the summary row now, so a turn
+        // from before this window connected is no longer four blanks.
+        val unheard = checkNotNull(timelineOf(TWO_ROWS) { null }).rows.first()
+        assertEquals("01EX02", unheard.id)
+        assertEquals("agent-two", unheard.agent)
+        assertEquals(200, unheard.status)
         // The store's own flag, which is on the summary row and needs no line.
-        assertTrue(bare.clientDisconnected)
-        assertNull(bare.model)
+        assertTrue(unheard.clientDisconnected)
+        assertEquals("7 in, 9 out, 0 cached, 0 written", unheard.usage)
+        assertEquals(0.5, unheard.costUsd)
+        assertEquals(900L, unheard.latencyMs)
+        assertFalse(unheard.replayHit)
+        // The model and the paths are the feed's alone, and still blank without it.
+        assertNull(unheard.model)
+        assertTrue(unheard.paths.isEmpty())
+    }
+
+    @Test
+    fun `a row with no completed line behind it says nobody said, not nothing happened`() {
+        // An imported cassette's rows were never derived here, so the proxy answers null for all
+        // four. Null is "nobody said"; zero would be "it cost nothing", which is a replay hit.
+        val bare = checkNotNull(timelineOf(BARE_ROW) { null }).rows.single()
         assertNull(bare.usage)
         assertNull(bare.costUsd)
         assertNull(bare.latencyMs)
-        assertFalse(bare.replayHit)
-        assertTrue(bare.paths.isEmpty())
+        assertFalse(bare.replayHit, "an absent flag reads as false, as it does on a line")
     }
 
     @Test
@@ -110,13 +146,41 @@ class DetailTest {
     }
 
     @Test
-    fun `a touch history at its cap says so, and a short one does not`() {
-        val one = listOf(Touch("sess-x", null, TouchKind.GROWN))
-        assertNull(touchNote(one))
-        assertNull(touchNote(emptyList()))
-        val full = List(TOUCH_HISTORY) { Touch("sess-x", null, TouchKind.GROWN) }
-        assertContains(touchNote(full).orEmpty(), "$TOUCH_HISTORY")
-        assertContains(touchNote(full).orEmpty(), "touched more")
+    fun `a touch history is the proxy's answer, naming the villager whose turn it was`() {
+        val page = checkNotNull(touchesOf(TOUCHES))
+        assertFalse(page.more, "this fixture's nextCursor is null")
+        assertEquals(listOf(42L, 17L), page.rows.map { it.eventId }, "newest first, as given")
+        val helper = page.rows.first()
+        assertEquals("01EX02", helper.exchangeId)
+        assertEquals("2026-09-20T09:00:20Z", helper.at)
+        // A sub-agent is a villager of its own, keyed as the farm keys it.
+        assertEquals("sess-one/agent-two", helper.villager)
+        assertEquals(listOf("Read", "Edit"), helper.tools)
+        // A turn with no agent is the session's own villager.
+        assertEquals("sess-one", page.rows.last().villager)
+    }
+
+    @Test
+    fun `a touch history says why it is empty, and when there is more behind it`() {
+        assertNull(touchesOf("not json at all"), "unreadable is not an empty history")
+        assertNull(touchesOf("""{"touches":"a string"}"""))
+        assertContains(touchNote(null).orEmpty(), "unreadable")
+        val none = checkNotNull(touchesOf("""{"touches":[],"nextCursor":null}"""))
+        assertEquals(emptyList(), none.rows)
+        assertContains(touchNote(none).orEmpty(), "nothing the proxy heard")
+        assertNull(touchNote(checkNotNull(touchesOf(TOUCHES))), "a whole page speaks for itself")
+        val partial = checkNotNull(touchesOf(TOUCHES.replace("\"nextCursor\":null", CURSOR_ID)))
+        assertTrue(partial.more)
+        assertContains(touchNote(partial).orEmpty(), "touched more")
+    }
+
+    @Test
+    fun `a touch naming no session is dropped, because a row is drawn by its villager`() {
+        val nameless =
+            """{"touches":[{"eventId":1,"exchangeId":"01EX01","ts":null,"tools":["Edit"]},
+                {"eventId":2,"exchangeId":"01EX02","ts":null,"session":"sess-one",
+                 "tools":["Edit"]}]}"""
+        assertEquals(listOf(2L), checkNotNull(touchesOf(nameless)).rows.map { it.eventId })
     }
 
     @Test
@@ -151,11 +215,11 @@ class DetailTest {
 
     @Test
     fun `a touch names the villager and the time, and admits a line that carried none`() {
-        assertEquals(
-            "2026-09-20T09:00:05Z  Clover  planted",
-            touchText(Touch("sess-x", "2026-09-20T09:00:05Z", TouchKind.PLANTED), "Clover"),
-        )
-        assertContains(touchText(Touch("sess-x", null, TouchKind.GROWN), "Ada"), "no time given")
+        val row = checkNotNull(touchesOf(TOUCHES)).rows.first()
+        // The tools the turn named, as it named them: the farm's own reading of them is the
+        // farm's, and this pane says what the proxy said.
+        assertEquals("2026-09-20T09:00:20Z  Clover  Read, Edit", touchText(row, "Clover"))
+        assertContains(touchText(row.copy(at = null), "Ada"), "no time given")
     }
 
     @Test

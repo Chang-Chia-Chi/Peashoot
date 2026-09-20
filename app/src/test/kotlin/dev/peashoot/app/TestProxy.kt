@@ -108,6 +108,8 @@ internal class TestProxy(val home: Path, upstream: String? = null) : AutoCloseab
         at: Instant,
         disconnected: Boolean = false,
         announce: Boolean = true,
+        /** What the turn's one tool read, for a test about touches; none names no file. */
+        toolPath: String? = null,
     ): JsonObject {
         val exchange =
             Exchange(
@@ -120,7 +122,7 @@ internal class TestProxy(val home: Path, upstream: String? = null) : AutoCloseab
         exchange.response = Exchange.Response(HttpStatusCode.OK.value, Headers.Empty)
         exchange.clientDisconnected = disconnected
         store.put(listOf(Recorded(exchange, emptyList())))
-        val line = completedLine(session, id, at, disconnected)
+        val line = completedLine(session, id, at, disconnected, toolPath)
         if (announce) put(line) else store.putEvent(line)
         return line
     }
@@ -188,6 +190,7 @@ private fun completedLine(
     id: String,
     at: Instant,
     disconnected: Boolean,
+    toolPath: String?,
 ): JsonObject = buildJsonObject {
     put("ts", at.toString())
     put("event", "exchange.completed")
@@ -198,7 +201,17 @@ private fun completedLine(
     put("model", "claude-opus-4-1")
     put("route", "default")
     put("mode", "record")
-    put("tools", buildJsonArray { add(buildJsonObject { put("name", "Read") }) })
+    put(
+        "tools",
+        buildJsonArray {
+            add(
+                buildJsonObject {
+                    put("name", "Read")
+                    toolPath?.let { put("path", it) }
+                }
+            )
+        },
+    )
     put(
         "usage",
         buildJsonObject {

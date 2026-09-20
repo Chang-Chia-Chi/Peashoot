@@ -29,12 +29,21 @@ import kotlinx.coroutines.selects.select
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import org.slf4j.LoggerFactory
 
 internal const val DEFAULT_EXCHANGES_LIMIT = 50
 internal const val MAX_EXCHANGES_LIMIT = 500
+
+/**
+ * How long a path `GET /touches` will look for. A path is a client's own text, so it is bounded
+ * here as well as bound as a parameter; 1024 is four times the longest path Windows takes without
+ * asking, and well inside the 4096 bytes Netty allows a request line, which is the other bound and
+ * answers with the engine's own 400 rather than a problem object.
+ */
+internal const val MAX_PATH_LENGTH = 1024
 
 /** The one control path served without a token, and only under exactly this spelling. */
 private const val HEALTH_PATH = "$CONTROL_PREFIX/v1/health"
@@ -88,6 +97,7 @@ internal fun Route.controlRoutes(api: ControlApi?, pingInterval: Duration) {
             health(api)
             events(api, pingInterval)
             exchanges(api)
+            touches(api)
             sessions(api)
             routeTable(api)
             rules(api)
@@ -255,6 +265,54 @@ private fun Route.exchanges(api: ControlApi) {
         }
     }
 }
+
+/**
+ * `GET /touches?path=&cursor=&limit=`: which turns touched one file, newest first, a page at a
+ * time, in the shape `/exchanges` pages in. `cursor` is the `eventId` of the last row of the page
+ * before, since these are event lines and their ids are what orders them.
+ *
+ * The path is a client's own text, so it is bounded and bound: it goes into the query as a
+ * parameter, never into the SQL and never into the answer, which names the tools and the turns and
+ * no path at all. A caller that asks about a path it made up is told about no touches, in the same
+ * words as a caller that asks about a real file nothing has touched.
+ */
+private fun Route.touches(api: ControlApi) =
+    endpoint(HttpMethod.Get, "touches") {
+        val params = call.request.queryParameters
+        val limit = bounded("limit", params["limit"])
+        val path =
+            params["path"]?.takeIf { it.isNotBlank() }
+                ?: badRequest("path must name a file, as a tool call named it")
+        if (path.length > MAX_PATH_LENGTH) {
+            badRequest("path must be at most $MAX_PATH_LENGTH characters, not ${path.length}")
+        }
+        val cursor =
+            params["cursor"]?.let {
+                it.toLongOrNull()?.takeIf { id -> id > 0 }
+                    ?: badRequest("cursor must be the eventId of the last row you saw, not $it")
+            }
+        val page = api.store.touches(path, limit, cursor)
+        call.json(
+            buildJsonObject {
+                put(
+                    "touches",
+                    JsonArray(
+                        page.map { touch ->
+                            buildJsonObject {
+                                put("eventId", touch.eventId)
+                                put("exchangeId", touch.exchangeId)
+                                put("ts", touch.ts)
+                                put("session", touch.session)
+                                put("agent", touch.agent)
+                                put("tools", JsonArray(touch.tools.map(::JsonPrimitive)))
+                            }
+                        }
+                    ),
+                )
+                put("nextCursor", page.lastOrNull()?.eventId?.takeIf { page.size == limit })
+            }
+        )
+    }
 
 /** `GET /sessions`: the store's session view, as it stands. */
 private fun Route.sessions(api: ControlApi) =
