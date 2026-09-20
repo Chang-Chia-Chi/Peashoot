@@ -31,7 +31,14 @@ class Recorder(private val store: Store) : Interceptor {
     private val buffers = ConcurrentHashMap<String, MutableList<Frame>>()
 
     override fun onFrames(exchange: Exchange, frames: Flow<Frame>): Flow<Frame> {
-        if (exchange.mode == Mode.PASSTHROUGH || exchange.replayHit) return frames
+        // A resumed exchange is recorded for the same reason a replay hit is not: it made no
+        // upstream call, and its frames are another exchange's answer handed out a second time.
+        // Stored, it would be a second row under one fingerprint for one paid call, which an
+        // `inOrder` replay would then serve twice and an exported cassette would carry as a
+        // duplicate — and no column tells the two apart, because `resumed` is on the event line.
+        if (exchange.mode == Mode.PASSTHROUGH || exchange.replayHit || exchange.resumed) {
+            return frames
+        }
         val buffer = mutableListOf<Frame>()
         // Registered when collection starts, so a response that never began leaves no entry.
         return frames.onStart { buffers[exchange.id] = buffer }.onEach { buffer += it }

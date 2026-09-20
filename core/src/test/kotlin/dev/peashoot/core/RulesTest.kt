@@ -68,6 +68,30 @@ class RulesTest {
     private fun Rules.of(request: JsonObject, headers: Headers) =
         fingerprint("POST", "/v1/messages", headers, request)
 
+    /**
+     * The canonical form itself, pinned.
+     *
+     * Every other test here is relational — this changes the hash, that does not — and every one of
+     * them would still pass if the canonical JSON were renamed, reordered, or digested differently,
+     * because both sides of each comparison would move together. The fingerprint is not an internal
+     * detail: it is a column of every stored exchange and a field of every cassette line anyone has
+     * committed, so a change to this value silently stops every recording in the world from
+     * replaying. **Changing the constant below to make this test pass is a breaking change.** If it
+     * has to be made, it is a schema migration and a cassette version bump, not an edit here.
+     */
+    @Test
+    fun `the canonical form of a request hashes to a value that must never move`() {
+        assertEquals(
+            "05ee561fe85644853b20c49450ccce435c004cf655b72d35d5c5639f74bf59cd",
+            Rules.DEFAULT.fingerprint(
+                "POST",
+                "/v1/messages",
+                headersOf("content-type", "application/json"),
+                Json.parseToJsonElement(GOLDEN) as JsonObject,
+            ),
+        )
+    }
+
     @Test
     fun `attribution headers and the machine-context block do not change the fingerprint`() {
         val laptop =
@@ -254,4 +278,11 @@ class RulesTest {
         } catch (e: IllegalArgumentException) {
             e.message.orEmpty()
         }
+
+    private companion object {
+        /** Small, fixed, and touched by none of the default replace rules. */
+        const val GOLDEN =
+            """{"model":"claude-sonnet-4-5","max_tokens":16,"stream":true,""" +
+                """"messages":[{"role":"user","content":"say peashoot"}]}"""
+    }
 }

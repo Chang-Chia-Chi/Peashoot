@@ -1,6 +1,5 @@
 package dev.peashoot.proxy
 
-import io.ktor.client.statement.bodyAsText
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -27,7 +26,7 @@ class ResumeBoundsTest {
 
     /** The whole answer came back, from the provider, and no line claims it was resumed. */
     private suspend fun ResumeRig.assertAskedAgain(body: String, calls: Int, why: String) {
-        assertEquals(whole, post(body).bodyAsText(), why)
+        assertEquals(whole, streamed(body), why)
         assertEquals(calls, upstream.received.size, why)
         assertFalse(awaitEvents(ResumeRig.COMPLETED, calls).any { it.flag("resumed") }, why)
     }
@@ -61,13 +60,16 @@ class ResumeBoundsTest {
             awaitEvents(ResumeRig.COMPLETED, 2)
 
             assertAskedAgain(older, calls = 3, why = "the oldest went when the cap was reached")
-            assertEquals(whole, post(newer).bodyAsText())
+            assertEquals(whole, streamed(newer))
             assertEquals(3, upstream.received.size, "and the newest is still there to be resumed")
+            // Three rows for three upstream calls: the two originals and the one the evicted
+            // request had to make again. The resumed answer is not recorded at all.
             val recorded =
                 withTimeout(ResumeRig.TIMEOUT_MS) {
-                    while (store.list().size < 4) delay(ResumeRig.POLL_MS)
+                    while (store.list().size < 3) delay(ResumeRig.POLL_MS)
                     store.list()
                 }
+            assertEquals(3, recorded.size, "one row per upstream call and no more")
             assertEquals(
                 listOf(frames.size),
                 recorded.map { it.frames.size }.distinct(),

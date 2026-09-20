@@ -22,7 +22,7 @@ class ResumeSeamTest {
     private val frames = fixtureFrames("/anthropic-messages/stream-with-tool-use.sse")
     private val whole = frames.joinToString("")
 
-    /** Both rows are in the store once both completions ran; the recorder writes off-thread. */
+    /** The store settles once the completions have run; the recorder persists in its own hook. */
     private suspend fun ResumeRig.recordings(count: Int): List<Recorded> =
         withTimeout(ResumeRig.TIMEOUT_MS) {
             while (store.list().size < count) delay(ResumeRig.POLL_MS)
@@ -38,7 +38,7 @@ class ResumeSeamTest {
             val request = messagesRequest()
             dropMidStream(request)
 
-            val reissue = async { post(request).bodyAsText() }
+            val reissue = async { streamed(request) }
             // The second started line is written after Resume answered, so by now the re-issue has
             // joined an answer whose upstream is still held at the frame the first client left on.
             awaitEvents(ResumeRig.STARTED, 2)
@@ -46,16 +46,13 @@ class ResumeSeamTest {
 
             assertEquals(whole, reissue.await(), "byte-equal to the fixture, across the hand-over")
             assertEquals(1, upstream.received.size, "the re-issue never reached the upstream")
-            val (original, resumed) = recordings(2)
-            assertTrue(original.exchange.clientDisconnected, "the original's client left")
-            assertEquals(frames, original.frames.map { it.raw }, "and it was still read to its end")
-            assertFalse(resumed.exchange.clientDisconnected)
-            assertEquals(
-                frames,
-                resumed.frames.map { it.raw },
-                "the resumed exchange is its own row",
-            )
             assertResumedLines(awaitEvents(ResumeRig.COMPLETED, 2))
+            // One call, one row. The resumed exchange is not recorded, for the reason a replay hit
+            // is not: its frames are this row's answer handed out a second time, and a second row
+            // under one fingerprint is one an `inOrder` replay would serve twice.
+            val original = recordings(1).single()
+            assertTrue(original.exchange.clientDisconnected, "the row is the one whose client left")
+            assertEquals(frames, original.frames.map { it.raw }, "and it was read to its end")
         }
 
     /**
@@ -81,7 +78,7 @@ class ResumeSeamTest {
         release.complete(Unit)
         awaitEvents(ResumeRig.COMPLETED, 1)
 
-        assertEquals(whole, post(request).bodyAsText())
+        assertEquals(whole, streamed(request))
         assertEquals(1, upstream.received.size, "the re-issue never reached the upstream")
         assertTrue(awaitEvents(ResumeRig.COMPLETED, 2).last().flag("resumed"))
     }
@@ -95,9 +92,9 @@ class ResumeSeamTest {
         withResume {
             streams(frames)
             val request = messagesRequest()
-            val first = async { post(request).bodyAsText() }
+            val first = async { streamed(request) }
             awaitEvents(ResumeRig.STARTED, 1)
-            val second = async { post(request).bodyAsText() }
+            val second = async { streamed(request) }
             withTimeout(ResumeRig.TIMEOUT_MS) {
                 while (upstream.received.size < 2) delay(ResumeRig.POLL_MS)
             }
@@ -114,7 +111,7 @@ class ResumeSeamTest {
         streams(chat)
         dropMidStream(CHAT_REQUEST, CHAT_PATH)
 
-        val reissue = async { post(CHAT_REQUEST, CHAT_PATH).bodyAsText() }
+        val reissue = async { streamed(CHAT_REQUEST, CHAT_PATH) }
         awaitEvents(ResumeRig.STARTED, 2)
         release.complete(Unit)
 
@@ -122,6 +119,70 @@ class ResumeSeamTest {
         assertEquals(1, upstream.received.size)
         val resumed = awaitEvents(ResumeRig.COMPLETED, 2).single { it.flag("resumed") }
         assertEquals("openai-chat", resumed.getValue("surface").jsonPrimitive.content)
+    }
+
+    /**
+     * The exact match is surface-blind, so Responses resumes through this interceptor like the
+     * other two. Serving its `starting_after` cursor from the buffer is #27's and is not here.
+     */
+    @Test
+    fun `Responses resumes an equal re-issue through the same interceptor`() = withResume {
+        val events = fixtureFrames("/openai-responses/stream-with-function-call.sse")
+        streams(events)
+        dropMidStream(RESPONSES_REQUEST, RESPONSES_PATH)
+
+        val reissue = async { streamed(RESPONSES_REQUEST, RESPONSES_PATH) }
+        awaitEvents(ResumeRig.STARTED, 2)
+        release.complete(Unit)
+
+        assertEquals(events.joinToString(""), reissue.await())
+        assertEquals(1, upstream.received.size)
+        val resumed = awaitEvents(ResumeRig.COMPLETED, 2).single { it.flag("resumed") }
+        assertEquals("openai-responses", resumed.getValue("surface").jsonPrimitive.content)
+    }
+
+    /**
+     * A resumed stream is a stream: #11's machinery writes it keep-alive comments like any other
+     * while it has nothing to send. Asserted once, here, which is what lets every byte comparison
+     * in these tests take the comments out — they are the proxy's own lines, not the provider's.
+     */
+    @Test
+    fun `a resumed stream gets its own keep-alive comments`() = withResume {
+        streams(frames)
+        val request = messagesRequest()
+        dropMidStream(request)
+
+        val reissue = async { post(request).bodyAsText() }
+        awaitEvents(ResumeRig.STARTED, 2)
+        // The joiner drains the buffer, then waits on an upstream still held at frame six: there
+        // is nothing to send, so the interval falls and a comment goes out instead.
+        delay(ResumeRig.PING_MS * PING_INTERVALS)
+        release.complete(Unit)
+
+        val served = reissue.await()
+        assertTrue(served.contains(KEEP_ALIVE), "a silent resumed stream is kept alive")
+        assertEquals(whole, served.withoutPings(), "and its frames are still the fixture's")
+    }
+
+    /**
+     * Stopping the proxy under an attached joiner ends it rather than leaving it hanging on an end
+     * that never comes. The drive is cancelled with the application's scope, its completion runs
+     * uncancellable, and the buffer is ended with that failure, which is what frees the reader.
+     */
+    @Test
+    fun `a proxy stopped under a joiner ends it rather than hanging`() = withResume {
+        streams(frames)
+        val request = messagesRequest()
+        dropMidStream(request)
+
+        val reissue = async { runCatching { post(request).bodyAsText() } }
+        awaitEvents(ResumeRig.STARTED, 2)
+        proxy.close()
+
+        // Whether the joiner sees a truncated body or a broken connection is the engine's to
+        // decide; that it is over at all is this test's.
+        withTimeout(ResumeRig.TIMEOUT_MS) { reissue.await() }
+        assertEquals(1, upstream.received.size, "and still only the one upstream call")
     }
 
     /**
@@ -136,6 +197,9 @@ class ResumeSeamTest {
         leaveBeforeAnswer(NON_STREAMING_REQUEST)
 
         val reissue = async { post(NON_STREAMING_REQUEST).bodyAsText() }
+        // A bounded wait, not a stand-in for an event: what is asserted next is that something did
+        // NOT happen, and the joiner is parked inside Resume's own `onRequest`, so the chain has
+        // not reached the Deriver and there is no `exchange.started` line for it to wait on.
         delay(ResumeRig.SETTLE_MS)
         assertEquals(1, upstream.received.size, "the re-issue is parked in Resume, not relayed")
         release.complete(Unit)
@@ -154,6 +218,8 @@ class ResumeSeamTest {
         leaveBeforeAnswer(NON_STREAMING_REQUEST)
 
         val reissue = async { post(NON_STREAMING_REQUEST) }
+        // Bounded, for the reason above: the joiner parks inside Resume and writes no event until
+        // it is let go, so there is nothing to await. Waiting too little only weakens the test.
         delay(ResumeRig.SETTLE_MS)
         release.complete(Unit)
 
@@ -172,7 +238,7 @@ class ResumeSeamTest {
             dropMidStream(request)
             dropMidStream(request, drops = 2)
 
-            val third = async { post(request).bodyAsText() }
+            val third = async { streamed(request) }
             awaitEvents(ResumeRig.STARTED, 3)
             release.complete(Unit)
 
@@ -181,6 +247,7 @@ class ResumeSeamTest {
             val completed = awaitEvents(ResumeRig.COMPLETED, 3)
             assertEquals(2, completed.count { it.flag("resumed") })
             assertEquals(2, completed.count { it.flag("clientDisconnected") })
+            assertEquals(1, store.list().size, "three exchanges, one call, one row")
         }
 
     /** The upstream cuts its stream [CUT_AFTER] frames in, once the first client has left. */
@@ -205,7 +272,7 @@ class ResumeSeamTest {
             awaitEvents(ResumeRig.COMPLETED, 1)
 
             streams(frames)
-            assertEquals(whole, post(request).bodyAsText(), "asked again, answered whole")
+            assertEquals(whole, streamed(request), "asked again, answered whole")
             assertEquals(2, upstream.received.size, "a broken answer is not worth resuming")
             assertFalse(awaitEvents(ResumeRig.COMPLETED, 2).any { it.flag("resumed") })
         }
@@ -223,7 +290,7 @@ class ResumeSeamTest {
             val request = messagesRequest()
             dropMidStream(request)
 
-            val reissue = async { post(request).bodyAsText() }
+            val reissue = async { streamed(request) }
             awaitEvents(ResumeRig.STARTED, 2)
             release.complete(Unit)
 
@@ -251,7 +318,7 @@ class ResumeSeamTest {
         val request = messagesRequest()
         dropMidStream(request, after = joinAt)
 
-        val reissue = async { post(request).bodyAsText() }
+        val reissue = async { streamed(request) }
         release.complete(Unit)
 
         assertEquals(whole, reissue.await(), "the hand-over at frame $joinAt")
@@ -261,5 +328,8 @@ class ResumeSeamTest {
     private companion object {
         /** Where the upstream's stream breaks: after the drop at [LEFT_AFTER], before the end. */
         const val CUT_AFTER = 9
+
+        /** Long enough that the writer's wait certainly falls at least once. */
+        const val PING_INTERVALS = 3
     }
 }
