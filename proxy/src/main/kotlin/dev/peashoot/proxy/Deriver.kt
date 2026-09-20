@@ -158,6 +158,7 @@ class Deriver(
             put("latencyMs", millisSince(exchange.receivedAt, now))
             put("replayHit", exchange.replayHit)
             put("resumed", exchange.resumed)
+            put("generatedNothing", exchange.generatedNothing())
             put("clientDisconnected", exchange.clientDisconnected)
             put("rateLimit", rateLimitJson(exchange.surface, exchange.response?.headers))
         }

@@ -257,7 +257,7 @@ class FarmTest {
     @Test
     fun `a get-by-id and a cancel end their exchange and count for nothing else`() {
         val states = replay("responses-poll.jsonl")
-        assertEquals(7, states.size)
+        assertEquals(9, states.size)
         val turn = states[1]
         assertEquals(120, turn.villager(CODEX).water)
         assertEquals(Weather.RAIN, turn.weather, "the turn read from the cache")
@@ -286,6 +286,33 @@ class FarmTest {
         )
         assertEquals(0.03, states.last().days.getValue(CODEX).cost)
         assertEquals(turn.bin, states.last().bin, "and nothing after the turn ships anything")
+    }
+
+    /**
+     * The poll #81 could not see (#94): a `GET /v1/responses/{id}` of a response that has already
+     * finished answers with the whole object, usage and all, so no reading of the line's own
+     * numbers tells it from the create. What tells them apart is the request's path, and the
+     * Deriver now says so on the line: `generatedNothing`, absent on everything recorded before it.
+     */
+    @Test
+    fun `a poll of a finished response carries the create's usage and is still no second turn`() {
+        val states = replay("responses-poll.jsonl")
+        val before = states[6]
+        assertEquals(Activity.WALKING_TO_WELL, states[7].villager(CODEX).activity)
+        assertEquals(listOf(CODEX), states[7].wellQueue)
+
+        val farm = states[8]
+        assertEquals(Activity.RETURNING, farm.villager(CODEX).activity)
+        assertTrue(farm.villager(CODEX).inFlight.isEmpty(), "the exchange ended")
+        assertEquals(before.copy(days = farm.days), farm, "and nothing else moved")
+        // The money and the water, which is what a second turn would have doubled.
+        assertEquals(ShippingBin(produce = 1, ledger = 0.03, unpriced = 0), farm.bin)
+        assertEquals(120, farm.villager(CODEX).water)
+        assertEquals(
+            Tokens(input = 900, output = 120, cacheRead = 400, cacheWrite = 0),
+            farm.days.getValue(CODEX).tokens,
+        )
+        assertEquals(0.03, farm.days.getValue(CODEX).cost)
     }
 
     /**

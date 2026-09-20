@@ -267,12 +267,12 @@ fun reduce(state: FarmState, event: JsonObject): FarmState =
  * — and nothing else: no water, no crops, no weather, no bin, no day. A villager whose session this
  * window never heard is not made by a line that is not a turn.
  *
- * Reporting no usage is the whole of the test. #81's own wording was "no usage and no model", and
- * the model half does not hold against the data: a cancel's body carries a `model` and the reader
- * reads it, so the event line for one names a model like a turn's does. What guards the usage
- * instead are the three ways a turn can report none and still be a turn, each of them a fixture: a
- * status outside [ANSWERED] failed rather than generated nothing (`rate-limit.jsonl`'s 429,
- * `weather.jsonl`'s 529), a stop reason that says it [ENDED] ended whatever it reported
+ * Reporting no usage was the whole of the test (#81). #81's own wording was "no usage and no
+ * model", and the model half does not hold against the data: a cancel's body carries a `model` and
+ * the reader reads it, so the event line for one names a model like a turn's does. What guards the
+ * usage instead are the three ways a turn can report none and still be a turn, each of them a
+ * fixture: a status outside [ANSWERED] failed rather than generated nothing (`rate-limit.jsonl`'s
+ * 429, `weather.jsonl`'s 529), a stop reason that says it [ENDED] ended whatever it reported
  * (`odd-lines.jsonl`), and a stream whose client left was being answered (`stream-cut.jsonl`). A
  * replay hit and a resumed line (#26) both report usage and a zero cost, so both stay turns, which
  * is what they are.
@@ -284,17 +284,32 @@ fun reduce(state: FarmState, event: JsonObject): FarmState =
  * What it buys is a Responses create whose usage never parsed, which says `completed` and is a turn
  * for exactly the reason an `end_turn` that reported nothing is one.
  *
- * The walk is undone and not prevented. A `started` cannot know: what tells these apart is the
- * request's path, which is on no event line, and #81 ruled out putting it there. So a poll still
- * costs its villager the trip out and back, and this is what brings it home rather than leaving it
- * at a well it has no reason to be at.
+ * What leads is no longer the usage, though. #94: a `GET /v1/responses/{id}` of a response that has
+ * already *finished* answers with the whole object, usage and all, so every reading of the line's
+ * own numbers calls it a turn — a second produce, a second cost and the create's tokens a second
+ * time on the day's card, once per poll. The Deriver knows what the reducer cannot, the request's
+ * method and path, and now says it on the line: `generatedNothing`, set from the same rule #27's
+ * `createsResponse()` already draws. So the flag leads where a line carries one and the usage is
+ * the fallback for every line recorded before it, which is every cassette taken so far. The guards
+ * belong to the fallback and not to the flag: they exist to keep the heuristic from calling a turn
+ * a poll, and a line that states the fact outright needs no guarding — a finished-response poll
+ * says `completed` and carries usage, so guarding the flag would be refusing to believe it.
+ *
+ * A status outside [ANSWERED] is the one thing still read ahead of the flag. A 429 or a 529 on a
+ * poll is the key's news and not the poll's: the sky and the well want it, and reading it first
+ * leaves every line recorded before #94 reduced exactly as it was.
+ *
+ * The walk is undone and not prevented. A `started` cannot know: the flag is on the completed line
+ * only, for the reason the cost is. So a poll still costs its villager the trip out and back, and
+ * this is what brings it home rather than leaving it at a well it has no reason to be at.
  */
 private fun nonGenerating(state: FarmState, event: JsonObject): FarmState? {
     val generated =
-        usage(event) != null ||
-            status(event)?.let { it in ANSWERED } != true ||
-            event["stopReason"].text() in ENDED ||
-            event.scalar("clientDisconnected") { booleanOrNull } == true
+        status(event)?.let { it in ANSWERED } != true ||
+            (event.scalar("generatedNothing") { booleanOrNull }?.not()
+                ?: (usage(event) != null ||
+                    event["stopReason"].text() in ENDED ||
+                    event.scalar("clientDisconnected") { booleanOrNull } == true))
     if (generated) return null
     val session = event["session"].text()
     val villager = session?.let { state.villagers[villagerOf(state, it, event).id] }

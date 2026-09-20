@@ -61,6 +61,21 @@ internal fun Exchange.createsResponse(): Boolean =
     request.method == "POST" && request.path.substringBefore('?') == Responses.PATH
 
 /**
+ * Whether this exchange made nothing that was not there before, which the event line says out loud
+ * so that the farm need not guess (#94). Only the Responses surface has exchanges like that: a `GET
+ * /v1/responses/{id}` and a `POST /v1/responses/{id}/cancel` both name a response some other
+ * exchange created, and a poll of one that has already finished answers with the whole object,
+ * `usage` and all — indistinguishable, by its own numbers, from the create it is echoing, which is
+ * why the reducer counted a second turn and a second cost on every poll.
+ *
+ * It is [createsResponse] negated and fenced by the surface, and deliberately not a second rule of
+ * its own: the line between a create and everything else under `/v1/responses` is already drawn
+ * once, and two copies of it would drift. The surface fence is what keeps every other surface's
+ * exchanges generating — a Messages POST is not a create by this test either.
+ */
+internal fun Exchange.generatedNothing(): Boolean = surface == Responses && !createsResponse()
+
+/**
  * The response this request asks for the events of, or null when it is not a cursor at all.
  *
  * Four things must hold, and each rules out a request that looks similar. A `GET`, because a create
