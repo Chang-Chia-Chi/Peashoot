@@ -152,16 +152,19 @@ data class Touch(val villager: String, val ts: String?, val kind: TouchKind)
 /**
  * How many touches a crop remembers.
  *
- * This is the whole of the history the window has, and not because the proxy lacks it: every touch
- * is in a `tools` array on a stored `exchange.completed` line, and `GET /events?since=0` serves the
- * whole event table. The window asks for no backfill on its first connection, so it only ever hears
- * what happened after it opened, and these are what that leaves.
+ * This is the whole of the history the *reducer* has, and not because the proxy lacks it: every
+ * touch is in a `tools` array on a stored `exchange.completed` line. The window asks for no
+ * backfill on its first connection, so the fold only ever hears what happened after it opened, and
+ * these are what that leaves.
+ *
+ * The pane no longer reads this list. #85 asked where the panes' missing history should come from
+ * and answered `GET /touches`, which reads the event table and so reaches back past the moment the
+ * window opened; `Detail.touchNote` reports on that page and not on this cap. What is left here is
+ * the reducer's own record, which is what the crop's growth is folded from.
  *
  * ponytail: the newest [TOUCH_HISTORY], oldest dropped, so a file a run edits a thousand times
- * costs a bounded amount of memory. `Detail.touchNote` is what says so in the pane, rather than
- * letting the list simply end. Upgrade: a backfilled feed would give the pane the rest — though
- * that is a decision beyond this pane, since folding a day-old feed would end every finished
- * session's day at the first tick and put a card up for each.
+ * costs a bounded amount of memory. Nothing draws it, so the cap now bounds memory alone and no
+ * longer decides what a reader can see.
  */
 internal const val TOUCH_HISTORY = 50
 
@@ -179,9 +182,11 @@ data class Crop(
     /** Reads of this file: an inspection, which advances nothing. */
     val inspections: Int,
     /**
-     * Every turn that touched it, oldest first, up to [TOUCH_HISTORY]: #22's pane reads this. A
-     * touch whose line carried no `ts` is kept with none rather than dropped or stamped with a
-     * neighbour's time — the turn happened, and a made-up time is worse than an admitted gap.
+     * Every turn that touched it, oldest first, up to [TOUCH_HISTORY]. #22's pane read this;
+     * since #85 the pane asks `GET /touches` instead, so nothing in the window reads it now and
+     * only the reducer's own tests do — see the issue on retiring it. A touch whose line carried no
+     * `ts` is kept with none rather than dropped or stamped with a neighbour's time — the turn
+     * happened, and a made-up time is worse than an admitted gap.
      */
     val touches: List<Touch> = emptyList(),
 ) {
