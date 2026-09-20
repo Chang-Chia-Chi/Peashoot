@@ -33,14 +33,29 @@ internal fun farmAtlas(): ImageBitmap {
 /**
  * One sprite at a tile position. The destination is rounded to whole pixels, because pixel art
  * landing on a half pixel smears even with [FilterQuality.None].
+ *
+ * [scale] draws it bigger or smaller about the middle of its tile, which is how a crop pops when it
+ * grows: still one `drawImage` from the same immutable atlas, because scaling a destination rect is
+ * the GPU's business and composing a bigger bitmap would be ours.
  */
-internal fun DrawScope.drawSprite(atlas: ImageBitmap, sprite: Sprite, spot: Spot) {
+internal fun DrawScope.drawSprite(
+    atlas: ImageBitmap,
+    sprite: Sprite,
+    spot: Spot,
+    scale: Float = 1f,
+) {
+    val side = (TILE_PX * scale).roundToInt()
+    val inset = (TILE_PX - side) / 2
     drawImage(
         image = atlas,
         srcOffset = IntOffset(sprite.column * TILE, sprite.row * TILE),
         srcSize = IntSize(TILE, TILE),
-        dstOffset = IntOffset((spot.x * TILE_PX).roundToInt(), (spot.y * TILE_PX).roundToInt()),
-        dstSize = IntSize(TILE_PX, TILE_PX),
+        dstOffset =
+            IntOffset(
+                (spot.x * TILE_PX).roundToInt() + inset,
+                (spot.y * TILE_PX).roundToInt() + inset,
+            ),
+        dstSize = IntSize(side, side),
         filterQuality = FilterQuality.None,
     )
 }

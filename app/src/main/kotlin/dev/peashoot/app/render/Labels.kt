@@ -47,6 +47,19 @@ private const val LABEL_GUTTER = 4f
 private const val NAME_TILES = 1.5f
 private const val NAME_LEFT = -0.25f
 
+/** A mood sits over the head rather than under the feet, where the name already is. */
+private const val OVER_A_HEAD = -0.55f
+
+/**
+ * Waiting and resting, in the two characters each needs.
+ *
+ * Neither Kenney pack has a thought bubble, a bucket in hand or a sleeping villager — they have two
+ * people and no poses at all — so the pose is text over the head through the same cached measurer
+ * every other label goes through, rather than a sprite invented for it or an atlas rebuilt.
+ */
+private const val WAITING_TEXT = "..."
+private const val RESTING_TEXT = "zzz"
+
 private val MARKER_SPOT = Spot(0.2f, 0.4f)
 private const val MARKER_TILES = 5f
 
@@ -92,6 +105,27 @@ internal fun DrawScope.drawNames(measurer: TextMeasurer, standing: List<Pair<Vil
             NAME_TILES,
         )
     }
+}
+
+/**
+ * What a villager is at, over its head: waiting its turn at the well, or resting off a 429. Walking
+ * and standing show nothing — a farm where every sprite carries a caption says less, not more.
+ */
+internal fun DrawScope.drawMood(measurer: TextMeasurer, pose: Pose, spot: Spot) {
+    val text =
+        when (pose) {
+            Pose.WAITING -> WAITING_TEXT
+            Pose.RESTING -> RESTING_TEXT
+            Pose.WALKING,
+            Pose.STANDING -> return
+        }
+    drawLabel(
+        measurer,
+        text,
+        Spot(spot.x + NAME_LEFT, spot.y + OVER_A_HEAD),
+        NAME_STYLE,
+        NAME_TILES,
+    )
 }
 
 /**
