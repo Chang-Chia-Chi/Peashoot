@@ -102,15 +102,19 @@ data class Client(
 /**
  * How much of a client-chosen identifier is kept. Generous against every real one — a UUID is 36
  * characters, Codex's thread ids and Claude Code's session ids are shorter — and small enough that
- * a client sending a megabyte under this name cannot put a megabyte on every event line, in every
- * stored row, and in the farm's own labels.
+ * an outsized one cannot put itself on every event line, in every stored row, and in the farm's own
+ * labels. A live request cannot carry much more, since the engine caps the header block long before
+ * this; a cassette hand-edited or imported from elsewhere is under no such limit, and reaches
+ * [Client.detect] by the same road.
  */
 private const val IDENTIFIER_LENGTH = 128
 
 /**
- * A line break, a tab, or any other control character: what would forge a field or a whole line in
- * anything that writes one of these as text rather than as JSON. `\r` and `\n` are control
- * characters themselves, so the one class covers them.
+ * A line break, a tab, or any other ASCII control character: what would forge a field or a whole
+ * line in anything that writes one of these as text rather than as JSON. `\r` and `\n` are control
+ * characters themselves, so the one class covers them. ASCII deliberately, and the same class
+ * `GourceLog` uses — nothing downstream splits a line on U+0085 or U+2028, and a rule that differed
+ * between the two guards would be one more thing to keep true.
  */
 private val CONTROL_CHARACTERS = Regex("\\p{Cntrl}")
 

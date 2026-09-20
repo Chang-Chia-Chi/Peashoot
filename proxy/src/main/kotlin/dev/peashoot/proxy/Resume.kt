@@ -152,11 +152,19 @@ class Resume(
         val answer = FrameLog()
 
         /**
-         * Which response this answer is, as its own stream announced it, or null before it has.
-         * Written by the drive alone, in frame order, and read by any request coroutine, exactly as
-         * [last] is: a cursor arriving before the first frame is buffered finds nothing and goes
-         * upstream, which is honest — a client can only know the id from the `response.created` it
-         * must already have received.
+         * Whether this exchange is the create whose stream is the whole of a response, which is the
+         * only kind that may answer a cursor. Resume taps what it serves as well as what it relays,
+         * so a cursor's own filtered tail is buffered too and carries the same response id; see
+         * [createsResponse] for what goes wrong without this.
+         */
+        val holdsWholeResponse = exchange.createsResponse()
+
+        /**
+         * Which response this answer is, as its own stream announced it, or null before it has, and
+         * null for good on any exchange that is not the create. Written by the drive alone, in
+         * frame order, and read by any request coroutine, exactly as [last] is: a cursor arriving
+         * before the first frame is buffered finds nothing and goes upstream, which is honest — a
+         * client can only know the id from the `response.created` it must already have received.
          */
         @Volatile var responseId: String? = null
 
@@ -199,11 +207,13 @@ class Resume(
         fun answers(id: String): Boolean = responseId == id && !background
 
         /**
-         * Reads the response id off a frame, on the one surface that has one and only until the
-         * stream has named it, so no other surface pays a parse for a field it cannot have.
+         * Reads the response id off a frame, on the one kind of exchange that holds a whole
+         * response and only until its stream has named it — so no other surface pays a parse for a
+         * field it cannot have, and nothing that holds a *part* of a response can be mistaken for
+         * one that holds all of it. [createsResponse] names the paths this covers and why.
          */
         fun noteResponseId(frame: Frame) {
-            if (surface == Responses && responseId == null) responseId = Responses.responseId(frame)
+            if (holdsWholeResponse && responseId == null) responseId = Responses.responseId(frame)
         }
 
         /**

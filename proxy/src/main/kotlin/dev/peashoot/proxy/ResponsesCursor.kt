@@ -25,8 +25,9 @@ import kotlinx.coroutines.flow.filter
  * ArchUnit rule keeps the server out of `core`.
  */
 
-/** Everything under `/v1/responses/` is a response's own; `Responses.owns` covers the prefix. */
-private const val RESPONSE_PREFIX = "/v1/responses/"
+/** Where a response is created; everything under `$RESPONSE_PATH/` is one response's own. */
+private const val RESPONSE_PATH = "/v1/responses"
+private const val RESPONSE_PREFIX = "$RESPONSE_PATH/"
 
 private const val STARTING_AFTER = "starting_after"
 private const val STREAM = "stream"
@@ -41,6 +42,22 @@ private const val STREAM = "stream"
 private const val FROM_THE_START = -1
 
 /**
+ * Whether this exchange is the create whose own stream is the whole of one response, which is the
+ * only kind that may ever answer a cursor.
+ *
+ * This is not belt and braces. Resume taps what it *serves* as well as what it relays — #26's "a
+ * laptop that sleeps twice" — so a cursor's own answer is buffered too, and that answer is a
+ * filtered tail carrying the same response id as the original, on `response.completed` among
+ * others. Without this the tail would offer itself to the next cursor as though it were the whole
+ * response, and a cursor asking from further back would be served `sequence_number > max(N, M)`:
+ * every event between the two numbers silently gone, under a 200 and a clean end. A get-by-id and a
+ * cancel answer with the bare response object and would be stamped with its id for the same reason;
+ * neither holds a stream at all.
+ */
+internal fun Exchange.createsResponse(): Boolean =
+    request.method == "POST" && request.path.substringBefore('?') == RESPONSE_PATH
+
+/**
  * The response this request asks for the events of, or null when it is not a cursor at all.
  *
  * Four things must hold, and each rules out a request that looks similar. A `GET`, because a create
@@ -50,6 +67,12 @@ private const val FROM_THE_START = -1
  * answered from a buffer. And `stream=true`, because without it the API answers one JSON response
  * object and our buffer holds SSE frames; handing a client that asked for a document a stream of
  * events is the same mismatch #26 refuses on `stream` for a re-issued POST.
+ *
+ * Ktor's query parser decides two details of that last test: parameter *names* are matched without
+ * regard to case, so `?STREAM=true` is a cursor, while the value is compared exactly, so
+ * `?stream=TRUE` is not. The id is taken from the path as written and never percent-decoded, so an
+ * encoded id simply fails to match a buffered one and the request is relayed — a miss, never a
+ * wrong answer.
  */
 internal fun Exchange.cursorId(): String? {
     val path = request.path.substringBefore('?')
@@ -64,10 +87,19 @@ internal fun Exchange.cursorId(): String? {
  * Which event this cursor asks from: [FROM_THE_START] when it names none, and null when it names
  * something that is no sequence number — a word, a fraction, or a negative, none of which can point
  * at a place in a stream. Null is what the caller answers [badCursor] to.
+ *
+ * A whole number too large for an `Int` is *not* one of those. It is a perfectly well-formed cursor
+ * that simply sits past the end of any response, so it is clamped rather than refused, and the
+ * client gets the empty, properly ended stream that any other out-of-range cursor gets. Refusing it
+ * would have contradicted that rule for no reason a client could see.
+ *
+ * Two shapes the query parser decides rather than this function, both harmless and neither obvious:
+ * a repeated `starting_after` takes the first, and a bare `?starting_after` with no `=` at all is
+ * read as *absent* where `?starting_after=` with an empty value is read as present and refused.
  */
 internal fun Exchange.startingAfter(): Int? {
     val raw = query()[STARTING_AFTER] ?: return FROM_THE_START
-    return raw.toIntOrNull()?.takeIf { it >= 0 }
+    return raw.toLongOrNull()?.takeIf { it >= 0 }?.coerceAtMost(Int.MAX_VALUE.toLong())?.toInt()
 }
 
 /**
@@ -94,7 +126,10 @@ internal fun Exchange.badCursor(): Refusal =
  * after every numbered frame there is. Dropping those would delete provider bytes on the say-so of
  * a field that is simply absent; keeping them can at worst repeat bytes the client already had, and
  * only for a frame no numbered filter could have placed either way. The proxy's own keep-alive
- * comments never reach here at all: the client writer adds those, downstream of the buffer.
+ * comments never reach here at all: the client writer adds those, downstream of the buffer. A
+ * comment the *provider* sent does reach here, parses to no JSON, and is kept wherever it sat, so a
+ * cursor at 500 re-emits the heartbeats from before it at the head of its stream — which is the
+ * "repeat bytes" case above, and costs nothing, since an SSE client ignores comment lines.
  *
  * ponytail: every frame is parsed as JSON again here, once per cursor, where the Deriver's reader
  * has already parsed the same text for the same response. A cursor over a thousand-event answer is
