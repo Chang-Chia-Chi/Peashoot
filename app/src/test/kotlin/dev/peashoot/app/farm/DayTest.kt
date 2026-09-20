@@ -98,6 +98,25 @@ class DayTest {
     }
 
     @Test
+    fun `a dismissed card is the oldest one, and only it`() {
+        val farm = replay("day.jsonl").last()
+        val one = tick(farm, AFTER_THE_WINDOW, IDLE_AFTER, UTC)
+        // The second session goes quiet ten minutes later, so a later tick leaves a second card
+        // behind the first: the window shows them one at a time and in the order they ended.
+        val two = tick(one, AFTER_THE_WINDOW.plus(IDLE_AFTER), IDLE_AFTER, UTC)
+        assertEquals(listOf(HAZEL, IVY), two.pendingCards.map { it.session })
+        assertEquals(listOf(IVY), two.dismissed().pendingCards.map { it.session })
+        assertTrue(two.dismissed().dismissed().pendingCards.isEmpty())
+        // Taking a card away is the whole of what it does: nothing else about the farm moves.
+        assertEquals(two.copy(pendingCards = two.pendingCards.drop(1)), two.dismissed())
+    }
+
+    @Test
+    fun `dismissing a farm with no card to dismiss changes nothing`() {
+        assertEquals(FarmState(), FarmState().dismissed())
+    }
+
+    @Test
     fun `the season is the calendar month, in the zone the caller reads its clock in`() {
         val noons = listOf("2026-01-15", "2026-04-15", "2026-07-15", "2026-10-15")
         assertEquals(

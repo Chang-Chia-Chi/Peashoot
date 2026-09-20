@@ -33,6 +33,9 @@ internal enum class Sprite(val column: Int, val row: Int) {
     WELL_ROOF(column = 8, row = 7),
     WELL_BASE(column = 8, row = 8),
 
+    /** Tiny Farm's crate of produce, which is the shipping bin: what the turns have dropped off. */
+    SHIPPING_CRATE(column = 11, row = FARM_ROW_0),
+
     /** The only two people in either pack; Tiny Town's own villagers are in Tiny Dungeon. */
     VILLAGER_OVERALLS(column = 0, row = FARM_ROW_0 + 9),
     VILLAGER_HAT(column = 1, row = FARM_ROW_0 + 9),

@@ -14,6 +14,12 @@ private const val A_CROP = "src/field0/File0.kt"
 /** More files than one turn plausibly touches, so that nothing quietly caps the diff again. */
 private const val A_BIG_FIELD = 40
 
+/** The one villager of `weather.jsonl`, and the three states its dropped stream sits between. */
+private const val A_VILLAGER = "sess-sky"
+private const val IN_FLIGHT = 4
+private const val SPILLED = 5
+private const val AFTER_SPILL = 6
+
 /**
  * What the crops do between two reducer states: the diff and the ageing, both pure, so that a pop
  * can be tested without a window. The reducer is not asked to hold any of this — a crop that has
@@ -71,10 +77,59 @@ class EffectsTest {
 
     @Test
     fun `an effect ages out of the frame it was raised in`() {
-        val raised = cropEffects(oneCrop(Growth.SEED, 0), oneCrop(Growth.SPROUT, 0))
+        val raised = Effects().raised(oneCrop(Growth.SEED, 0), oneCrop(Growth.SPROUT, 0))
         val halfway = aged(raised, EFFECT_SECONDS / 2)
-        assertEquals(EFFECT_SECONDS / 2, halfway.getValue(A_CROP).age)
-        assertTrue(aged(halfway, EFFECT_SECONDS).isEmpty(), "an effect that never ends is a bug")
+        assertEquals(EFFECT_SECONDS / 2, halfway.crops.getValue(A_CROP).age)
+        assertEquals(
+            Effects(),
+            aged(halfway, EFFECT_SECONDS),
+            "an effect that never ends is a bug, and a leak",
+        )
+    }
+
+    @Test
+    fun `a dropped stream puddles at the villager that lost the bucket`() {
+        val states = replay("weather.jsonl")
+        val spilled = spillEffects(states[IN_FLIGHT], states[SPILLED])
+        assertEquals(setOf(A_VILLAGER), spilled.keys)
+        assertEquals(EffectKind.SPILL, spilled.getValue(A_VILLAGER).kind)
+    }
+
+    @Test
+    fun `a spill count that has not moved puddles nothing`() {
+        val states = replay("weather.jsonl")
+        assertTrue(
+            spillEffects(states[SPILLED], states[AFTER_SPILL]).isEmpty(),
+            "a villager that spilled a turn ago is not still spilling",
+        )
+        assertTrue(
+            spillEffects(null, states[SPILLED]).isEmpty(),
+            "a window opening onto a farm mid-run must not puddle under its whole history",
+        )
+    }
+
+    @Test
+    fun `the sky turning to lightning flashes once, not on every frame after it`() {
+        val states = replay("weather.jsonl")
+        assertTrue(struck(states[IN_FLIGHT], states[SPILLED]), "a dropped stream did not strike")
+        assertTrue(
+            !struck(states[SPILLED], states[AFTER_SPILL]),
+            "the weather has no decay, so a farm left on lightning would strobe",
+        )
+        assertTrue(!struck(null, states[SPILLED]), "the first farm a window sees strikes nothing")
+    }
+
+    @Test
+    fun `a second strike restarts a flash rather than being swallowed by it`() {
+        val states = replay("weather.jsonl")
+        val halfway = Effects(flash = Effect(EffectKind.FLASH, age = EFFECT_SECONDS / 2))
+        val again = halfway.raised(states[IN_FLIGHT], states[SPILLED])
+        assertEquals(0f, again.flash?.age, "a second dropped stream is news, not a repeat")
+        // And a step that struck nothing leaves the one already running exactly where it was.
+        assertEquals(
+            EFFECT_SECONDS / 2,
+            halfway.raised(states[SPILLED], states[AFTER_SPILL]).flash?.age,
+        )
     }
 
     @Test
