@@ -6,11 +6,17 @@ import io.ktor.client.engine.cio.CIO
 import io.ktor.client.request.get
 import io.ktor.client.request.header
 import io.ktor.client.request.prepareGet
+import io.ktor.client.request.request
+import io.ktor.client.request.setBody
 import io.ktor.client.statement.HttpResponse
 import io.ktor.client.statement.bodyAsChannel
 import io.ktor.client.statement.bodyAsText
+import io.ktor.http.ContentType
 import io.ktor.http.HttpHeaders
+import io.ktor.http.HttpMethod
 import io.ktor.http.HttpStatusCode
+import io.ktor.http.contentType
+import io.ktor.http.isSuccess
 import io.ktor.utils.io.readLine
 import java.io.IOException
 import java.nio.file.Files
@@ -61,6 +67,15 @@ sealed interface Feed {
 
     data class State(val connected: Boolean, val detail: String) : Feed
 }
+
+/**
+ * The proxy answered, and said no: the status it said it with, and the `detail` out of its problem
+ * object, which is the sentence to put in front of the user word for word. An [IOException] like
+ * every other failure a call can come back with, so a screen that only means to say "that did not
+ * work" needs no special case, while one that must tell a refusal from an unreachable proxy asks
+ * what this is.
+ */
+class Refused(val status: Int, val detail: String) : IOException("the proxy refused: $detail")
 
 /**
  * The app's one way to the proxy: REST and the SSE feed over `/_peashoot/v1/`. It holds the bearer
@@ -126,6 +141,46 @@ class ControlClient(
             val body = response.bodyAsText()
             if (response.status == HttpStatusCode.OK) Result.success(body)
             else Result.failure(IOException("the proxy answered ${response.status} to $path"))
+        } catch (e: IOException) {
+            Result.failure(e)
+        }
+    }
+
+    /**
+     * One control API call of any method, with a JSON body when there is one, answering the proxy's
+     * own text. Never throws, for the reason [probe] and [get] do not: what asks for these is a
+     * click.
+     *
+     * A refusal comes back as [Refused], carrying the status and the `detail` the proxy wrote, and
+     * that is deliberately the opposite of what [get] does with one. What [get] fetches is an
+     * exchange, whose body is a prompt nobody asked to see; what is refused here is a draft the
+     * user has this moment typed, and the parser's own words about it are the only thing that says
+     * which rule to fix. Every other failure stays the [IOException] it was, so a screen can tell a
+     * proxy that said no from a proxy that was never there.
+     */
+    suspend fun send(method: HttpMethod, path: String, body: String? = null): Result<String> {
+        // The token read is its own `runCatching` and the request is caught on IOException alone,
+        // for the reason [get] spells out: `CancellationException` is an `IllegalStateException`.
+        val bearer = runCatching {
+            "Bearer ${token()}"
+        }
+            .getOrElse {
+                return Result.failure(it)
+            }
+        return try {
+            val response =
+                client.request("$baseUrl$CONTROL_BASE$path") {
+                    this.method = method
+                    header(HttpHeaders.Authorization, bearer)
+                    if (body != null) {
+                        contentType(ContentType.Application.Json)
+                        setBody(body)
+                    }
+                }
+            // Read either way, as [probe] and [get] read it, so the connection is released.
+            val answer = response.bodyAsText()
+            if (response.status.isSuccess()) Result.success(answer)
+            else Result.failure(Refused(response.status.value, problemDetail(answer)))
         } catch (e: IOException) {
             Result.failure(e)
         }

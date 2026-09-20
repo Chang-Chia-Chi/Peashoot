@@ -71,16 +71,21 @@ private const val TICK_MS = 5_000L
 /**
  * How long a session must be quiet before its day ends.
  *
- * ponytail: a fixed window, where `docs/design.md` names an `idleSessionMinutes` config key. No
- * code reads that key yet and the app parses no TOML (see the `ponytail:` on [proxyPort]). Upgrade:
- * ask the control API's `GET /config` for it, once #23 gives the app a config client and a key.
+ * ponytail: still a fixed window. #23 gave the app a config client, and there is nothing to ask:
+ * `docs/design.md`'s config list names `idleSessionMinutes`, but no `ProxyConfig` field holds it,
+ * `GET /config` does not answer it, and no code anywhere reads it. What is missing is the key on
+ * the proxy's side. Upgrade: add it there, and then one read through [ControlPlaneModel] here.
  */
 private const val IDLE_MINUTES = 30L
 
-/** The window's two tabs, farm first: the farm is the point, and the lines are how to check it. */
-private val TABS = listOf("farm", "events")
+/**
+ * The window's tabs, farm first: the farm is the point, the lines are how to check it, and the
+ * control plane is what to do about what they say.
+ */
+private val TABS = listOf("farm", "events", "control")
 
 private const val FARM_TAB = 0
+private const val EVENTS_TAB = 1
 
 /** How far the day's card stands off the farm behind it, and what a share reads as. */
 private const val CARD_LIFT = 8
@@ -133,6 +138,12 @@ class AppModel(private val home: Path = homeDir(), private val port: Int = proxy
      */
     val panes = PaneModel { farm.labelsHidden }
 
+    /**
+     * The control plane (#23): the route modes, the rules editor, the export dialog and the config,
+     * each writing its own state from this same thread and for the same reason [panes] does.
+     */
+    internal val control = ControlPlaneModel()
+
     /** Only ever a proxy this app started: one that was already up belongs to whoever ran it. */
     private var owned: OwnedProxy? = null
 
@@ -151,6 +162,7 @@ class AppModel(private val home: Path = homeDir(), private val port: Int = proxy
                 val polling = launch { pollHealth(client) }
                 val ticking = launch { tickFarm() }
                 panes.attach(this, client)
+                control.attach(this, client)
                 client.events(lastId).collect { feed ->
                     when (feed) {
                         is Feed.State -> status = feed.detail
@@ -167,6 +179,7 @@ class AppModel(private val home: Path = homeDir(), private val port: Int = proxy
                 // when the feed ends for good would hold the window here with nothing to cancel
                 // it. Detaching here cancels it, and gives the panes nothing to ask afterwards.
                 panes.detach()
+                control.detach()
             }
         }
     }
@@ -316,22 +329,23 @@ private fun Dashboard(model: AppModel) {
                     Tab(selected = index == tab, onClick = { tab = index }, text = { Text(title) })
                 }
             }
-            if (tab == FARM_TAB) {
+            when (tab) {
                 // The pane sits beside the farm rather than over it, so the villager or crop that
                 // was clicked stays on screen while its timeline is read.
-                Row(Modifier.fillMaxWidth().weight(1f)) {
-                    Box(Modifier.weight(1f).fillMaxHeight()) {
-                        FarmCanvas(model.farm, model.panes::select, Modifier.fillMaxSize())
-                        // One card at a time, the oldest first, so that a window left alone over a
-                        // lunch break is read in the order the days ended rather than all at once.
-                        model.farm.pendingCards.firstOrNull()?.let { card ->
-                            DayCard(card, model::dismissCard, Modifier.align(Alignment.Center))
+                FARM_TAB ->
+                    Row(Modifier.fillMaxWidth().weight(1f)) {
+                        Box(Modifier.weight(1f).fillMaxHeight()) {
+                            FarmCanvas(model.farm, model.panes::select, Modifier.fillMaxSize())
+                            // One card at a time, the oldest first, so that a window left alone
+                            // over a lunch break is read in the order the days ended.
+                            model.farm.pendingCards.firstOrNull()?.let { card ->
+                                DayCard(card, model::dismissCard, Modifier.align(Alignment.Center))
+                            }
                         }
+                        DetailPane(model.farm, model.panes)
                     }
-                    DetailPane(model.farm, model.panes)
-                }
-            } else {
-                EventLines(model.lines, Modifier.weight(1f))
+                EVENTS_TAB -> EventLines(model.lines, Modifier.weight(1f))
+                else -> ControlScreen(model.control, Modifier.weight(1f))
             }
         }
     }
