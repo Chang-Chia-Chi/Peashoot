@@ -83,6 +83,12 @@ object Responses : Surface {
          * Calls so far, by the item id that groups them, in the order the response opened them —
          * two calls' argument fragments interleave, so insertion order and not arrival order is
          * what the event line wants. A call whose name never arrived is not one.
+         *
+         * ponytail: a nameless call is dropped, arguments and all. The one way to reach that is the
+         * path this surface adds: `?starting_after=N` resumes past the `output_item.added` that
+         * carried the name, and a resumed stream then cut before its terminal event loses the call
+         * from the line entirely. Upgrade: when #27 serves a cursor from the proxy's own buffer, it
+         * has the earlier frames and can name it; until then nothing here can.
          */
         private val calls = LinkedHashMap<String, OpenTool>()
 

@@ -38,6 +38,10 @@ import kotlinx.serialization.json.jsonPrimitive
 /**
  * The OpenAI Responses surface at the proxy's HTTP boundary: what Codex sends, what comes back,
  * what the store keeps, what the event line says, and what the proxy answers an upgrade with.
+ *
+ * ponytail: this class is within about thirty lines of detekt's `LargeClass` ceiling of 600, and
+ * there is no baseline to absorb the overrun. Upgrade: #27's cursor tests go in a file of their own
+ * rather than here, which is where they belong anyway — they are about the buffer, not the surface.
  */
 class ResponsesSeamTest {
     private fun fixture(name: String): ByteArray =
@@ -104,20 +108,23 @@ class ResponsesSeamTest {
      * because an HTTP client of our own would be free to rewrite the very headers under test.
      * Returns the status line.
      */
-    private fun upgradeStatusLine(proxy: ProxyServer, path: String): String {
+    private fun upgradeStatusLine(proxy: ProxyServer, upgrade: String = "websocket"): String {
         val url = URI(proxy.url)
-        val request =
-            listOf(
-                    "GET $path HTTP/1.1",
-                    "Host: ${url.host}:${url.port}",
-                    "Upgrade: websocket",
-                    "Connection: Upgrade",
+        val handshake =
+            if (upgrade != "websocket") emptyList()
+            else
+                listOf(
                     "Sec-WebSocket-Version: 13",
                     "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==",
                     "OpenAI-Beta: responses_websockets=2026-02-06",
-                    "",
-                    "",
                 )
+        val request =
+            (listOf(
+                    "GET $RESPONSES HTTP/1.1",
+                    "Host: ${url.host}:${url.port}",
+                    "Upgrade: $upgrade",
+                    "Connection: Upgrade",
+                ) + handshake + listOf("", ""))
                 .joinToString("\r\n")
         Socket(url.host, url.port).use { socket ->
             socket.getOutputStream().apply {
@@ -438,20 +445,26 @@ class ResponsesSeamTest {
                     // else costs it five stream retries first. See
                     // docs/research/codex-responses-transport.md.
                     assertTrue(
-                        upgradeStatusLine(proxy, RESPONSES).startsWith("HTTP/1.1 426"),
-                        upgradeStatusLine(proxy, RESPONSES),
+                        upgradeStatusLine(proxy).startsWith("HTTP/1.1 426"),
+                        upgradeStatusLine(proxy),
                     )
                     assertEquals(
                         0,
                         upstream.received.size,
                         "a refused upgrade is never relayed, so it bills nothing",
                     )
+                    // Only websocket is refused. Another token — `h2c` from `curl --http2` — must
+                    // be answered as though the header were absent, not swallowed unrecorded.
+                    assertTrue(
+                        upgradeStatusLine(proxy, "h2c").startsWith("HTTP/1.1 200"),
+                        upgradeStatusLine(proxy, "h2c"),
+                    )
                     assertEquals(200, post(proxy).status.value)
                 }
                 assertEquals(
-                    listOf(RESPONSES),
+                    listOf(RESPONSES, RESPONSES, RESPONSES),
                     upstream.received.map { it.uri },
-                    "the refusal swallowed nothing: an ordinary request right after it got through",
+                    "the refusal swallowed nothing: the h2c GETs and the post all got through",
                 )
             }
         }

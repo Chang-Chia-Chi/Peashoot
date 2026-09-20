@@ -91,6 +91,9 @@ internal fun loopbackAddress(host: String): InetAddress {
     return addresses.first()
 }
 
+/** The one upgrade token the proxy refuses, because it is the one a client falls back from. */
+private const val WEBSOCKET = "websocket"
+
 fun Application.relayModule(
     /** Read once per request, so a config `PUT` reaches the next one. */
     live: LiveConfig,
@@ -131,9 +134,17 @@ fun Application.relayModule(
         route("{...}") {
             handle {
                 when {
-                    // Codex tries a WebSocket upgrade first and falls back to HTTP on a clean
-                    // refusal.
-                    call.request.header(HttpHeaders.Upgrade) != null ->
+                    // Codex opens every session with a WebSocket upgrade and falls back to HTTP
+                    // on a clean refusal; 426 is the only status its source treats as one, and
+                    // every other answer costs it five stream retries first
+                    // (docs/research/codex-responses-transport.md).
+                    //
+                    // Only `websocket` is refused. A client offering some other upgrade — `h2c`
+                    // from `curl --http2`, say — must be answered as though the header were not
+                    // there (RFC 7540 section 3.2), so those relay normally; `upgrade` is
+                    // hop-by-hop, so the request reaches the provider without it either way.
+                    // Refusing every token would swallow such a request, unrecorded and unbilled.
+                    call.request.header(HttpHeaders.Upgrade)?.contains(WEBSOCKET, true) == true ->
                         call.respondText(
                             "Peashoot speaks plain HTTP; upgrade refused",
                             status = HttpStatusCode.UpgradeRequired,

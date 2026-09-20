@@ -18,8 +18,8 @@ have moved between crates).
 | `originator` | `codex_cli_rs`, overridable by `CODEX_INTERNAL_ORIGINATOR_OVERRIDE` | `codex-rs/login/src/auth/default_client.rs`: `pub const DEFAULT_ORIGINATOR: &str = "codex_cli_rs";`, inserted by `default_headers()` as `headers.insert("originator", …)` |
 | `session-id` | opaque string (a UUID, or the prompt-cache key for a root session) | `codex-rs/codex-api/src/requests/headers.rs`: `build_session_headers` does `insert_header(&mut headers, "session-id", &id)`. `codex-rs/core/src/client.rs`'s `responses_session_id` may substitute `prompt_cache_key`, so it is not always the raw session id |
 | `thread-id` | UUID of the thread this turn runs on | same `build_session_headers`: `insert_header(&mut headers, "thread-id", &id)` |
-| `x-codex-parent-thread-id` | the thread a spawned thread came from | `codex-rs/core/src/client.rs` |
-| `x-openai-subagent` | `review`, `compact`, or a task name | `codex-rs/core/src/client.rs` |
+| `x-codex-parent-thread-id` | the thread a spawned thread came from | `codex-rs/core/src/client.rs` — **name only, no quoted line** (see below) |
+| `x-openai-subagent` | `review`, `compact`, or a task name | `codex-rs/core/src/client.rs` — **name only, no quoted line** (see below) |
 | `x-codex-turn-state` | server-issued sticky token, echoed back | see below |
 | `User-Agent` | `{originator}/{version} ({os} {os_version}; {arch}) {terminal}` | `get_codex_user_agent` in `default_client.rs` |
 | also seen | `x-client-request-id` (set to the *thread* id), `x-codex-window-id`, `x-codex-turn-metadata`, `x-codex-beta-features`, `x-codex-installation-id`, `accept: text/event-stream`, `Authorization: Bearer …`, `ChatGPT-Account-ID` | `codex-rs/codex-api/src/endpoint/responses.rs`, `codex-rs/model-provider/src/auth.rs` |
@@ -128,6 +128,13 @@ from a buffer.
 
 ## Not verified
 
+- **`x-codex-parent-thread-id` and `x-openai-subagent` are the two weakest rows in the table above.**
+  They were read out of `codex-rs/core/src/client.rs` as header names but no `insert_header` line
+  was quoted for either, unlike every other row. They are also the two the farm's agent graph leans
+  on — `Client.codex` uses them, and nothing else, to decide that a thread is a helper rather than
+  the session itself. Quote them the next time someone has that file open. If either name is wrong,
+  the failure is quiet and small: a Codex sub-thread draws as its own session instead of as a helper
+  beside its parent, and nothing else in the proxy changes.
 - No Codex binary was run and no provider was called, here or anywhere in this repository. That the
   fallback is clean *in practice*, and that a real turn completes through the proxy, is the manual
   smoke in the repository README ("A Codex turn through the proxy"), owed to a human.

@@ -2,8 +2,11 @@
 
 Response bodies of the OpenAI Responses API. **None of these was captured from a provider.**
 Each is hand-built from the published wire format, in the shape a capture would have, and ids read
-`REDACTED` where a real one would carry a value. Tests in `core` parse them and prove the frames
-re-serialize to the same bytes; the proxy's fake upstream replays them.
+`REDACTED` where a real one would carry a value. `FrameParserTest` re-serializes both streams here
+and proves they come back byte for byte; `ResponsesTest` reads what the grammar says out of all
+three; and `ResponsesSeamTest` replays them through the proxy's fake upstream and asserts the client
+was handed the provider's own bytes. A new stream fixture added here without a line in
+`FrameParserTest` has no round-trip proof, whatever this file says.
 
 They are good enough to hold the grammar honest and nothing more: only a real capture catches drift
 between what OpenAI documents and what OpenAI sends. Replacing them with captures is still owed
