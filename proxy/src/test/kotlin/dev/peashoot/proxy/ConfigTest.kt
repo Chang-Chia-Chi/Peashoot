@@ -14,7 +14,9 @@ import kotlin.test.assertContains
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
+import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
+import kotlin.time.Duration.Companion.seconds
 
 /** The data directory and its config file, from a first start to an edited file. */
 class ConfigTest {
@@ -72,6 +74,8 @@ class ConfigTest {
 
                 [resume]
                 pingIntervalSeconds = 0.5
+                windowSeconds = 90
+                maxBufferedExchanges = 7
                 """
                     .trimIndent()
             )
@@ -83,6 +87,8 @@ class ConfigTest {
         assertEquals(setOf("authorization", "x-api-key", "x-goog-api-key"), fromFile.secretHeaders)
         assertEquals(mapOf("default" to Route(Mode.PASSTHROUGH)), fromFile.routes)
         assertEquals(500.milliseconds, fromFile.pingInterval)
+        assertEquals(90.seconds, fromFile.resumeWindow)
+        assertEquals(7, fromFile.maxBufferedExchanges)
 
         val fromEnv =
             loadConfig(
@@ -353,6 +359,40 @@ class ConfigTest {
                 message = "for $minutes",
             )
         }
+    }
+
+    /**
+     * Zero is how the file turns resume off, so only a negative one is refused; a fraction of an
+     * exchange is refused too, and each message names the key, which tomlj's typed getters do not.
+     */
+    @Test
+    fun `a resume bound the proxy could not honour is refused, by name`() {
+        listOf(
+                "windowSeconds = -1" to "resume.windowSeconds must not be negative",
+                "maxBufferedExchanges = -1" to "resume.maxBufferedExchanges must be 0 to",
+                "maxBufferedExchanges = 100.5" to "must be a whole number",
+                """windowSeconds = "300"""" to "must be a number",
+            )
+            .forEach { (line, message) ->
+                val home = Files.createTempDirectory("peashoot-home")
+                home.resolve("peashoot.toml").writeText("[resume]\n$line\n")
+
+                val error = assertFailsWith<IllegalStateException> { loadConfig(home, env()) }
+                assertContains(error.message.orEmpty(), message, message = "for $line")
+            }
+    }
+
+    /** Zero on either key is legal and is what turns resume off; `ResumeBoundsTest` runs it. */
+    @Test
+    fun `zero on either resume bound loads`() {
+        val home = Files.createTempDirectory("peashoot-home")
+        home
+            .resolve("peashoot.toml")
+            .writeText("[resume]\nwindowSeconds = 0\nmaxBufferedExchanges = 0\n")
+
+        val config = loadConfig(home, env())
+        assertEquals(Duration.ZERO, config.resumeWindow)
+        assertEquals(0, config.maxBufferedExchanges)
     }
 
     @Test
