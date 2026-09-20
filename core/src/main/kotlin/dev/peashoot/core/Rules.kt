@@ -84,30 +84,36 @@ data class Rules(
     }
 
     /**
-     * What identifies a request: SHA-256 over canonical JSON of the method, the path, the kept
-     * headers, and the normalized body. A body that is not JSON has no normalized form, so its
-     * bytes stand in for it under their own key, and two such requests match only byte for byte.
+     * The normalized request (design section 6): the method, the path, the kept headers, and the
+     * normalized body under [NORMALIZED_BODY]. A body that is not JSON has no normalized form, so
+     * its bytes stand in for it under their own key, and two such requests match only byte for
+     * byte.
      */
+    fun normalized(
+        method: String,
+        path: String,
+        headers: Headers,
+        json: JsonObject?,
+        body: ByteArray = ByteArray(0),
+    ): JsonObject = buildJsonObject {
+        put("method", method)
+        put("path", path)
+        put("headers", keptHeaders(headers))
+        val normalized = normalize(json)
+        if (normalized != null) put(NORMALIZED_BODY, normalized)
+        // Hex, not text: decoding maps every malformed byte to the same character, and two
+        // bodies differing only there are not the same request.
+        else put("rawBody", body.toHexString())
+    }
+
+    /** What identifies a request: [fingerprintOf] its [normalized] form. */
     fun fingerprint(
         method: String,
         path: String,
         headers: Headers,
         json: JsonObject?,
         body: ByteArray = ByteArray(0),
-    ): String {
-        val canonical = buildJsonObject {
-            put("method", method)
-            put("path", path)
-            put("headers", keptHeaders(headers))
-            val normalized = normalize(json)
-            if (normalized != null) put("body", normalized)
-            // Hex, not text: decoding maps every malformed byte to the same character, and two
-            // bodies differing only there are not the same request.
-            else put("rawBody", body.toHexString())
-        }
-            .canonical()
-        return MessageDigest.getInstance("SHA-256").digest(canonical.toByteArray()).toHexString()
-    }
+    ): String = fingerprintOf(normalized(method, path, headers, json, body))
 
     /** The rule set in the shape [RULES_FILE] holds it, which is also what `GET /rules` serves. */
     fun toJson(): JsonObject = buildJsonObject {
@@ -190,6 +196,17 @@ data class Rules(
         fun defaultJson(): String = DEFAULT.toJsonText()
     }
 }
+
+/** The key a [Rules.normalized] request keeps its normalized JSON body under. */
+internal const val NORMALIZED_BODY = "body"
+
+/**
+ * SHA-256 over the canonical JSON of a [Rules.normalized] request. Its own function because the
+ * relay keeps the normalized request as well as its hash, and because resume hashes a second form
+ * of the same request, the stem a [Continuable] leaves (#26), which must be made the same way.
+ */
+fun fingerprintOf(normalized: JsonObject): String =
+    MessageDigest.getInstance("SHA-256").digest(normalized.canonical().toByteArray()).toHexString()
 
 /** The rule file is read by people, so it is written for them. */
 internal val PRETTY = Json { prettyPrint = true }
