@@ -1,6 +1,7 @@
 package dev.peashoot.proxy
 
 import dev.peashoot.core.FrameParser
+import dev.peashoot.core.ToolCall
 import dev.peashoot.core.Usage
 import dev.peashoot.core.text
 import io.ktor.client.HttpClient
@@ -359,6 +360,53 @@ class DeriverTest {
             }
         }
 
+    @Test
+    fun `a session id carrying a pipe cannot forge an extra field`() = runBlocking {
+        val home = home()
+        val gource = GourceLog(home.resolve(GOURCE_FILE))
+        gource.append("evil|session", listOf(GOURCE_TOOL))
+
+        val lines = home.resolve(GOURCE_FILE).readLines()
+        assertEquals(1, lines.size, "$lines")
+        assertEquals(3, lines.single().count { it == '|' }, "still just epoch|user|type|path")
+        assertEquals("evil_ses|A|docs/x.md", lines.single().substringAfter('|'))
+    }
+
+    @Test
+    fun `a session id carrying a line feed cannot forge a second line`() = runBlocking {
+        val home = home()
+        val gource = GourceLog(home.resolve(GOURCE_FILE))
+        gource.append("evil\nsession", listOf(GOURCE_TOOL))
+
+        val lines = home.resolve(GOURCE_FILE).readLines()
+        assertEquals(1, lines.size, "$lines")
+        assertEquals(3, lines.single().count { it == '|' }, "still just epoch|user|type|path")
+        assertEquals("evil_ses|A|docs/x.md", lines.single().substringAfter('|'))
+    }
+
+    @Test
+    fun `a session id carrying a carriage return cannot forge a second line`() = runBlocking {
+        val home = home()
+        val gource = GourceLog(home.resolve(GOURCE_FILE))
+        gource.append("evil\rsession", listOf(GOURCE_TOOL))
+
+        val lines = home.resolve(GOURCE_FILE).readLines()
+        assertEquals(1, lines.size, "$lines")
+        assertEquals(3, lines.single().count { it == '|' }, "still just epoch|user|type|path")
+        assertEquals("evil_ses|A|docs/x.md", lines.single().substringAfter('|'))
+    }
+
+    @Test
+    fun `an ordinary session id reaches the log untouched, just truncated`() = runBlocking {
+        val home = home()
+        val gource = GourceLog(home.resolve(GOURCE_FILE))
+        gource.append(GOURCE_SESSION, listOf(GOURCE_TOOL))
+
+        val lines = home.resolve(GOURCE_FILE).readLines()
+        assertEquals(1, lines.size, "$lines")
+        assertEquals("0f8fad5b|A|docs/x.md", lines.single().substringAfter('|'))
+    }
+
     private companion object {
         /** Dollars, so anything this close is the same money. */
         const val TOLERANCE = 1e-12
@@ -420,6 +468,9 @@ class DeriverTest {
 
         /** A Claude Code session id; the Gource user is the first eight characters of it. */
         const val GOURCE_SESSION = "0f8fad5b-d9cb-469f-a165-70867728950e"
+
+        /** A Fetch, chosen because it has no palette colour: its line is just type and path. */
+        val GOURCE_TOOL = ToolCall(name = "Fetch", path = "docs/x.md", command = null)
 
         /** The Read and the Edit of `stream-with-file-tools.sse`; its Bash has no file. */
         val GOURCE_READ_THEN_EDIT =
