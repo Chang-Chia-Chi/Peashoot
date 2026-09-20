@@ -21,3 +21,13 @@ jobs:
       - uses: gradle/actions/setup-gradle@v6
       - run: ./gradlew build
         shell: bash
+      # The jar the app starts and a release ships, kept from every run. `build` has already made
+      # it, because the proxy's `assemble` depends on `fatJar`; one leg uploads it because the file
+      # is the same whichever OS built it, and two legs cannot share an artifact name.
+      - if: matrix.os == 'ubuntu-latest'
+        uses: actions/upload-artifact@v7
+        with:
+          name: peashoot-jar
+          path: proxy/build/libs/peashoot.jar
+          retention-days: 14
+          if-no-files-found: error

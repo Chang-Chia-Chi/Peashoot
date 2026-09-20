@@ -1,5 +1,7 @@
 import dev.detekt.gradle.extensions.DetektExtension
+import java.io.File
 import org.jetbrains.compose.desktop.application.dsl.TargetFormat
+import org.jetbrains.compose.desktop.application.tasks.AbstractJLinkTask
 
 // Compose for Desktop app: control client, farm reducer, renderer. It speaks the control API over
 // HTTP and nothing else; the store is the proxy's, and the app never opens the database file.
@@ -56,16 +58,80 @@ tasks.register<JavaExec>("benchFarm") {
     }
 }
 
+/**
+ * The proxy a packaged app starts, staged where jpackage will carry it. Everything under `common/`
+ * is copied in beside the app, and the app reads that directory back through the
+ * `compose.application.resources.dir` system property — the first place `OwnedProxy` looks.
+ *
+ * The proxy's jar is named by path and not by task: subprojects are configured in alphabetical
+ * order, so `:proxy`'s tasks do not exist yet while this one is being declared.
+ */
+val bundleProxy =
+    tasks.register<Sync>("bundleProxy") {
+        description = "Stages peashoot.jar as an app resource, so an installed app carries one."
+        dependsOn(":proxy:fatJar")
+        from(project(":proxy").layout.buildDirectory.file("libs/peashoot.jar"))
+        into(layout.buildDirectory.dir("appResources/common/proxy"))
+    }
+
 compose.desktop {
     application {
         mainClass = "dev.peashoot.app.MainKt"
         nativeDistributions {
             targetFormats(TargetFormat.Msi, TargetFormat.Dmg, TargetFormat.Deb)
             packageName = "Peashoot"
-            // jpackage refuses a 0 major on Windows, and the installers are not released yet.
-            packageVersion = "1.0.0"
+            // jpackage refuses a 0 major on Windows, which is why an untagged build calls itself
+            // 1.0.0; a tagged one passes `-Ppeashoot.version=<tag without v>` (root build script).
+            packageVersion = version.toString()
             description = "Record, replay, and watch LLM agent traffic"
             vendor = "Peashoot"
+            copyright = "Copyright 2026 The Peashoot authors"
+            licenseFile.set(rootProject.file("LICENSE"))
+            appResourcesRootDir.set(layout.buildDirectory.dir("appResources"))
+            // The runtime image the app ships is also the JVM it starts the proxy on, so it has to
+            // hold what the proxy needs as well as what the window does. From
+            //   jdeps --multi-release 21 --ignore-missing-deps --print-module-deps peashoot.jar
+            // (java.sql for SQLite, jdk.unsupported for Netty's Unsafe, java.naming for CIO's TLS)
+            // with `./gradlew :app:suggestRuntimeModules` for Compose and Skiko, which asks for
+            // java.instrument, java.management and jdk.unsupported. java.base is in
+            // every image. Re-run both when a dependency is added, or a start fails on a module
+            // that is not here.
+            modules(
+                "java.desktop",
+                "java.instrument",
+                "java.management",
+                "java.naming",
+                "java.sql",
+                "jdk.jfr",
+                "jdk.unsupported",
+            )
         }
+    }
+}
+
+// Compose stages the resources for every packaging task through this one, so the jar is in place
+// whether the build is making an image, an installer, or `runDistributable`.
+tasks
+    .matching { it.name.startsWith("prepareAppResources") }
+    .configureEach { dependsOn(bundleProxy) }
+
+/**
+ * The `java` an installed app starts its proxy with. jlink strips a runtime image's own launchers,
+ * and Compose keeps that flag to itself — `AbstractJLinkTask.stripNativeCommands`, under a "todo:
+ * public DSL" — so the image jpackage ships holds `jvm.dll` and nothing to start it with. An
+ * installed app has no JDK to fall back on, so without this it can package a proxy it cannot run.
+ * The launcher comes from the JDK jlink itself was run from, which is the runtime it produced.
+ *
+ * ponytail: one file copied into another task's output, and only `java`. Upgrade: whatever the
+ * plugin offers when that DSL stops being a to-do.
+ */
+tasks.withType<AbstractJLinkTask>().configureEach {
+    val name = if (System.getProperty("os.name").startsWith("Windows")) "java.exe" else "java"
+    val launcher = javaHome.map { File(it, "bin").resolve(name) }
+    val image = destinationDir
+    doLast {
+        val target = image.get().asFile.resolve("bin").resolve(name)
+        launcher.get().copyTo(target, overwrite = true)
+        target.setExecutable(true)
     }
 }

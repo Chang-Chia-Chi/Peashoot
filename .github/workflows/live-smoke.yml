@@ -1,0 +1,67 @@
+name: Live smoke
+
+# Manual only, and it spends real money: one tiny prompt per provider against the real APIs,
+# through the proxy, then the same requests again in replay mode with the upstreams unreachable.
+# What it catches is grammar drift — the thing no fixture can (docs/design.md §11).
+#
+# A provider whose key is not a repository secret is skipped with a notice, so a run with one key
+# still proves what it can. The script never echoes a key, and no step here turns on `set -x`.
+on:
+  workflow_dispatch:
+    inputs:
+      anthropic_model:
+        description: The Anthropic model to send one tiny Messages request to
+        default: claude-haiku-4-5
+      openai_model:
+        description: The OpenAI model for both the Chat Completions and the Responses request
+        default: gpt-4.1-nano
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: "21"
+      - uses: gradle/actions/setup-gradle@v6
+      - run: ./gradlew :proxy:fatJar
+
+      - env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          ANTHROPIC_MODEL: ${{ inputs.anthropic_model }}
+          OPENAI_MODEL: ${{ inputs.openai_model }}
+          PEASHOOT_SMOKE_EVENTS: ${{ runner.temp }}/live-smoke-events.jsonl
+        run: bash examples/live-smoke/smoke.sh
+
+      # The proxy drops secret headers before anything is stored, and this is where that is
+      # checked rather than trusted: an event line shaped like a key means no artifact and a red
+      # run. The file is not echoed, only searched.
+      - id: scrub
+        if: always()
+        env:
+          EVENTS: ${{ runner.temp }}/live-smoke-events.jsonl
+        run: |
+          if [ ! -f "$EVENTS" ]; then
+            echo "no event lines to upload"
+            exit 0
+          fi
+          if grep -Eq 'sk-ant-|sk-[A-Za-z0-9_-]{16,}|[Bb]earer [A-Za-z0-9._-]{16,}' "$EVENTS"; then
+            echo "::error::an event line holds something shaped like an API key; not uploading"
+            exit 1
+          fi
+          echo "clean=true" >>"$GITHUB_OUTPUT"
+
+      - if: steps.scrub.outputs.clean == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: live-smoke-events
+          path: ${{ runner.temp }}/live-smoke-events.jsonl
+          retention-days: 7
+          if-no-files-found: error

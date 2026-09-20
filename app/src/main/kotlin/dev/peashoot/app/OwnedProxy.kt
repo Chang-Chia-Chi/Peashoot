@@ -12,7 +12,7 @@ private const val PACKAGED_RESOURCES = "compose.application.resources.dir"
 private const val PROXY_JAR = "peashoot.jar"
 
 /** The launcher the proxy's `installDist` writes, under whichever name this OS runs. */
-private val LAUNCHER =
+internal val LAUNCHER =
     if (System.getProperty("os.name").startsWith("Windows")) "proxy.bat" else "proxy"
 
 /**
@@ -68,12 +68,9 @@ class OwnedProxy private constructor(private val process: Process) : AutoCloseab
             val jars = candidates(PROXY_JAR)
             val scripts = candidates(LAUNCHER)
             val command =
-                jars.firstOrNull(::runnableJar)?.let {
-                    listOf(javaCommand(), "-jar", it.toString())
-                }
-                    ?: scripts.firstOrNull(Files::isRegularFile)?.let { listOf(it.toString()) }
+                proxyCommand(javaCommand(), jars, scripts)
                     ?: error(
-                        "no proxy to start; run ./gradlew :proxy:installDist, or start the proxy " +
+                        "no proxy to start; run ./gradlew :proxy:fatJar, or start the proxy " +
                             "yourself. Looked in: ${(jars + scripts).joinToString(", ")}"
                     )
             val process =
@@ -90,17 +87,37 @@ class OwnedProxy private constructor(private val process: Process) : AutoCloseab
         }
 
         /**
-         * Where a proxy of the given file name can be, most trustworthy first: the one packaged
-         * beside this app, then the development build's output, from the repository root or from
-         * `app/`.
+         * What to run, given where a jar and a launcher could be: a runnable jar first, because it
+         * is one process rather than a script wrapping a JVM, and the first of each list that is
+         * really there. Null when none of them is, which is what [start] turns into its message.
          */
-        private fun candidates(name: String): List<Path> {
-            val packaged = System.getProperty(PACKAGED_RESOURCES)
+        internal fun proxyCommand(
+            java: String,
+            jars: List<Path>,
+            scripts: List<Path>,
+        ): List<String>? =
+            jars.firstOrNull(::runnableJar)?.let { listOf(java, "-jar", it.toString()) }
+                ?: scripts.firstOrNull(Files::isRegularFile)?.let { listOf(it.toString()) }
+
+        /**
+         * Where a proxy of the given file name can be, most trustworthy first.
+         *
+         * An installed app looks only where it packed one. The development paths below are relative
+         * to the working directory, which for an installed app is whatever happened to launch it —
+         * a desktop shortcut, a shell, a file manager — and a `proxy/build/libs/peashoot.jar`
+         * planted under any of those by someone who could write there would then be run with this
+         * app's privileges. From Gradle there is no packaged copy and those paths are the build's
+         * own output, reached from the repository root or from `app/`.
+         */
+        internal fun candidates(
+            name: String,
+            packaged: String? = System.getProperty(PACKAGED_RESOURCES),
+        ): List<Path> {
+            if (packaged != null) return listOf(Path.of(packaged, "proxy", name))
             val built =
                 if (name == LAUNCHER) listOf("build", "install", "proxy", "bin")
                 else listOf("build", "libs")
-            return listOfNotNull(
-                packaged?.let { Path.of(it, "proxy", name) },
+            return listOf(
                 Path.of("proxy", *built.toTypedArray(), name),
                 Path.of("..", "proxy", *built.toTypedArray(), name),
             )

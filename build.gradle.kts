@@ -16,6 +16,11 @@ plugins {
 // Catalog accessors resolve against the root project, so capture them before entering subprojects.
 val kotlinTest = libs.kotlin.test
 
+// What a build calls itself: the tag without its `v`, passed by .github/workflows/release.yml as
+// `-Ppeashoot.version=1.2.3`. Untagged builds keep 1.0.0, because jpackage refuses a 0 major on
+// Windows and an installer that cannot be built is worse than one that overstates its age.
+val peashootVersion = providers.gradleProperty("peashoot.version").getOrElse("1.0.0")
+
 // One coverage report for the whole build: `./gradlew koverHtmlReport` -> build/kover/html.
 dependencies {
     kover(project(":core"))
@@ -33,6 +38,7 @@ subprojects {
     apply(plugin = "org.jetbrains.kotlinx.kover")
 
     group = "dev.peashoot"
+    version = peashootVersion
 
     extensions.configure<KotlinJvmProjectExtension> {
         compilerOptions {
