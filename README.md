@@ -2,6 +2,10 @@
 
 A language-agnostic record/replay and stream-resume proxy for LLM agent traffic, with a farm dashboard. Kotlin, Ktor, Compose for Desktop.
 
+![Agents moving through a repository](docs/gource.gif)
+
+One Claude Code session reading and editing this repository through the proxy, played back by Gource from a log the proxy wrote. Peashoot sees that much because it sits on the wire rather than in a client's hooks, which is why the same picture is available to Codex, to OpenCode, and to a plain SDK script that has no hooks at all. [How to make your own](#watch-agents-move-through-the-repository).
+
 Status: pre-v1. The spec is `docs/spec.md`, the design `docs/design.md`, the plan is the issue tracker.
 
 ## Build
@@ -21,15 +25,71 @@ Build the proxy and start it:
 proxy/build/install/proxy/bin/proxy
 ```
 
-Then point a client at it. Claude Code needs one variable and keeps its saved login:
+It listens on `http://localhost:8787` and routes by path, so one address serves every client: `/v1/messages` is the Anthropic Messages surface, `/v1/responses` and `/v1/chat/completions` the two OpenAI ones. `GET /v1/models` belongs to neither and is passed through to whichever provider the sender's own headers name.
+
+Then set one thing in the client you actually use. The four below are independent; read yours and skip the rest.
+
+### Claude Code
 
 ```
 ANTHROPIC_BASE_URL=http://localhost:8787 claude
 ```
 
+One variable, and a saved claude.ai login keeps working: subscription traffic carries its OAuth capability in `anthropic-beta`, and the proxy forwards request headers verbatim apart from the hop-by-hop ones and the secret ones.
+
+What to expect: one `exchange.started` and one `exchange.completed` line per request in `~/.peashoot/events.jsonl`, with `"client":"claude-code"`, `"surface":"anthropic-messages"`, and a `"session"` taken from Claude Code's own `x-claude-code-session-id`, so a whole session groups without anything reading a prompt. A sub-agent's turns carry `"agent"` and `"parentAgent"` beside it. [Live events from a Claude Code session](#live-events-from-a-claude-code-session) is the same run with the app open, and [Replay: the second run costs nothing](#replay-the-second-run-costs-nothing) is the same prompt twice for one bill.
+
+### Codex
+
+Codex speaks the Responses API and nothing else, and there is no base-URL environment variable for it — it is a config key, in `~/.codex/config.toml`:
+
+```toml
+model_provider = "peashoot"
+
+[model_providers.peashoot]
+name = "OpenAI through Peashoot"
+base_url = "http://localhost:8787/v1"
+env_key = "OPENAI_API_KEY"
+wire_api = "responses"
+```
+
+Leave `supports_websockets` unset: it defaults to false for a custom provider, so Codex goes straight to HTTP. Set it to `true` to exercise the proxy's `426 Upgrade Required` deliberately — the turn should still complete, a beat later. A project-local `.codex/config.toml` cannot set any of these keys.
+
+What to expect: `"surface":"openai-responses"`, `"client":"codex"`, a `"session"` from Codex's own `session-id` header, and a `"tools"` array naming each function call. **Nobody has run this yet** — [A Codex turn through the proxy](#a-codex-turn-through-the-proxy) is the walkthrough for whoever does it first, down to what a `/review` or `/compact` thread should look like on the event line.
+
+### OpenCode
+
+Every OpenCode provider is a Vercel AI SDK package and every one of them takes a `baseURL`, so this is a config change and nothing more. In `opencode.json`:
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "provider": { "anthropic": { "options": { "baseURL": "http://localhost:8787/v1" } } }
+}
+```
+
+What config cannot say is which OpenCode *session* a request belongs to. A three-line `chat.headers` plugin sets `x-peashoot-session`, which the proxy honours over every other signal, keeps out of the fingerprint, and strips before the request goes upstream.
+
+**Nobody has run this yet either: no OpenCode binary has been pointed at Peashoot.** Everything above is read from OpenCode's own documentation and source. The plugin, the OpenAI-compatible provider, and the smoke run that is owed to a human with a key are in [`docs/opencode.md`](docs/opencode.md).
+
+### The Anthropic and OpenAI SDKs
+
+A base URL is the whole story. The Anthropic SDKs take the host and append `/v1/messages` themselves; the OpenAI SDKs take the host and `/v1`, and append `/responses` or `/chat/completions`.
+
+| SDK | What to set |
+|---|---|
+| Anthropic Python | `Anthropic(base_url="http://localhost:8787")`, or `ANTHROPIC_BASE_URL` |
+| Anthropic TypeScript | `ANTHROPIC_BASE_URL=http://localhost:8787` |
+| OpenAI Python | `OpenAI(base_url="http://localhost:8787/v1")`, or `OPENAI_BASE_URL` |
+| OpenAI Node | `new OpenAI({ baseURL: "http://localhost:8787/v1" })` |
+
+What to expect: the official SDKs all send `x-stainless-*` headers, so `"client"` on the event line reads `sdk-` and whatever `x-stainless-lang` says — `sdk-python`, `sdk-js`. None of them sends a session id of its own, so turns group by a hash of the conversation's first user message, which is stable for as long as that message is. To group them yourself, send `x-peashoot-session` as a default header: it wins over every other signal, is no part of the fingerprint, so a recording made in one session replays in another, and is stripped before the request leaves the proxy.
+
+Replay works the same way it does for every other client here, and it is the point of pointing a script at Peashoot at all: record the run once, then flip the route to `replay` and re-run the suite for nothing. `docs/research/client-compat-matrix.md` §2.8 is where these base-URL knobs are cited.
+
 ## Configuration
 
-The data directory holds `peashoot.db` (the store), `bodies/` (request bodies and frame lists over 64 KB, named by SHA-256), `gource.log` (written only when the Gource formatter is on), `rules.json` (what makes two requests the same request: a header allowlist, ignored JSON pointers, and regex replacements, written with defaults on first start and meant to be edited; reducing it to `{}` is exact matching), `redact.json` (what a cassette export strips, see below), `cassettes/` (exported cassettes), `token` (the control API's bearer token, created on first start, readable by its owner only), and `peashoot.toml`, written with defaults on first start: port, host, upstream, secret headers, the Gource flag, the keep-alive ping interval, the mode of each route (`record`, `replay`, or `passthrough`), whether a replay miss on it is refused (`strict`), and the cassette it replays from (`cassette`), and the replay `cadence` and `repeatPolicy`. Environment variables override the file:
+The data directory holds `peashoot.db` (the store), `bodies/` (request bodies and frame lists over 64 KB, named by SHA-256), `gource.log` (written only when the Gource formatter is on), `rules.json` (what makes two requests the same request: a header allowlist, ignored JSON pointers, and regex replacements, written with defaults on first start and meant to be edited; reducing it to `{}` is exact matching), `redact.json` (what a cassette export strips, see below), `cassettes/` (exported cassettes), `token` (the control API's bearer token, created on first start, readable by its owner only), and `peashoot.toml`, written with defaults on first start: port, host, an upstream per surface (`[surfaces.anthropic]` and `[surfaces.openai]`, so pointing the OpenAI traffic at a local OpenAI-compatible server does not drag the Anthropic traffic along with it), secret headers, the Gource flag, the keep-alive ping interval, the mode of each route (`record`, `replay`, or `passthrough`), whether a replay miss on it is refused (`strict`), and the cassette it replays from (`cassette`), and the replay `cadence` and `repeatPolicy`. Environment variables override the file:
 
 | Variable | Default | Meaning |
 |---|---|---|
@@ -42,7 +102,7 @@ The data directory holds `peashoot.db` (the store), `bodies/` (request bodies an
 | `PEASHOOT_CASSETTE` | unset | A cassette file, imported on start under its base name, which the default route then replays from |
 | `PEASHOOT_DUMP_FRAMES` | unset | Append every raw upstream response to this file, for capturing fixtures |
 
-An invalid value stops the proxy with a message naming the variable.
+An invalid value stops the proxy with a message naming the variable. There is deliberately no variable for the OpenAI upstream: nothing in CI points at one, so `[surfaces.openai] upstream` in the file and `PUT /config` are the two ways to move it.
 
 The database schema is created if absent and never altered before v1. A `peashoot.db` made before cassettes (#13) lacks the `cassette` column, and the proxy refuses to open it: move it aside and a fresh one is created.
 
@@ -69,22 +129,24 @@ curl -X POST -H "Authorization: Bearer $TOKEN" -d '{"name":"nightly"}' \
 
 ## The app
 
-A Compose for Desktop window over the control API. It is a skeleton: health, the connection state, and a plain list of event lines. The farm comes later.
+A Compose for Desktop window over the control API, in three tabs. **farm** is the point: one villager per session, walking to the well for each request and carrying its tokens home, with the shipping bin's ledger beside them; clicking a villager opens the plain timeline of its exchanges, and clicking a crop opens that file's touch history. Paths and commands are hidden by default, and turning them on draws a badge on the canvas, so a screenshot cannot leak one by accident. **events** is the same feed as a flat list of lines, which is how you check the farm against the data. **control** is what to do about what they say: the route modes, the rules editor with its test-before-save view, the cassette export with its redaction preview, and the running config.
 
 ```
-./gradlew :proxy:installDist    # the launcher the app starts when nothing answers
+./gradlew :proxy:fatJar    # the jar the app starts when nothing answers
 ./gradlew :app:run
 ```
 
 It reads the bearer token from the data directory (`PEASHOOT_HOME`, else `~/.peashoot`) and talks to `http://127.0.0.1:8787`, or to `PEASHOOT_PORT` when that is set. It speaks HTTP only and never opens the database.
 
-With nothing answering on the port, the app starts a proxy itself, on the same port it is looking at: `peashoot.jar` if there is one, else `proxy/build/install/proxy/bin/proxy`, packaged copies first. A proxy the app started is stopped when the window closes, script and JVM both; one that was already running is left alone, and so is a port held by anything else, since a second proxy could not bind it anyway. When there is nothing to start, the window says so and where it looked, instead of waiting.
+With nothing answering on the port, the app starts a proxy itself, on the same port it is looking at, and where it looks depends on how it was installed. An **installed** app looks in exactly one place: `peashoot.jar` under its own packaged resources, which the installers put there. It looks nowhere else on purpose — the development paths below are relative to the working directory, which for an installed app is whatever happened to launch it, a shortcut or a shell or a file manager, and a `peashoot.jar` planted under one of those by anyone who could write there would then run with the app's privileges. A **development** build, where there are no packaged resources, takes `proxy/build/libs/peashoot.jar` or the same path one directory up, so the app runs from the repository root or from `app/`; failing that it takes the `installDist` launcher, `proxy/build/install/proxy/bin/proxy`. The jar comes first because it is one process rather than a script wrapping a JVM, and only a jar whose manifest names a main class counts.
+
+The child is given `PEASHOOT_HOME` and the port, so it cannot bind a different one. A proxy the app started is stopped when the window closes, and by a shutdown hook if the window never gets the chance — script and JVM both, since killing only what was started would leave a proxy holding the port. One that was already running is left alone, and so is a port held by anything else, since a second proxy could not bind it anyway. When there is nothing to start, the window says so and names every place it looked, instead of waiting.
 
 The feed reconnects with `Last-Event-ID`, waiting 250 ms and doubling to five seconds, so a dropped connection, a restarted proxy, or a killed one costs no event lines and repeats none: it resumes from the last line it actually showed you. A token the proxy refuses ends the feed with the reason on screen rather than retrying forever.
 
 ### Live events from a Claude Code session
 
-1. `./gradlew :proxy:installDist`, then `./gradlew :app:run`, and wait for `connected to http://127.0.0.1:8787` at the top of the window.
+1. `./gradlew :proxy:fatJar`, then `./gradlew :app:run`, and wait for `connected to http://127.0.0.1:8787` at the top of the window.
 2. In another terminal, point Claude Code at the proxy:
 
    ```
@@ -94,13 +156,38 @@ The feed reconnects with `Last-Event-ID`, waiting 250 ms and doubling to five se
 3. Lines appear at the top of the list while the request runs: `exchange.started` when the request is heard and `exchange.completed` when the answer ends, each with its feed id, its timestamp, and its exchange id. The uptime beside the version keeps ticking.
 4. With the window still open, stop the proxy and start it again — `Ctrl-C` it, or kill it outright, either works. The status line goes to `no proxy at http://127.0.0.1:8787` and then back to `connected`, and the ids carry on from where they stopped: nothing that happened in between is missing, and nothing you had already seen comes back a second time.
 
-### A local image
+### The farm with no API key at all
+
+The farm is fed by event lines, and a replay makes event lines without calling anyone. Start the proxy yourself first, in replay mode against the committed cassette and with the upstream pointed at a port nothing listens on so that a miss could not become a bill — the app would otherwise start one of its own, in record mode. Then open the app, and send the same recorded request under a few different session ids:
+
+```
+PEASHOOT_MODE=replay PEASHOOT_STRICT=true \
+  PEASHOOT_CASSETTE=examples/ci-replay/tool-use.jsonl \
+  PEASHOOT_ANTHROPIC_UPSTREAM=http://127.0.0.1:9 proxy/build/install/proxy/bin/proxy
+
+for s in ada bram cleo dusty; do
+  for _ in 1 2 3; do
+    curl -s -o /dev/null -H 'content-type: application/json' -H "x-peashoot-session: $s" \
+      --data-binary @examples/ci-replay/request.json http://localhost:8787/v1/messages
+  done
+done
+```
+
+The session header is no part of the fingerprint, so all twelve requests hit the same recording: twelve `"replayHit":true` lines, four sessions, `"costUsd":0.0` throughout, and four villagers. This cassette's one tool call is a `Bash` that names no file, so nothing is planted and no crop grows — for fields you need traffic that reads or edits something.
+
+### Installers and the jar
+
+`./gradlew build` leaves the proxy as one runnable file, `proxy/build/libs/peashoot.jar`: `java -jar` it anywhere Java 21 runs, no script and no install directory. `bash examples/jar-boot/boot.sh` starts that jar and asks it who it is, which is the one check that would catch a jar that lost its main class or its version.
 
 ```
 ./gradlew :app:createDistributable
 ```
 
-writes a runnable application image to `app/build/compose/binaries/main/app/`. `packageMsi`, `packageDmg`, and `packageDeb` build installers from it. Nothing is released or tagged yet, and the image does not yet carry a proxy launcher of its own, so it attaches to a proxy that is already running or starts one from a development build beside it.
+writes a runnable application image to `app/build/compose/binaries/main/app/`, carrying `peashoot.jar` as an app resource and a runtime image able to start it. `packageMsi`, `packageDmg`, and `packageDeb` build installers from it.
+
+Pushing a `v*` tag builds those three and opens a **draft** release with them and the jar attached; publishing stays a human act, and nothing in the workflow ever makes a release visible. The installers are **unsigned**, so Windows SmartScreen and macOS Gatekeeper will warn about them and a macOS user needs right-click Open the first time. The DMG is Apple Silicon only, because jpackage builds for the machine it runs on. What has actually been tried is the Windows path: the image starts the bundled jar on the bundled runtime and leaves nothing behind, and the MSI builds. The macOS and Linux installers, and the tag itself, are the owner's to prove.
+
+`examples/live-smoke/smoke.sh` is the one thing here that spends money: one tiny prompt per provider against the real APIs, then the same requests again in replay mode with every upstream pointed at a port nothing listens on. It is manual, it skips a provider whose key is not set, and it is what would catch a provider renaming a field out from under the grammars.
 
 ## Replay: the second run costs nothing
 
@@ -152,34 +239,16 @@ else costs it five retries first (`docs/research/codex-responses-transport.md`).
 **Nobody has run this yet.** The Responses surface is proven at the proxy's HTTP boundary against
 synthetic fixtures, and the upgrade refusal is verified against Codex's source, but no Codex binary
 has been pointed at Peashoot. These are the steps for the human who does it first (#25, acceptance
-criterion 1).
+criterion 1). Start the proxy and write the `~/.codex/config.toml` from [the Codex
+quickstart](#codex) above, then:
 
-1. Start the proxy: `./gradlew :proxy:installDist`, then `proxy/build/install/proxy/bin/proxy`.
-
-2. Point Codex at it. There is no base-URL environment variable — it is a config key, in
-   `~/.codex/config.toml`:
-
-   ```toml
-   model_provider = "peashoot"
-
-   [model_providers.peashoot]
-   name = "OpenAI through Peashoot"
-   base_url = "http://localhost:8787/v1"
-   env_key = "OPENAI_API_KEY"
-   wire_api = "responses"
-   ```
-
-   Leave `supports_websockets` unset: it defaults to false for a custom provider, so Codex goes
-   straight to HTTP. Set it to `true` to exercise the refusal deliberately — the turn should still
-   complete, a beat later. A project-local `.codex/config.toml` cannot set any of these keys.
-
-3. Run one turn that uses a tool, so the function-call grammar is exercised and not just text:
+1. Run one turn that uses a tool, so the function-call grammar is exercised and not just text:
 
    ```
    codex exec "Run the shell tool: echo peashoot"
    ```
 
-4. Look at what the proxy heard. The turn is one `exchange.completed` line per request:
+2. Look at what the proxy heard. The turn is one `exchange.completed` line per request:
 
    ```
    grep '"exchange.completed"' ~/.peashoot/events.jsonl | tail -n 5
@@ -190,7 +259,7 @@ criterion 1).
    A `review` or `compact` thread appears as its own `"agent"` beside the same session. If `client`
    reads anything but `codex`, the originator header has changed and `Client.detect` needs to know.
 
-5. Run a `/review` or a `/compact` in the same session, which is the one step here that exercises
+3. Run a `/review` or a `/compact` in the same session, which is the one step here that exercises
    something nothing else can reach. Those spawn a second thread, and only they send
    `x-openai-subagent` and `x-codex-parent-thread-id` — the two header names
    `docs/research/codex-responses-transport.md` marks as read from Codex's source without a quoted
@@ -206,16 +275,13 @@ criterion 1).
    and `Client.detect` needs correcting — the farm would draw that thread as its own session rather
    than as a helper beside its parent. Say so on #25 if you see it.
 
-6. Replay it and spend nothing. Stop the proxy, start it again with `PEASHOOT_MODE=replay`, and run
+4. Replay it and spend nothing. Stop the proxy, start it again with `PEASHOOT_MODE=replay`, and run
    **the identical prompt**. Every line the second run adds says `"replayHit":true`. A chained turn
    replays too, and needs no id rewriting: the recorded response id is served back verbatim, so the
    `previous_response_id` Codex sends on the next call is the one the recording already knows.
 
 To capture fixtures from this run rather than just watching it, use `PEASHOOT_DUMP_FRAMES` and the
 redaction recipe in `core/src/test/resources/openai-responses/README.md`.
-
-For OpenCode — the base URL for either of its providers, the three-line plugin that tags its
-sessions, and that smoke run — see [`docs/opencode.md`](docs/opencode.md).
 
 ## Cassettes: replay in CI without a key
 
@@ -236,7 +302,7 @@ Export applies `redact.json`, a list of `{"pointer", "pattern", "replacement"}` 
 PEASHOOT_MODE=replay PEASHOOT_STRICT=true PEASHOOT_CASSETTE=cassettes/nightly.jsonl proxy/build/install/proxy/bin/proxy
 ```
 
-`examples/ci-replay/` is a working example that the `Replay demo` workflow runs on every push: `replay.sh` starts the proxy that way, with an upstream nothing listens on, sends `request.json`, checks the replayed stream, and checks that an unrecorded request gets 409. Run it locally after `./gradlew :proxy:installDist`:
+`examples/ci-replay/` is a working example that the `Replay demo` workflow runs on every pull request and every push to `main`: `replay.sh` starts the proxy that way, with an upstream nothing listens on, sends `request.json`, checks the replayed stream, and checks that an unrecorded request gets 409. Run it locally after `./gradlew :proxy:installDist`:
 
 ```
 bash examples/ci-replay/replay.sh
@@ -299,11 +365,7 @@ The demo: start an answer, cut the connection, let the client ask again, and rea
 
 ## Watch agents move through the repository
 
-![Agents moving through a repository](docs/gource.gif)
-
-One Claude Code session reading and editing this repository through the proxy, played back by Gource from the log below.
-
-Turn the Gource formatter on in `peashoot.toml`:
+The picture at the top of this file is one Claude Code session through the proxy, played back by Gource from the log this section describes. Turn the Gource formatter on in `peashoot.toml`:
 
 ```
 [gource]
@@ -331,4 +393,8 @@ Humans: activate the pre-commit hook once per clone. It formats staged Kotlin fi
 git config core.hooksPath .githooks
 ```
 
-Agents: `.claude/settings.json` formats each Kotlin file after every edit and runs `gradlew check` before a Claude Code session may stop.
+Agents: `.claude/hooks/format_file.py` formats each Kotlin file after an edit, and `.claude/hooks/check.sh` runs `gradlew check` and refuses to let a Claude Code session stop while it fails — after three consecutive failures it gives way, so the agent reports what still fails instead of looping. Only the scripts are committed; which hook events they are wired to is a local settings file, since that is a matter of how you run your agent and not of this repository.
+
+## Licence
+
+Apache-2.0. The text is in `LICENSE` and the attributions in `NOTICE`.

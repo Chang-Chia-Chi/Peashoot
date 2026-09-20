@@ -147,7 +147,8 @@ the request's user-agent names, which nobody here has observed for these provide
 section; it plays no part in grouping either way. The proxy's own view of the same thing:
 
 ```
-curl -H "Authorization: Bearer $(cat ~/.peashoot/token)" http://localhost:8787/sessions
+curl -H "Authorization: Bearer $(cat ~/.peashoot/token)" \
+  http://localhost:8787/_peashoot/v1/sessions
 ```
 
 In the farm, one session is one villager, walking to the well for each turn and carrying its tokens
