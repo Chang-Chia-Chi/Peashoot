@@ -78,8 +78,11 @@ internal data class ExchangeRow(
     val latencyMs: Long?,
     val replayHit: Boolean,
     /**
-     * Stream-resume answered it from the buffer. Always false today: the Deriver emits no `resumed`
-     * until resume (#26) exists, and reading an absent field as false is what an absent one means.
+     * Stream-resume answered it from the buffer, as the `exchange.completed` line says since #26;
+     * an absent field reads as false, which is what an absent one means. No row the exchanges
+     * endpoint serves can carry it, though: a resumed answer is not stored, for the reason a replay
+     * hit is not — it made no upstream call — so on this timeline it is the ORIGINAL row, the one
+     * whose client left, that a resumed turn shows up as. The same holds for [replayHit].
      */
     val resumed: Boolean,
     val clientDisconnected: Boolean,
