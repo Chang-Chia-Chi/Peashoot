@@ -27,6 +27,20 @@ import org.tomlj.TomlParseResult
 private val log = LoggerFactory.getLogger("dev.peashoot.proxy")
 
 /**
+ * How long after the drop a continuation match is still on offer (ADR 0002).
+ *
+ * The spike timed Claude Code's automatic re-issue at 31 to 47 ms after a mid-stream cut, and at
+ * 625 ms after a cut before the first byte — and that second one is re-issued byte for byte, so it
+ * matches exactly and never needs this. Five seconds is two orders of magnitude of margin on the
+ * figure that does need it, which leaves room for a machine that has just woken up, and is still
+ * far below the time it takes a person to read a truncated answer, decide it was wrong, and type a
+ * different question. That gap is the whole point: an appended text block of *any* wording passes
+ * the prefix relation, so a client that merges a user's interrupt-then-retype into one user turn
+ * would otherwise be handed the old answer to a new question.
+ */
+internal val CONTINUATION_GRACE = 5.seconds
+
+/**
  * Stream-resume (#26, design section 4 steps 3 and 5): a client that leaves mid-answer and asks
  * again is served the answer the proxy went on reading, from its first frame, live if the upstream
  * is still streaming, with no second upstream call and so nothing billed twice. First in the chain.
@@ -80,7 +94,15 @@ private val log = LoggerFactory.getLogger("dev.peashoot.proxy")
  * what a sleeping laptop leaves behind, looks open until a write to it fails. Upgrade: none on this
  * side of the socket; the client's own watchdog is what ends such a connection.
  */
-class Resume(config: ProxyConfig) : Interceptor {
+class Resume(
+    config: ProxyConfig,
+    /**
+     * How soon after the drop a continuation must arrive. Not a config key and not meant to be one:
+     * it is a property of how clients behave, not of how anyone wants their proxy to run, and the
+     * default is the figure below. Tests pass a shorter one rather than sleep through this one.
+     */
+    private val grace: Duration = CONTINUATION_GRACE,
+) : Interceptor {
     private val window = config.resumeWindow
     private val capacity = config.maxBufferedExchanges
 
@@ -93,6 +115,16 @@ class Resume(config: ProxyConfig) : Interceptor {
         val fingerprint = exchange.fingerprint
         val clientGone = exchange.clientGone
         val surface = exchange.surface
+
+        /**
+         * What the request asked for under `stream`, which the fingerprint cannot speak for:
+         * `Rules.DEFAULT` ignores `/stream`, on purpose, so that one recording answers a prompt
+         * however it was asked for. Resume hands over real frames and the original's own headers,
+         * so here the two must agree — a `stream: false` re-issue served a buffered SSE body under
+         * `text/event-stream` gets something it has no parser for, and the reverse strands a client
+         * waiting for events on a single JSON frame. A mismatch is a miss and goes upstream.
+         */
+        val stream = exchange.request.json?.get("stream")
 
         /** Only what a continuation is judged by; the request itself is not kept past its end. */
         val continuable: Continuable? = exchange.normalized?.let(exchange.surface::continuable)
@@ -139,11 +171,25 @@ class Resume(config: ProxyConfig) : Interceptor {
          * re-issue of every other, and this is the one interceptor that hands one client another
          * client's answer. Replay guards the same field the same way.
          */
-        fun reissuedAs(asked: Entry): Boolean {
+        fun reissuedAs(asked: Entry, grace: Duration): Boolean {
+            if (stream != asked.stream) return false
             val theirs = asked.continuable
             return (fingerprint != null && fingerprint == asked.fingerprint) ||
-                (theirs != null && continuable?.continuedBy(theirs) == true)
+                (theirs != null && withinGrace(grace) && continuable?.continuedBy(theirs) == true)
         }
+
+        /**
+         * Whether a continuation may still be recognised. A continuation is a looser match than an
+         * equal fingerprint — an appended text block of any content passes it — so it is bounded by
+         * the thing that actually distinguishes a client's automatic re-issue from a person typing:
+         * time. The clock runs from when the chain heard the client go, which for a mid-stream drop
+         * is the moment the frames stop, since the writer looks at its channel before every wait.
+         * An exchange the chain has not yet heard leave is matched exactly or not at all; that only
+         * happens while an upstream is silent, which is the drop the spike measured as re-issued
+         * byte for byte anyway.
+         */
+        private fun withinGrace(grace: Duration): Boolean =
+            goneAt?.let { it.elapsedNow() <= grace } == true
     }
 
     /** Every exchange between its request and its completion, for its own hooks to find. */
@@ -179,15 +225,29 @@ class Resume(config: ProxyConfig) : Interceptor {
      * answer back. The window it covers is real: a claim made on the engine's word can land before
      * the upstream's first byte, and a client whose connection flaps again while it waits would
      * otherwise take a whole buffered answer down with it and leave the next re-issue to pay for
-     * one. Only a still-servable answer goes back, so a broken one is not revived.
+     * one.
+     *
+     * Only a live one goes back, and [live] is the whole of why: the original can end while the
+     * joiner is parked, and a joiner woken by that completion can still be cancelled before it
+     * reads the result. Its completion has already decided whether the answer is worth keeping —
+     * and for a client that stayed, the answer is no — so putting it back there would resurrect an
+     * exchange nothing will ever remove again. Nothing would: `onComplete` has run, and eviction
+     * counts only entries whose client went, which that one's never did.
      */
     private suspend fun Entry?.awaited(): Exchange.Response? =
         try {
             this?.started?.await()?.takeIf { it.worthServing() }
         } catch (e: CancellationException) {
-            this?.takeIf { it.servable() }?.let { claimable.putIfAbsent(it.id, it) }
+            this?.takeIf { it.live() && it.servable() }?.let { claimable.putIfAbsent(it.id, it) }
             throw e
         }
+
+    /**
+     * Whether this entry is still one the rest of the chain will account for: in flight, so its
+     * completion is still to come, or already past its departure, so the window and the cap can
+     * reach it. An entry that is neither has been settled and must not come back.
+     */
+    private fun Entry.live(): Boolean = inFlight.containsKey(id) || goneAt != null
 
     /**
      * The buffered answer as a source. Only the [FrameLog] is captured, so what recognised the
@@ -255,7 +315,7 @@ class Resume(config: ProxyConfig) : Interceptor {
      */
     private fun claim(asked: Entry): Entry? =
         claimable.values
-            .filter { it.clientLeft(window) && it.servable() && it.reissuedAs(asked) }
+            .filter { it.clientLeft(window) && it.servable() && it.reissuedAs(asked, grace) }
             .sortedByDescending { it.fingerprint == asked.fingerprint }
             .firstOrNull { claimable.remove(it.id, it) }
 

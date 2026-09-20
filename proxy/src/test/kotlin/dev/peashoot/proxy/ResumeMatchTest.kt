@@ -5,6 +5,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.milliseconds
 import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withTimeout
@@ -42,7 +43,7 @@ class ResumeMatchTest {
         streams(frames)
         dropMidStream(messagesRequest(ORIGINAL_BLOCKS))
 
-        val reissue = async { post(messagesRequest(CONTINUED_BLOCKS)).bodyAsText() }
+        val reissue = async { streamed(messagesRequest(CONTINUED_BLOCKS)) }
         awaitEvents(ResumeRig.STARTED, 2)
         release.complete(Unit)
 
@@ -62,7 +63,7 @@ class ResumeMatchTest {
         release.complete(Unit)
         awaitEvents(ResumeRig.COMPLETED, 1)
 
-        assertEquals(whole, post(messagesRequest(CONTINUED_BLOCKS)).bodyAsText())
+        assertEquals(whole, streamed(messagesRequest(CONTINUED_BLOCKS)))
         assertEquals(1, upstream.received.size)
         assertTrue(awaitEvents(ResumeRig.COMPLETED, 2).any { it.flag("resumed") })
     }
@@ -78,7 +79,7 @@ class ResumeMatchTest {
         release.complete(Unit)
         awaitEvents(ResumeRig.COMPLETED, 1)
 
-        assertEquals(whole, post(reissue).bodyAsText())
+        assertEquals(whole, streamed(reissue))
         assertEquals(2, upstream.received.size, "a request of its own")
         assertFalse(awaitEvents(ResumeRig.COMPLETED, 2).any { it.flag("resumed") })
     }
@@ -123,9 +124,9 @@ class ResumeMatchTest {
     @Test
     fun `a continuation of a request whose client is still there is a second call`() = withResume {
         streams(frames)
-        val first = async { post(messagesRequest(ORIGINAL_BLOCKS)).bodyAsText() }
+        val first = async { streamed(messagesRequest(ORIGINAL_BLOCKS)) }
         awaitEvents(ResumeRig.STARTED, 1)
-        val second = async { post(messagesRequest(CONTINUED_BLOCKS)).bodyAsText() }
+        val second = async { streamed(messagesRequest(CONTINUED_BLOCKS)) }
         withTimeout(ResumeRig.TIMEOUT_MS) {
             while (upstream.received.size < 2) delay(ResumeRig.POLL_MS)
         }
@@ -149,12 +150,90 @@ class ResumeMatchTest {
             release.complete(Unit)
             awaitEvents(ResumeRig.COMPLETED, 1)
 
-            assertEquals(chat.joinToString(""), post(CHAT_EXTENDED, CHAT_PATH).bodyAsText())
+            assertEquals(chat.joinToString(""), streamed(CHAT_EXTENDED, CHAT_PATH))
             assertEquals(2, upstream.received.size, "only Messages was ever measured")
             assertFalse(awaitEvents(ResumeRig.COMPLETED, 2).any { it.flag("resumed") })
         }
 
+    /**
+     * `Rules.DEFAULT` ignores `/stream` on purpose, so these two requests do fingerprint alike —
+     * one recording is meant to answer a prompt however it was asked for. Resume is the one thing
+     * that cannot live with that, because it hands over real frames under the original's own
+     * headers: a client that asked for JSON would be given an SSE body under `text/event-stream`.
+     */
+    @Test
+    fun `a non-streaming re-issue of a streamed answer is a second call`() = withResume {
+        streams(frames)
+        dropMidStream(asked(stream = true))
+        release.complete(Unit)
+        awaitEvents(ResumeRig.COMPLETED, 1)
+
+        upstream.reply = { FakeUpstream.Reply(body = WHOLE_BODY) }
+        assertEquals(WHOLE_BODY, post(asked(stream = false)).bodyAsText())
+        assertEquals(2, upstream.received.size, "SSE frames are no answer to `stream: false`")
+        assertFalse(awaitEvents(ResumeRig.COMPLETED, 2).any { it.flag("resumed") })
+    }
+
+    /** And the other way about: one JSON frame is no answer to a client waiting for events. */
+    @Test
+    fun `a streaming re-issue of a one-frame answer is a second call`() = withResume {
+        answersOnRelease(FakeUpstream.Reply(body = WHOLE_BODY))
+        leaveBeforeAnswer(asked(stream = false))
+        release.complete(Unit)
+        awaitEvents(ResumeRig.COMPLETED, 1)
+
+        post(asked(stream = true))
+        assertEquals(2, upstream.received.size, "a single body is no answer to `stream: true`")
+        assertFalse(awaitEvents(ResumeRig.COMPLETED, 2).any { it.flag("resumed") })
+    }
+
+    /**
+     * The continuation is a looser match than an equal fingerprint — any appended text passes it —
+     * so it is bounded by the one thing that tells a client's automatic re-issue from a person: it
+     * arrives within milliseconds. Past the grace, the same request is a new question. The grace
+     * here is a short injected one; the shipped figure is [CONTINUATION_GRACE].
+     */
+    @Test
+    fun `a continuation that arrives after the grace is a second call`() =
+        withResume(grace = GRACE) {
+            streams(frames)
+            dropMidStream(messagesRequest(ORIGINAL_BLOCKS))
+            release.complete(Unit)
+            awaitEvents(ResumeRig.COMPLETED, 1)
+            delay(GRACE * GRACES_PAST)
+
+            assertEquals(whole, streamed(messagesRequest(CONTINUED_BLOCKS)))
+            assertEquals(2, upstream.received.size, "too late to be the client's own re-issue")
+            assertFalse(awaitEvents(ResumeRig.COMPLETED, 2).any { it.flag("resumed") })
+        }
+
+    /** The grace bounds the continuation alone: an equal request keeps the whole window. */
+    @Test
+    fun `an exact re-issue long after the grace is still resumed`() =
+        withResume(grace = GRACE) {
+            streams(frames)
+            val request = messagesRequest(ORIGINAL_BLOCKS)
+            dropMidStream(request)
+            release.complete(Unit)
+            awaitEvents(ResumeRig.COMPLETED, 1)
+            delay(GRACE * GRACES_PAST)
+
+            assertEquals(whole, streamed(request))
+            assertEquals(1, upstream.received.size, "the window is still five minutes wide")
+            assertTrue(awaitEvents(ResumeRig.COMPLETED, 2).any { it.flag("resumed") })
+        }
+
+    /** The same request but for its `stream`, which the fingerprint does not distinguish. */
+    private fun asked(stream: Boolean): String =
+        """{"model":"claude-sonnet-5","max_tokens":64,"stream":$stream,""" +
+            """"messages":[{"role":"user","content":[$ORIGINAL_BLOCKS]}]}"""
+
     private companion object {
+        /** Short enough to wait out; [CONTINUATION_GRACE] is what ships. */
+        val GRACE = 200.milliseconds
+
+        const val GRACES_PAST = 3
+
         const val APPENDED_IMAGE =
             """{"type":"image","source":{"type":"base64","media_type":"image/png",""" +
                 """"data":"iVBORw0KGgo="}}"""

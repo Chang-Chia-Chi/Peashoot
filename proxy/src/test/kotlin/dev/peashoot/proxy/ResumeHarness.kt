@@ -6,11 +6,13 @@ import io.ktor.client.engine.cio.CIO
 import io.ktor.client.request.post
 import io.ktor.client.request.setBody
 import io.ktor.client.statement.HttpResponse
+import io.ktor.client.statement.bodyAsText
 import io.ktor.http.ContentType
 import io.ktor.http.content.TextContent
 import java.net.Socket
 import java.nio.file.Files
 import java.nio.file.Path
+import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
@@ -22,6 +24,12 @@ import kotlinx.serialization.json.jsonPrimitive
 
 internal const val MESSAGES_PATH = "/v1/messages"
 internal const val CHAT_PATH = "/v1/chat/completions"
+internal const val RESPONSES_PATH = "/v1/responses"
+
+/** A Responses turn. Its own cursor is #27's; an equal re-issue resumes here like any other. */
+internal const val RESPONSES_REQUEST =
+    """{"model":"gpt-5","stream":true,"input":[{"type":"message","role":"user",""" +
+        """"content":[{"type":"input_text","text":"count to three"}]}]}"""
 
 /** How many frames a leaving client reads first: mid-stream, with frames on both sides of it. */
 internal const val LEFT_AFTER = 6
@@ -170,6 +178,22 @@ internal class ResumeRig(
             while (input.available() > 0) input.read(buffer)
         }
 
+    /**
+     * The response body with the proxy's own keep-alive comments taken out.
+     *
+     * This is still the criterion's "byte-equal to the fixture". A keep-alive is the proxy's line
+     * and not the provider's — #11 writes it into any stream that has been silent for the interval,
+     * SSE clients ignore comment lines by specification, and `clientBytes` already excludes them
+     * from what the client is counted as having taken. Whether one falls between two frames is
+     * timing, so leaving them in would make a held upstream and a loaded box able to fail an
+     * assertion about frames. That pings do reach a resumed stream is asserted on its own, once.
+     */
+    fun String.withoutPings(): String = replace(KEEP_ALIVE, "")
+
+    /** Posts [body] and reads the whole answer back, as the provider's own frames alone. */
+    suspend fun streamed(body: String, path: String = MESSAGES_PATH): String =
+        post(body, path).bodyAsText().withoutPings()
+
     suspend fun post(body: String, path: String = MESSAGES_PATH): HttpResponse =
         HttpClient(CIO).use { client ->
             client.post("${proxy.url}$path") {
@@ -242,6 +266,7 @@ internal fun fixtureFrames(resource: String): List<String> =
  */
 internal fun withResume(
     configure: (ProxyConfig) -> ProxyConfig = { it },
+    grace: Duration = CONTINUATION_GRACE,
     block: suspend ResumeRig.() -> Unit,
 ) = runBlocking {
     val home: Path = Files.createTempDirectory("peashoot-home")
@@ -258,7 +283,7 @@ internal fun withResume(
                 )
             val chain =
                 listOf(
-                    Resume(config),
+                    Resume(config, grace),
                     Replay(store, config),
                     Recorder(store),
                     Deriver(store, home.resolve(EVENTS_FILE)),

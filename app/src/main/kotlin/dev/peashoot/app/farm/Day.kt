@@ -128,9 +128,13 @@ private fun Day.after(event: JsonObject): Day =
         lastHeard = heardAt(event) ?: lastHeard,
     )
 
-/** A line that reported no usage — a `started`, a failure, a 429 — adds no tokens to the day. */
+/**
+ * A line that reported no usage — a `started`, a failure, a 429 — adds no tokens to the day, and
+ * neither does a resumed one: it reports the usage of a call another line has already counted, so
+ * adding it would make the card claim twice what the provider billed (see [resumed]).
+ */
 private fun Tokens.add(event: JsonObject): Tokens {
-    val usage = usage(event) ?: return this
+    val usage = usage(event)?.takeUnless { resumed(event) } ?: return this
     fun kind(name: String) = usage.scalar(name) { intOrNull } ?: 0
     return Tokens(
         input = input + kind("input"),
