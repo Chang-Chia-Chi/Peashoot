@@ -412,7 +412,9 @@ class Store(home: Path) : AutoCloseable {
         /**
          * The completed lines whose tools name one path, newest first. The tool names are gathered
          * in SQL rather than in Kotlin so that the rule for what counts as this path — separators
-         * normalised, the path matched whole — is written once, where the filter is.
+         * normalised on both sides, the path matched whole — is written once, where the filter is.
+         * Both sides, because a caller on Windows names the file the way its own shell does, and
+         * `src\Main.kt` and `src/Main.kt` are one file.
          *
          * `char(92)` is the backslash, spelled that way because JDBI's own parser reads a backslash
          * in the SQL as an escape and loses track of where the string literal ends, which silently
@@ -424,7 +426,7 @@ class Store(home: Path) : AutoCloseable {
                     (SELECT json_group_array(json_extract(tool.value, '$.name'))
                         FROM json_each(coalesce(json_extract(body, '$.tools'), '[]')) AS tool
                         WHERE replace(coalesce(json_extract(tool.value, '$.path'), ''),
-                            char(92), '/') = :path) AS tools
+                            char(92), '/') = replace(:path, char(92), '/')) AS tools
                 FROM event
                 WHERE event = 'exchange.completed' AND id < :cursor
                     AND json_array_length(tools) > 0
