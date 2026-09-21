@@ -58,7 +58,7 @@ class DetailTest {
         assertEquals(0.25, filled.costUsd)
         assertEquals(1500L, filled.latencyMs)
         assertTrue(filled.replayHit)
-        // Nothing emits `resumed` until resume (#26), so an absent flag reads as not resumed.
+        // This line carries no `resumed`, and an absent flag reads as not resumed.
         assertFalse(filled.resumed)
         // A tool that named no path contributes none.
         assertEquals(listOf("src/main/App.kt"), filled.paths)

@@ -90,6 +90,21 @@ internal fun Stamina.after(event: JsonObject): Stamina {
 }
 
 /**
+ * Whether stream-resume answered this turn from its buffer (#26): the client's stream dropped, it
+ * asked again, and the proxy handed back the answer it had gone on reading rather than making a
+ * second call.
+ *
+ * Such a turn is an answer *delivered* and not an answer *produced*, and it always arrives as a
+ * second `exchange.completed` beside the original's, carrying the same usage — the original says
+ * `clientDisconnected`, this one says `resumed` and a `costUsd` of zero. Counting both would put
+ * two harvests in the bin and twice the provider's tokens on the day's card for one paid call,
+ * which is the exact opposite of what the feature is for. So it drops no produce and adds no
+ * tokens; it still walks its villager home and still carries the water, because that is the trip
+ * the dropped one could not finish.
+ */
+internal fun resumed(event: JsonObject): Boolean = event.scalar("resumed") { booleanOrNull } == true
+
+/**
  * The bin after a completed line: one produce for a turn that actually ended, and the cost added
  * when the line names one. A null `costUsd` on a turn that reported usage is not a free turn —
  * subscription traffic and a model with no price both look like that — so it is counted instead,
@@ -99,7 +114,10 @@ internal fun Stamina.after(event: JsonObject): Stamina {
  */
 internal fun ShippingBin.shipped(event: JsonObject): ShippingBin {
     val cost = event.scalar("costUsd") { doubleOrNull }
-    val ended = event["stopReason"].text() in ENDED && status(event)?.let { it in ANSWERED } == true
+    val ended =
+        !resumed(event) &&
+            event["stopReason"].text() in ENDED &&
+            status(event)?.let { it in ANSWERED } == true
     return ShippingBin(
         produce = if (ended) produce + 1 else produce,
         ledger = ledger + (cost ?: 0.0),

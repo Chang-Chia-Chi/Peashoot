@@ -6,6 +6,7 @@ import dev.peashoot.core.FrameParser
 import dev.peashoot.core.FrameSource
 import dev.peashoot.core.Interceptor
 import dev.peashoot.core.Outcome
+import dev.peashoot.core.fingerprintOf
 import io.ktor.client.HttpClient
 import io.ktor.client.request.prepareRequest
 import io.ktor.client.request.setBody
@@ -182,15 +183,22 @@ class Relay(
                 routing = routes[DEFAULT_ROUTE],
             )
         // Classify: what this request is, before anyone is asked to answer it. Every interceptor
-        // sees it, so it is set before the chain rather than by whoever needs it first.
-        exchange.fingerprint =
-            config.rules.fingerprint(
+        // sees it, so it is set before the chain rather than by whoever needs it first. The
+        // normalized request is kept beside its hash because Resume reads its shape (#26), and
+        // the rules are not cheap enough to apply twice to a request of a few hundred kilobytes.
+        val normalized =
+            config.rules.normalized(
                 exchange.request.method,
                 exchange.request.path,
                 exchange.request.headers,
                 exchange.request.json,
                 body,
             )
+        exchange.normalized = normalized
+        exchange.fingerprint = fingerprintOf(normalized)
+        // The engine's word on whether this client is still there, for Resume to ask of an
+        // exchange a re-issue has just arrived for, ahead of the writer's next look.
+        exchange.clientGone = call.clientGone()
         var cancelled = false
         try {
             // Every interceptor hears the request; the first source offered wins. mapNotNull is

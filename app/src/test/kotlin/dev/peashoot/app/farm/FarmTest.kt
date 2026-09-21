@@ -280,9 +280,43 @@ class FarmTest {
         assertTrue(farm.wellQueue.isEmpty())
     }
 
+    /**
+     * A dropped stream that the proxy resumed (#26). One provider call, and two
+     * `exchange.completed` lines carrying the same usage: the original, whose client left, and the
+     * resumed one, which made no call and was billed nothing. The farm must count the answer once —
+     * two harvests or double tokens on the day's card would say the opposite of what resume is for.
+     */
+    @Test
+    fun `a resumed answer is one harvest and one turn's tokens`() {
+        val states = replay("resumed.jsonl")
+        assertEquals(5, states.size)
+        val farm = states.last()
+
+        // One paid call, so one produce and the one cost the provider named.
+        assertEquals(ShippingBin(produce = 1, ledger = 1.5, unpriced = 0), farm.bin)
+        // And the day's card says what was billed, not twice what was billed.
+        val day = farm.days.getValue(RESUME)
+        assertEquals(
+            Tokens(input = 2, output = 715, cacheRead = 0, cacheWrite = 106710),
+            day.tokens,
+        )
+        assertEquals(1.5, day.cost)
+
+        // The bucket the original was filling spilled, so only the resumed line carries water home.
+        val villager = farm.villager(RESUME)
+        assertEquals(715, villager.water, "the answer arrived once")
+        assertEquals(1, villager.spills)
+        assertEquals(Activity.RETURNING, villager.activity)
+        assertTrue(villager.inFlight.isEmpty(), "both exchanges ended")
+        // Lightning belongs to the drop; the resumed line that follows is a clear completion.
+        assertEquals(Weather.LIGHTNING, states[3].weather)
+        assertEquals(Weather.CLEAR, farm.weather)
+    }
+
     private companion object {
         const val CODEX = "sess-codex"
         const val CUT = "sess-cut"
+        const val RESUME = "sess-resume"
     }
 }
 

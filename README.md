@@ -255,6 +255,45 @@ $ curl -N http://localhost:8787/v1/messages \
 
 The pauses in a thinking stream are longer than that interval, so `: keep-alive` lines appear between the provider's frames. The provider's own `event: ping` frames are forwarded, not generated, so the proxy's lines are the ones that start with a colon. Then run Claude Code against the proxy with the same kind of prompt: the turn completes, and `events.jsonl` ends with an `exchange.completed` line for it, no `exchange.client_gone`.
 
+## Stream-resume: lose the connection mid-answer and pay once
+
+A client that leaves mid-answer and asks again is served the answer the proxy went on reading, from its first frame, live if the provider is still streaming. No second provider call is made, so the half-finished answer is not thrown away and the second ask is not billed. In `peashoot.toml`:
+
+```
+[resume]
+windowSeconds = 300          # how long a dropped answer stays resumable; 0 turns resume off
+maxBufferedExchanges = 100   # how many are kept at once, the oldest dropped first
+```
+
+Only an exchange whose client actually went away is resumable: two identical requests from two clients that are both still there are a user asking twice, and each is owed its own sample. One drop buys one resume, so a second re-issue goes to the provider. On Messages the re-issue does not have to be byte-identical — Claude Code appends a line to its last user message and a short "carry on" block, and that still matches (`docs/adr/0002-resume-continuation-match.md`).
+
+The demo: start an answer, cut the connection, let the client ask again, and read the two event lines.
+
+1. Start the proxy in record mode (the default) and send Claude Code a prompt long enough to still be streaming when you cut it:
+
+   ```
+   proxy/build/install/proxy/bin/proxy
+   ANTHROPIC_BASE_URL=http://localhost:8787 claude -p "Count from 1 to 300, one number per line."
+   ```
+
+2. While the numbers are still printing, take the network away: sleep the laptop and wake it, or turn Wi-Fi off and on, or pull the cable. Claude Code notices the stream stop and re-issues within about 30 ms of the connection closing.
+
+3. What you see: the answer completes. Not from where it stopped — from the beginning, because the client threw its partial output away and the proxy has the whole original.
+
+4. What proves nothing was re-billed, in `~/.peashoot/events.jsonl`:
+
+   ```
+   grep -E '"exchange.(completed|client_gone)"' ~/.peashoot/events.jsonl | tail -n 3
+   ```
+
+   Three lines tell the story. The `exchange.client_gone` line names the exchange whose client went and how many bytes it had taken. Its `exchange.completed` line says `"clientDisconnected":true` and carries the provider's `usage` — that call happened and was billed. The next `exchange.completed` line says `"resumed":true`, `"clientDisconnected":false` and `"costUsd":0.0`, with the same `usage` read back out of the same frames: a second answer delivered, and nothing billed for it, exactly as `"replayHit":true` reads on a replay. Two answers, one bill.
+
+   `usage` is the honest field to read here, not `costUsd`. On the saved claude.ai login the original's `costUsd` is `null`, because subscription traffic is billed by the plan and not by the token, so the two lines for the one call are priced by different rules: `null` for "we cannot say", `0.0` for "there was nothing to say it about". With an API key the original carries a figure and the contrast is direct.
+
+   `~/.peashoot/peashoot.db` holds **one** row for the two of them: the original, flagged as the one whose client left, which is the single record of the single provider call. The resumed answer is not recorded, exactly as a replay hit is not — it made no call, and a second row under one fingerprint would be replayed twice and exported twice. The `resumed` flag lives on the event line alone, so `events.jsonl` is where that question is asked.
+
+**This demo is written down and has not yet been performed.** What is proven is the seam: `ResumeSeamTest`, `ResumeMatchTest` and `ResumeBoundsTest` run real servers against the fake upstream and assert the whole of it — byte-equal streams across the hand-over, one upstream call, the flags and the cost on the event lines, the window and the cap evicting. What the spike behind this (`docs/research/claude-code-stream-drop-retry.md`) measured against the real provider was an abrupt reset mid-stream and a clean close before the first byte, on one client version, one OS, one model, and a prompt with no tool use. It did **not** establish the laptop-sleep case itself: a connection that goes silent without closing looks open to the proxy until a write to it fails, and what ends it is Claude Code's own byte watchdog rather than anything on this side of the socket. Nor did it establish a drop on a turn that had already produced a `tool_use` block, or what a client does when it is cut a second time. Pulling the cable is the closer of the two to what was measured; sleeping the laptop is the case worth watching and the one still unproven.
+
 ## Watch agents move through the repository
 
 ![Agents moving through a repository](docs/gource.gif)

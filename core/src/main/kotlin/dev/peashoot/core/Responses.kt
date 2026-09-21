@@ -58,6 +58,25 @@ object Responses : Surface {
     override fun reader(): FrameReader = Reader()
 
     /**
+     * `response.completed` and `response.incomplete` both close a stream: the second is a model
+     * that stopped early, which is still the whole of what the provider had to say.
+     * `response.failed` does not, for the reason Messages' `error` does not — a client asking again
+     * is owed a fresh ask. A get-by-id or a cancel answers one body, which is a whole response
+     * object on its own. Serving `starting_after` from the buffer is still #27's; this only keeps a
+     * cut Responses stream from being offered to a re-issue as a whole one.
+     */
+    override fun terminates(frame: Frame): Boolean {
+        val event =
+            frame.event
+                ?: return jsonObjectOrNull(frame.raw)?.get("object").text() == RESPONSE_OBJECT
+        return event == RESPONSE_COMPLETED || event == RESPONSE_INCOMPLETE
+    }
+
+    private const val RESPONSE_OBJECT = "response"
+    private const val RESPONSE_COMPLETED = "response.completed"
+    private const val RESPONSE_INCOMPLETE = "response.incomplete"
+
+    /**
      * One response's frames. A key a later frame names overrides what an earlier one said and the
      * rest keep what they had, so the reader is correct at every point in the stream and not only
      * at its end. Usage arrives on the terminal event alone and a response that carries none leaves

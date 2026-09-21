@@ -148,6 +148,8 @@ private fun ProxyConfig.keepingRunning(running: ProxyConfig): ProxyConfig =
         replayCadence = running.replayCadence,
         repeatPolicy = running.repeatPolicy,
         pingInterval = running.pingInterval,
+        resumeWindow = running.resumeWindow,
+        maxBufferedExchanges = running.maxBufferedExchanges,
         gourceEnabled = running.gourceEnabled,
         pricing = running.pricing,
     )
@@ -181,6 +183,8 @@ internal fun ProxyConfig.toJson(routes: Map<String, Routing> = this.routes): Jso
         // seconds, so what this answers loads back as the same interval.
         putJsonObject("resume") {
             put("pingIntervalSeconds", pingInterval.toDouble(DurationUnit.SECONDS))
+            put("windowSeconds", resumeWindow.toDouble(DurationUnit.SECONDS))
+            put("maxBufferedExchanges", maxBufferedExchanges)
         }
         putJsonObject("gource") { put("enabled", gourceEnabled) }
         // Overrides only: the price table is bundled, and a row in the file only ever replaces one.

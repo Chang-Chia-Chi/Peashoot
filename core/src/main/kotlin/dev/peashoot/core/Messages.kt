@@ -40,7 +40,22 @@ object Messages : Surface {
 
     override fun reader(): FrameReader = Reader()
 
+    /** Claude Code re-issues a cut stream with its last user message extended: [Continuable]. */
+    override fun continuable(normalized: JsonObject): Continuable? = Continuable.of(normalized)
+
+    /**
+     * `message_stop` closes a stream, and a non-streaming body is the whole answer in one frame.
+     * `error` deliberately does not close one: the provider said the turn failed, so a client
+     * asking again is owed a fresh ask and not the failure it already saw.
+     */
+    override fun terminates(frame: Frame): Boolean {
+        val event = frame.event ?: return jsonObjectOrNull(frame.raw)?.get("type").text() == MESSAGE
+        return event == MESSAGE_STOP
+    }
+
     private const val PATH = "/v1/messages"
+    private const val MESSAGE = "message"
+    private const val MESSAGE_STOP = "message_stop"
     private const val BETA = "anthropic-beta"
     private const val TOKENS_REMAINING = "anthropic-ratelimit-tokens-remaining"
     private const val REQUESTS_REMAINING = "anthropic-ratelimit-requests-remaining"
