@@ -11,8 +11,8 @@ import io.ktor.client.statement.bodyAsChannel
 import io.ktor.client.statement.bodyAsText
 import io.ktor.http.ContentType
 import io.ktor.http.withCharset
+import io.ktor.utils.io.readBuffer
 import io.ktor.utils.io.readLine
-import io.ktor.utils.io.readRemaining
 import java.net.Socket
 import kotlin.test.Test
 import kotlin.test.assertContains
@@ -55,7 +55,7 @@ class FakeUpstreamTest {
                         HttpClient(CIO).use {
                             it.post("${proxy.url}/v1/messages") { setBody("{}") }
                                 .bodyAsChannel()
-                                .readRemaining()
+                                .readBuffer()
                                 .readByteArray()
                         }
                     assertContentEquals(fixture, body)
@@ -96,7 +96,7 @@ class FakeUpstreamTest {
                             val channel = response.bodyAsChannel()
                             channel.readLine()
                             val firstAt = TimeSource.Monotonic.markNow()
-                            channel.readRemaining().readString()
+                            channel.readBuffer().readString()
                             assertTrue(firstAt.elapsedNow().inWholeMilliseconds >= 250, "$firstAt")
                         }
                 }

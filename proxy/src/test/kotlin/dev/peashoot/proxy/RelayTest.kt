@@ -12,8 +12,8 @@ import io.ktor.client.statement.bodyAsChannel
 import io.ktor.client.statement.bodyAsText
 import io.ktor.http.ContentType
 import io.ktor.http.contentType
+import io.ktor.utils.io.readBuffer
 import io.ktor.utils.io.readLine
-import io.ktor.utils.io.readRemaining
 import java.net.Socket
 import java.nio.file.Files
 import java.nio.file.Path
@@ -184,7 +184,7 @@ class RelayTest {
                                 releaseLast.complete(Unit)
                                 assertEquals(
                                     first.removePrefix("event: message_start\n") + last,
-                                    channel.readRemaining().readString(),
+                                    channel.readBuffer().readString(),
                                 )
                             }
                     }

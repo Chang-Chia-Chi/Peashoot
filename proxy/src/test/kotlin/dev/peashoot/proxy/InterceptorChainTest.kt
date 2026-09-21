@@ -18,7 +18,7 @@ import io.ktor.http.ContentType
 import io.ktor.http.contentType
 import io.ktor.http.headersOf
 import io.ktor.http.withCharset
-import io.ktor.utils.io.readRemaining
+import io.ktor.utils.io.readBuffer
 import java.io.IOException
 import java.net.ServerSocket
 import java.nio.file.Files
@@ -94,7 +94,7 @@ class InterceptorChainTest {
                                     setBody("{}")
                                 }
                                 .bodyAsChannel()
-                                .readRemaining()
+                                .readBuffer()
                                 .readByteArray()
                         }
                     assertContentEquals(fixture, body)
@@ -151,7 +151,7 @@ class InterceptorChainTest {
                         assertEquals("true", response.headers["x-peashoot-replay"])
                         assertContentEquals(
                             fixture,
-                            response.bodyAsChannel().readRemaining().readByteArray(),
+                            response.bodyAsChannel().readBuffer().readByteArray(),
                         )
                     }
                 }

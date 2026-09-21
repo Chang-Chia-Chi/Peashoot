@@ -15,8 +15,8 @@ import io.ktor.client.request.setBody
 import io.ktor.client.statement.bodyAsChannel
 import io.ktor.client.statement.bodyAsText
 import io.ktor.http.ContentType
+import io.ktor.utils.io.readBuffer
 import io.ktor.utils.io.readLine
-import io.ktor.utils.io.readRemaining
 import java.net.ServerSocket
 import java.nio.file.Files
 import java.nio.file.Path
@@ -110,7 +110,7 @@ class RecorderTest {
                                     assertEquals("event: message_start", channel.readLine())
                                     delay(50)
                                     releaseSecond.complete(Unit)
-                                    channel.readRemaining().readString()
+                                    channel.readBuffer().readString()
                                 }
                         }
                     }
