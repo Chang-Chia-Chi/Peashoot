@@ -16,7 +16,7 @@ It works for Claude Code, Codex, OpenCode, and any Anthropic- or OpenAI-compatib
 
 1. As a developer using Claude Code, I want to set one environment variable and have all my traffic pass through Peashoot, so that adoption costs me nothing and my claude.ai login keeps working.
 2. As a developer using Codex, I want to point its provider config at Peashoot and have it fall back cleanly from WebSocket to HTTP, so that Codex works through the proxy without special flags.
-3. As a developer using OpenCode, I want to set the provider base URL and optionally add a three-line plugin that tags my sessions, so that my sessions are grouped correctly in the farm.
+3. As a developer using OpenCode, I want to set the provider base URL and optionally add a plugin that tags my sessions — a three-line hook, in a file of seven once the module has its import and its export — so that my sessions are grouped correctly in the farm.
 4. As a developer using the Anthropic or OpenAI SDK directly in Python or TypeScript, I want to set the SDK base URL and get the same recording, replay, and farm as Claude Code users, so that my agent is not a second-class citizen because it has no hooks.
 5. As an agent developer, I want every model call recorded automatically in record mode, so that I never have to remember to capture a run before it becomes interesting.
 6. As an agent developer, I want to flip a route to replay mode and re-run my agent with zero upstream calls, so that I can iterate on harness logic and tool wiring for free.
