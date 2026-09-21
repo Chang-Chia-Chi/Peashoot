@@ -130,6 +130,10 @@ curl -X POST -H "Authorization: Bearer $TOKEN" -d '{"name":"nightly"}' \
 
 ## The app
 
+![Ten villagers, and a crop for every file the turns touched](docs/farm.gif)
+
+Sixteen turns replayed through the proxy, with no API key and no call to a provider. A crop is planted for every file a turn edits and grows a stage each time one is edited again; the bin in the corner counts the turns that ended; the night and the four lanterns are what a replaying route looks like. [How to run it yourself](#the-farm-with-no-api-key-at-all) — the cassette behind it is hand-written for this demo and says so in every record, rather than a recording of a real session.
+
 A Compose for Desktop window over the control API, in three tabs. **farm** is the point: one villager per session, walking to the well for each request and carrying its tokens home, with the shipping bin's ledger beside them; clicking a villager opens the plain timeline of its exchanges, and clicking a crop opens that file's touch history. Paths and commands are hidden by default, and turning them on draws a badge on the canvas, so a screenshot cannot leak one by accident. **events** is the same feed as a flat list of lines, which is how you check the farm against the data. **control** is what to do about what they say: the route modes, the rules editor with its test-before-save view, the cassette export with its redaction preview, and the running config.
 
 ```
@@ -159,22 +163,27 @@ The feed reconnects with `Last-Event-ID`, waiting 250 ms and doubling to five se
 
 ### The farm with no API key at all
 
-The farm is fed by event lines, and a replay makes event lines without calling anyone. Start the proxy yourself first, in replay mode against the committed cassette and with the upstream pointed at a port nothing listens on so that a miss could not become a bill — the app would otherwise start one of its own, in record mode. Then open the app, and send the same recorded request under a few different session ids:
+The farm is fed by event lines, and a replay makes event lines without calling anyone. Start the proxy yourself first, in replay mode against a cassette and with the upstream pointed at a port nothing listens on so that a miss could not become a bill — the app would otherwise start one of its own, in record mode. Then open the app, and send the same recorded request under a few different session ids:
 
 ```
 PEASHOOT_MODE=replay PEASHOOT_STRICT=true \
-  PEASHOOT_CASSETTE=examples/ci-replay/tool-use.jsonl \
+  PEASHOOT_CASSETTE=examples/farm-demo/turns.jsonl \
   PEASHOOT_ANTHROPIC_UPSTREAM=http://127.0.0.1:9 proxy/build/install/proxy/bin/proxy
 
-for s in ada bram cleo dusty; do
-  for _ in 1 2 3; do
+for _ in 1 2 3 4; do
+  for s in ada bram cleo dusty; do
     curl -s -o /dev/null -H 'content-type: application/json' -H "x-peashoot-session: $s" \
-      --data-binary @examples/ci-replay/request.json http://localhost:8787/v1/messages
+      --data-binary @examples/farm-demo/request.json http://localhost:8787/v1/messages &
+    sleep 0.5
   done
-done
+done; wait
 ```
 
-The session header is no part of the fingerprint, so all twelve requests hit the same recording: twelve `"replayHit":true` lines, four sessions, `"costUsd":0.0` throughout, and four villagers. This cassette's one tool call is a `Bash` that names no file, so nothing is planted and no crop grows — for fields you need traffic that reads or edits something.
+The session header is no part of the fingerprint, so all sixteen requests hit the same recording: `"replayHit":true` throughout, `"costUsd":0.0` throughout, and one villager per session. The GIF above is this run with ten villagers instead of four — eight sessions and two sub-agents, told apart by Claude Code's own session and agent headers — captured with `ffmpeg -f gdigrab` at 10 frames a second.
+
+`examples/farm-demo/turns.jsonl` holds sixteen answers under that one fingerprint, so the default `repeatPolicy = "inOrder"` hands out the next one on each hit and the cassette plays like a tape: forty-eight tool calls over twenty-three files, which is what plants the fields and grows them. Set `cadence = "recorded"` under `[replay]` in `peashoot.toml` and each turn takes the five seconds it says it took, which is about what a villager needs to reach the well and walk back. It is hand-written for this demo — the turns are shaped like real ones and name real files in this repository, but no provider produced them, and every record says so in `meta.note`.
+
+The CI cassette, `examples/ci-replay/tool-use.jsonl`, replays the same way, but its one tool call is a `Bash` that names no file, so nothing is planted and no crop grows.
 
 ### Installers and the jar
 
