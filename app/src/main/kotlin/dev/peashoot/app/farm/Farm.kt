@@ -250,9 +250,21 @@ fun reduce(state: FarmState, event: JsonObject): FarmState =
  * a poll, and a line that states the fact outright needs no guarding — a finished-response poll
  * says `completed` and carries usage, so guarding the flag would be refusing to believe it.
  *
- * A status outside [ANSWERED] is the one thing still read ahead of the flag. A 429 or a 529 on a
- * poll is the key's news and not the poll's: the sky and the well want it, and reading it first
- * leaves every line recorded before #94 reduced exactly as it was.
+ * Two flags can meet on one line (#104). A Responses answer served from #27's cursor says
+ * `resumed`, because it came out of the buffer and cost nothing, and `generatedNothing`, because a
+ * `GET` is not a create. Those are not the same claim, and only the second may silence the farm:
+ * the cursor did deliver an answer to a client, and the create it resumed had lost its own client
+ * mid-stream — that is why there was anything to resume — so that line spilled and carried nothing
+ * home either. With the flag leading, an answer reached a client and the farm showed nothing
+ * arriving, while #26's resume on Messages, where no such flag is written, carried the water home
+ * from the same situation. So [resumed] is read ahead of the flag, and the two resume paths agree
+ * again. Nothing #94 fixed comes back with it: a poll of a finished response is not resumed, and
+ * still counts for nothing. What a delivery still may not do is create — [completed] refuses it the
+ * produce, the day's tokens and the crops, each because the line it repeats carries them already.
+ *
+ * A status outside [ANSWERED] is the other thing read ahead of the flag. A 429 or a 529 on a poll
+ * is the key's news and not the poll's: the sky and the well want it, and reading it first leaves
+ * every line recorded before #94 reduced exactly as it was.
  *
  * The walk is undone and not prevented. A `started` cannot know: the flag is on the completed line
  * only, for the reason the cost is. So a poll still costs its villager the trip out and back, and
@@ -261,6 +273,7 @@ fun reduce(state: FarmState, event: JsonObject): FarmState =
 private fun nonGenerating(state: FarmState, event: JsonObject): FarmState? {
     val generated =
         status(event)?.let { it in ANSWERED } != true ||
+            resumed(event) ||
             (event.scalar("generatedNothing") { booleanOrNull }?.not()
                 ?: (usage(event) != null ||
                     event["stopReason"].text() in ENDED ||
@@ -343,7 +356,11 @@ private fun completed(state: FarmState, event: JsonObject): FarmState {
         )
     return state.copy(
         villagers = state.villagers + (villager.id to back),
-        fields = touched(state.fields, event),
+        // A resumed line's tools are the tools of a line the farm has already worked the fields
+        // from, the same way its usage is usage another line has already counted: a cursor that
+        // named no `starting_after` replays the whole answer, tool calls and all. So the delivery
+        // grows nothing; the call that named the paths planted them.
+        fields = if (resumed(event)) state.fields else touched(state.fields, event),
         // Resting is resting *at the well*: the villager keeps its place until a turn really ends,
         // and is given one if the refusal is the first this window heard of it.
         wellQueue =

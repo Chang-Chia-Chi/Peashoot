@@ -98,9 +98,15 @@ internal fun Stamina.after(event: JsonObject): Stamina {
  * second `exchange.completed` beside the original's, carrying the same usage — the original says
  * `clientDisconnected`, this one says `resumed` and a `costUsd` of zero. Counting both would put
  * two harvests in the bin and twice the provider's tokens on the day's card for one paid call,
- * which is the exact opposite of what the feature is for. So it drops no produce and adds no
- * tokens; it still walks its villager home and still carries the water, because that is the trip
- * the dropped one could not finish.
+ * which is the exact opposite of what the feature is for. So it drops no produce, adds no tokens
+ * and grows no crops — its tool calls are the same calls, named once and worked once; it still
+ * walks its villager home and still carries the water, because that is the trip the dropped one
+ * could not finish.
+ *
+ * The Responses cursor (#27) delivers the same way and is read the same way (#104), even though its
+ * line also carries `generatedNothing`: that flag says the exchange created nothing new, which is
+ * true and is why none of the three above is counted twice, and it does not say the answer never
+ * arrived.
  */
 internal fun resumed(event: JsonObject): Boolean = event.scalar("resumed") { booleanOrNull } == true
 

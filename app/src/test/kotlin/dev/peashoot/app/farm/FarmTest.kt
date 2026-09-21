@@ -329,10 +329,49 @@ class FarmTest {
         assertEquals(Weather.CLEAR, farm.weather)
     }
 
+    /**
+     * The Responses cursor's answer (#27), where #26's resume and #94's flag meet on one line
+     * (#104). It says `resumed`, because it was served from the buffer and cost nothing, and it
+     * says `generatedNothing`, because a cursor is a `GET` and not a create. The two say different
+     * things — this cost nothing, this created nothing new — and only the second may silence the
+     * farm. The create's own bucket spilled when its client left, which is why there was anything
+     * to resume, so a cursor that carries nothing either is an answer reaching a client that the
+     * farm never shows arriving.
+     */
+    @Test
+    fun `a cursor-resumed answer carries the water the spilled create could not`() {
+        val states = replay("responses-resumed.jsonl")
+        assertEquals(5, states.size)
+        // The create went on reading after its client left, so its line carries the whole answer:
+        // the produce, the cost and the tools are all counted there, and the water spills there.
+        val spilled = states[3]
+        assertEquals(0, spilled.villager(CURSOR).water, "the bucket spilled when the client left")
+        assertEquals(Weather.LIGHTNING, spilled.weather)
+        assertEquals(Growth.SEED, spilled.crop("src/cursor/Tail.kt")?.growth)
+        assertEquals(ShippingBin(produce = 1, ledger = 0.08, unpriced = 0), spilled.bin)
+
+        val farm = states.last()
+        val villager = farm.villager(CURSOR)
+        assertEquals(240, villager.water, "the cursor's answer did reach a client")
+        assertEquals(Weather.CLEAR, farm.weather, "the drop's lightning, not the delivery's")
+        assertEquals(1, villager.spills)
+        assertEquals(Activity.RETURNING, villager.activity)
+        assertTrue(villager.inFlight.isEmpty(), "both exchanges ended")
+        assertTrue(farm.wellQueue.isEmpty())
+        // Still one paid call: the tail repeats the create's usage, cost and tools, and none of
+        // the three may count a second time.
+        assertEquals(ShippingBin(produce = 1, ledger = 0.08, unpriced = 0), farm.bin)
+        assertEquals(Growth.SEED, farm.crop("src/cursor/Tail.kt")?.growth, "planted once")
+        val day = farm.days.getValue(CURSOR)
+        assertEquals(Tokens(input = 600, output = 240, cacheRead = 0, cacheWrite = 0), day.tokens)
+        assertEquals(0.08, day.cost)
+    }
+
     private companion object {
         const val CODEX = "sess-codex"
         const val CUT = "sess-cut"
         const val RESUME = "sess-resume"
+        const val CURSOR = "sess-cursor"
     }
 }
 
