@@ -14,7 +14,14 @@ data class Client(
     val parentAgent: String? = null,
 ) {
     companion object {
-        private const val PEASHOOT_SESSION = "x-peashoot-session"
+        /**
+         * The session a client injects to tell *this proxy* which conversation a turn belongs to,
+         * honoured over every other signal (design section 9). Public because the relay strips it
+         * before the request goes upstream, and a second spelling of it there would be a real hole:
+         * rename this one and the relay would go on stripping a header nobody sends while
+         * forwarding the one everybody does.
+         */
+        const val PEASHOOT_SESSION = "x-peashoot-session"
         private const val CLAUDE_CODE_SESSION = "x-claude-code-session-id"
         private const val CLAUDE_CODE_AGENT = "x-claude-code-agent-id"
         private const val CLAUDE_CODE_PARENT_AGENT = "x-claude-code-parent-agent-id"
@@ -54,7 +61,7 @@ data class Client(
                         else -> Client(userAgentToken(headers), session = null)
                     }
             val session = injected ?: detected.session ?: fallbackSession(detected.type, json)
-            return detected.copy(session = session)
+            return detected.copy(session = session).bounded()
         }
 
         /**
@@ -98,3 +105,45 @@ data class Client(
             MessageDigest.getInstance("SHA-256").digest(text.toByteArray()).toHexString()
     }
 }
+
+/**
+ * The longest a client-chosen identifier may be before it is cut. Generous against every real one —
+ * a UUID is 36 characters, Codex's thread ids and Claude Code's session ids are shorter — and small
+ * enough that an outsized one cannot put itself on every event line, in every stored row, and in
+ * the farm's own labels. A live request cannot carry much more, since the engine caps the header
+ * block long before this; a cassette hand-edited or imported from elsewhere is under no such limit,
+ * and reaches [Client.detect] by the same road.
+ */
+internal const val MAX_IDENTIFIER_LENGTH = 128
+
+/**
+ * A line break, a tab, or any other ASCII control character: what would forge a field or a whole
+ * line in anything that writes one of these as text rather than as JSON. `\r` and `\n` are control
+ * characters themselves, so the one class covers them. ASCII deliberately, and the same class
+ * `GourceLog` uses — nothing downstream splits a line on U+0085 or U+2028, and a rule that differed
+ * between the two guards would be one more thing to keep true.
+ */
+private val CONTROL_CHARACTERS = Regex("\\p{Cntrl}")
+
+/**
+ * Every field of a [Client] comes off a header or a user-agent that whoever sent the request chose,
+ * and each is then written into `events.jsonl`, into the store, into the Gource log, and onto the
+ * farm's labels. Bounded here, where they enter, rather than at each of those: #80 fixed exactly
+ * this hole in one writer, and a rule that has to be remembered by the next writer is one that will
+ * not be. Sanitising before truncating leaves one well-formed value rather than a forged field, and
+ * the writers keep their own guards — this is the first of two, not the replacement for either.
+ *
+ * Through [Client.copy] and not the constructor, deliberately: a fifth field added later with a
+ * default would compile against a positional call and take that default, silently dropping whatever
+ * was detected. That is #80's hole reopening inside the very function written to close it.
+ */
+private fun Client.bounded(): Client =
+    copy(
+        type = type.bounded(),
+        session = session?.bounded(),
+        agent = agent?.bounded(),
+        parentAgent = parentAgent?.bounded(),
+    )
+
+private fun String.bounded(): String =
+    CONTROL_CHARACTERS.replace(this, "_").take(MAX_IDENTIFIER_LENGTH)

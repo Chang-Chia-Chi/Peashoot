@@ -21,7 +21,12 @@ import kotlinx.serialization.json.JsonObject
 object Responses : Surface {
     override val name = "openai-responses"
 
-    private const val PATH = "/v1/responses"
+    /**
+     * Where a response is created, and the stem of every path that belongs to one. Public because
+     * the proxy's cursor path has to tell a create from a get-by-id and a cancel, and a second
+     * spelling of a protocol constant is a second thing to keep true.
+     */
+    const val PATH = "/v1/responses"
 
     /**
      * `POST /v1/responses`, and everything under it: `GET /v1/responses/{id}` with or without
@@ -77,6 +82,34 @@ object Responses : Surface {
     private const val RESPONSE_INCOMPLETE = "response.incomplete"
 
     /**
+     * The `sequence_number` a streamed event carries, which is the number `?starting_after=N`
+     * counts by, or null for a frame that has none: a non-streaming body, the unterminated tail of
+     * a cut stream, or an event of some later grammar than this one.
+     *
+     * This is what #25's As-built said #27 would have to add. It is read on demand rather than kept
+     * as a field on [Frame], because only this surface has sequence numbers and only the proxy's
+     * cursor path ever asks: a field would cost every frame of every surface a parse for it, and
+     * frames are recorded and replayed as bytes precisely so that nothing has to understand them.
+     */
+    fun sequenceNumber(frame: Frame): Int? =
+        jsonObjectOrNull(chunkText(frame.raw))?.get("sequence_number").int()
+
+    /**
+     * Which response this frame belongs to, as the stream itself announced it: `response.created`
+     * carries the response object with its `id`, and so does every later `response.*` event, while
+     * a non-streaming body, a get-by-id and a cancel are that object on their own. The events
+     * between — an item added, an argument fragment — name only their item, so they answer null and
+     * the id read from an earlier frame stands.
+     */
+    fun responseId(frame: Frame): String? {
+        val json = jsonObjectOrNull(chunkText(frame.raw)) ?: return null
+        val response = json["response"] as? JsonObject
+        return (response ?: json.takeIf { it["object"].text() == RESPONSE_OBJECT })
+            ?.get("id")
+            .text()
+    }
+
+    /**
      * One response's frames. A key a later frame names overrides what an earlier one said and the
      * rest keep what they had, so the reader is correct at every point in the stream and not only
      * at its end. Usage arrives on the terminal event alone and a response that carries none leaves
@@ -106,8 +139,13 @@ object Responses : Surface {
          * ponytail: a nameless call is dropped, arguments and all. The one way to reach that is the
          * path this surface adds: `?starting_after=N` resumes past the `output_item.added` that
          * carried the name, and a resumed stream then cut before its terminal event loses the call
-         * from the line entirely. Upgrade: when #27 serves a cursor from the proxy's own buffer, it
-         * has the earlier frames and can name it; until then nothing here can.
+         * from the line entirely. #27 arrived and did **not** fix this, though its own note said it
+         * would: the proxy does now hold the earlier frames, but it holds them for the *original*
+         * exchange, and the cursor's line is read by a fresh reader fed only the frames that went
+         * to the client. The original's line names the call correctly; the cursor's does not.
+         * Upgrade: the resumed exchange's reader started from the original's frames rather than
+         * from the filtered ones, which is a seam between Resume and the Deriver that does not
+         * exist today and is not worth inventing for a field on one duplicate line.
          */
         private val calls = LinkedHashMap<String, OpenTool>()
 

@@ -214,6 +214,9 @@ criterion 1).
 To capture fixtures from this run rather than just watching it, use `PEASHOOT_DUMP_FRAMES` and the
 redaction recipe in `core/src/test/resources/openai-responses/README.md`.
 
+For OpenCode — the base URL for either of its providers, the three-line plugin that tags its
+sessions, and that smoke run — see [`docs/opencode.md`](docs/opencode.md).
+
 ## Cassettes: replay in CI without a key
 
 A cassette is a JSONL file with one recorded exchange per line, meant to be committed. Export what the store holds, and import it anywhere:

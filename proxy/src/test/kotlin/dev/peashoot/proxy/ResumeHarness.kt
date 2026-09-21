@@ -3,6 +3,7 @@ package dev.peashoot.proxy
 import dev.peashoot.core.FrameParser
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.cio.CIO
+import io.ktor.client.request.get
 import io.ktor.client.request.post
 import io.ktor.client.request.setBody
 import io.ktor.client.statement.HttpResponse
@@ -30,6 +31,34 @@ internal const val RESPONSES_PATH = "/v1/responses"
 internal const val RESPONSES_REQUEST =
     """{"model":"gpt-5","stream":true,"input":[{"type":"message","role":"user",""" +
         """"content":[{"type":"input_text","text":"count to three"}]}]}"""
+
+/** The same turn asked for in background mode, which #27 serves from no buffer of ours. */
+internal const val BACKGROUND_REQUEST =
+    """{"model":"gpt-5","stream":true,"background":true,"input":[{"type":"message",""" +
+        """"role":"user","content":[{"type":"input_text","text":"count to three"}]}]}"""
+
+/**
+ * The response id the Responses fixture's own stream announces, on `response.created` and on every
+ * later event that carries the response object. A cursor request names it in the path.
+ */
+internal const val RESPONSES_ID = "resp_REDACTED"
+
+/**
+ * `GET /v1/responses/{id}?stream=true&starting_after=N`, with [after] written exactly as given so a
+ * test can ask with a value that is no number at all; null leaves the parameter off entirely.
+ */
+internal fun cursorPath(
+    after: String?,
+    id: String = RESPONSES_ID,
+    stream: Boolean = true,
+): String =
+    "$RESPONSES_PATH/$id" +
+        listOfNotNull(
+                "stream=true".takeIf { stream },
+                after?.let { "starting_after=$it" },
+            )
+            .joinToString("&")
+            .let { if (it.isEmpty()) "" else "?$it" }
 
 /** How many frames a leaving client reads first: mid-stream, with frames on both sides of it. */
 internal const val LEFT_AFTER = 6
@@ -129,18 +158,26 @@ internal class ResumeRig(
      * A raw socket with [body] posted to [path]: no client library leaves a response on demand.
      * Inline, so [then] may suspend in the caller's coroutine while the socket stays open.
      */
-    private inline fun <T> posted(body: String, path: String, then: (Socket) -> T): T {
+    private inline fun <T> posted(
+        body: String,
+        path: String,
+        method: String,
+        then: (Socket) -> T,
+    ): T {
         val (host, port) = proxy.url.removePrefix("http://").split(":")
         return Socket(host, port.toInt()).use { socket ->
             // A regression that never answers fails in five seconds, not never.
             socket.soTimeout = TIMEOUT_MS.toInt()
             val bytes = body.toByteArray()
+            // A GET carries no body, and a content-type on one would be a header the relay then
+            // has to parse for nothing; the Responses cursor is a GET.
+            val framing =
+                if (bytes.isEmpty()) ""
+                else "Content-Type: application/json\r\nContent-Length: ${bytes.size}\r\n"
             socket.getOutputStream().apply {
                 write(
-                    ("POST $path HTTP/1.1\r\nHost: $host:$port\r\n" +
-                            "Content-Type: application/json\r\n" +
-                            "Content-Length: ${bytes.size}\r\n\r\n")
-                        .toByteArray() + bytes
+                    ("$method $path HTTP/1.1\r\nHost: $host:$port\r\n$framing\r\n").toByteArray() +
+                        bytes
                 )
                 flush()
             }
@@ -154,13 +191,18 @@ internal class ResumeRig(
      * has, because nobody looks at the channel until the upstream answers.
      */
     suspend fun leaveBeforeAnswer(body: String, path: String = MESSAGES_PATH) {
-        posted(body, path) { withTimeout(TIMEOUT_MS) { received.await() } }
+        posted(body, path, "POST") { withTimeout(TIMEOUT_MS) { received.await() } }
         delay(SETTLE_MS)
     }
 
-    /** Posts [body], reads until [frames] frames are out, then closes. */
-    fun leaveAfter(frames: Int, body: String, path: String = MESSAGES_PATH) =
-        posted(body, path) { socket ->
+    /** Sends [body], reads until [frames] frames are out, then closes. */
+    fun leaveAfter(
+        frames: Int,
+        body: String,
+        path: String = MESSAGES_PATH,
+        method: String = "POST",
+    ) =
+        posted(body, path, method) { socket ->
             val input = socket.getInputStream()
             val buffer = ByteArray(READ_BUFFER)
             var seen = 0
@@ -201,6 +243,13 @@ internal class ResumeRig(
             }
         }
 
+    /** The Responses cursor is a GET, so it has no body and none of [post]'s content type. */
+    suspend fun get(path: String): HttpResponse =
+        HttpClient(CIO).use { client -> client.get("${proxy.url}$path") }
+
+    /** [get] read back as the provider's own frames alone, for a byte comparison. */
+    suspend fun streamedGet(path: String): String = get(path).bodyAsText().withoutPings()
+
     /** The event lines of one kind, in the order the deriver stored them. */
     suspend fun events(kind: String): List<JsonObject> =
         store.events().values.filter { it.getValue("event").jsonPrimitive.content == kind }
@@ -222,8 +271,9 @@ internal class ResumeRig(
         path: String = MESSAGES_PATH,
         after: Int = LEFT_AFTER,
         drops: Int = 1,
+        method: String = "POST",
     ) {
-        leaveAfter(after, body, path)
+        leaveAfter(after, body, path, method)
         awaitEvents(CLIENT_GONE, drops)
     }
 
