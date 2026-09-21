@@ -43,6 +43,13 @@ data class Recorded(
     val exchange: Exchange,
     val frames: List<Frame>,
     val cassette: String? = null,
+    /**
+     * The `exchange.completed` line the deriver wrote for it, as it wrote it, or null for a row
+     * nothing here derived: an imported cassette's. What a turn used, cost, took, and whether it
+     * was a replay hit lives on that line and nowhere else, so a summary row that did not carry it
+     * could be filled in only by whoever happened to hear the line live (#85).
+     */
+    val completed: JsonObject? = null,
 )
 
 /**
@@ -59,6 +66,19 @@ data class ExchangeQuery(
     val cursor: String? = null,
     val live: Boolean = false,
     val frames: Boolean = true,
+)
+
+/**
+ * One turn against one file: which turn it was, when, whose villager's it is, and the tools that
+ * named that path. A turn that reads a file and then edits it is one row naming both.
+ */
+data class Touched(
+    val eventId: Long,
+    val exchangeId: String,
+    val ts: String?,
+    val session: String?,
+    val agent: String?,
+    val tools: List<String>,
 )
 
 /** One row of the session view: what one session and agent have spent. */
@@ -107,6 +127,7 @@ class Store(home: Path) : AutoCloseable {
                 it.execute(FINGERPRINT_INDEX)
                 it.execute(EVENT_SCHEMA)
                 it.execute(EVENT_INDEX)
+                it.execute(EVENT_EXCHANGE_INDEX)
                 it.execute(SESSION_VIEW)
             }
         }
@@ -160,7 +181,7 @@ class Store(home: Path) : AutoCloseable {
         handle
             .createQuery("$SELECT WHERE id = :id")
             .bind("id", id)
-            .map { rows, _ -> rows.toRecorded(frames) }
+            .map { rows, _ -> rows.toRecorded(bodies, frames) }
             .findOne()
             .orElse(null)
     }
@@ -194,7 +215,7 @@ class Store(home: Path) : AutoCloseable {
             .createQuery("$SELECT $where ORDER BY received_at DESC, id DESC LIMIT :limit")
             .bind("limit", limit)
             .bindMap(filters)
-            .map { rows, _ -> rows.toRecorded(query.frames) }
+            .map { rows, _ -> rows.toRecorded(bodies, query.frames) }
             .list()
     }
 
@@ -237,6 +258,31 @@ class Store(home: Path) : AutoCloseable {
             .toMap()
     }
 
+    /**
+     * Which turns touched [path], newest first, a page at a time: [cursor] is the event id of the
+     * last row of the page before, and a page is [limit] rows.
+     *
+     * Read from the event table and not from the exchange table, which is the whole point of it: a
+     * replay hit and a resumed answer are no rows there — neither made an upstream call — and both
+     * touched the file all the same. Separators are normalised on both sides, so a file written on
+     * Windows and read on a POSIX box is one file here, as it is one crop in the farm.
+     *
+     * ponytail: a scan of the completed lines per query, which a local tool's event count can
+     * afford, as `/exchanges?client=` already does. Upgrade: a touch table the deriver fills, if
+     * this ever feels slow.
+     */
+    suspend fun touches(path: String, limit: Int, cursor: Long?): List<Touched> = io { handle ->
+        handle
+            .createQuery(SELECT_TOUCHES)
+            .bind("path", path)
+            .bind("limit", limit)
+            // The newest page asks for everything before the end of the table, so no cursor and a
+            // cursor are one query and neither binds a null.
+            .bind("cursor", cursor ?: Long.MAX_VALUE)
+            .map { rows, _ -> rows.toTouched() }
+            .list()
+    }
+
     suspend fun sessions(): List<Session> = io { handle ->
         handle.createQuery(SELECT_SESSIONS).map { rows, _ -> rows.toSession() }.list()
     }
@@ -258,41 +304,6 @@ class Store(home: Path) : AutoCloseable {
             Files.move(staging, target, ATOMIC_MOVE, REPLACE_EXISTING)
         }
         return null to name
-    }
-
-    private fun ResultSet.inlineOrSpilled(inline: String, ref: String): ByteArray =
-        getBytes(inline) ?: Files.readAllBytes(bodies.resolve(getString(ref)))
-
-    private fun ResultSet.toRecorded(withFrames: Boolean = true): Recorded {
-        val exchange =
-            Exchange(
-                Exchange.Request(
-                    getString("method"),
-                    getString("path"),
-                    Json.parseToJsonElement(getString("request_headers")).jsonObject.toHeaders(),
-                    inlineOrSpilled("request_body", "request_body_ref"),
-                ),
-                route = getString("route"),
-                // A row keeps the mode it ran under; strict and the cassette were the route's at
-                // the time, and the cassette it belongs to now is [Recorded.cassette].
-                routing = Route(Mode.valueOf(getString("mode"))),
-                id = getString("id"),
-                receivedAt = Instant.ofEpochMilli(getLong("received_at")),
-            )
-        exchange.response =
-            Exchange.Response(
-                getInt("status"),
-                Json.parseToJsonElement(getString("response_headers")).jsonObject.toHeaders(),
-            )
-        exchange.fingerprint = getString("fingerprint")
-        exchange.clientDisconnected = getBoolean("client_disconnected")
-        val frames =
-            if (!withFrames) emptyList()
-            else
-                Json.parseToJsonElement(inlineOrSpilled("frames", "frames_ref").decodeToString())
-                    .jsonArray
-                    .toFrames()
-        return Recorded(exchange, frames, getString("cassette"))
     }
 
     private companion object {
@@ -353,7 +364,20 @@ class Store(home: Path) : AutoCloseable {
         const val FINGERPRINT_INDEX =
             """CREATE INDEX IF NOT EXISTS exchange_fingerprint
                 ON exchange (fingerprint, received_at DESC)"""
-        const val SELECT = "SELECT * FROM exchange"
+        /**
+         * Every column of the row, and with it the `exchange.completed` line the deriver wrote for
+         * that exchange: usage, cost, latency and the replay flag are on that line alone, and a
+         * summary row is where a pane needs them (#85). The newest such line wins, though only a
+         * retried write would ever leave two.
+         */
+        const val SELECT =
+            """SELECT exchange.*, (
+                    SELECT body FROM event
+                    WHERE event.exchange_id = exchange.id
+                        AND event.event = 'exchange.completed'
+                    ORDER BY event.id DESC LIMIT 1
+                ) AS completed
+                FROM exchange"""
         /**
          * [list]'s conditions that are not a plain column match. The cursor compares in the list's
          * own order, so a page continues where the last one ended; the control API refuses a cursor
@@ -382,6 +406,31 @@ class Store(home: Path) : AutoCloseable {
             )"""
         /** What the session view groups by. */
         const val EVENT_INDEX = "CREATE INDEX IF NOT EXISTS event_session ON event (session, agent)"
+        /** What [SELECT] joins on: a summary row reads the completed line of its own exchange. */
+        const val EVENT_EXCHANGE_INDEX =
+            "CREATE INDEX IF NOT EXISTS event_exchange ON event (exchange_id)"
+        /**
+         * The completed lines whose tools name one path, newest first. The tool names are gathered
+         * in SQL rather than in Kotlin so that the rule for what counts as this path — separators
+         * normalised on both sides, the path matched whole — is written once, where the filter is.
+         * Both sides, because a caller on Windows names the file the way its own shell does, and
+         * `src\Main.kt` and `src/Main.kt` are one file.
+         *
+         * `char(92)` is the backslash, spelled that way because JDBI's own parser reads a backslash
+         * in the SQL as an escape and loses track of where the string literal ends, which silently
+         * binds the parameters to the wrong places.
+         */
+        const val SELECT_TOUCHES =
+            """SELECT id, exchange_id, session, agent,
+                    json_extract(body, '$.ts') AS line_ts,
+                    (SELECT json_group_array(json_extract(tool.value, '$.name'))
+                        FROM json_each(coalesce(json_extract(body, '$.tools'), '[]')) AS tool
+                        WHERE replace(coalesce(json_extract(tool.value, '$.path'), ''),
+                            char(92), '/') = replace(:path, char(92), '/')) AS tools
+                FROM event
+                WHERE event = 'exchange.completed' AND id < :cursor
+                    AND json_array_length(tools) > 0
+                ORDER BY id DESC LIMIT :limit"""
         /**
          * What one session and agent have spent, read back out of the stored event lines.
          *
@@ -410,6 +459,66 @@ class Store(home: Path) : AutoCloseable {
         const val SELECT_SESSIONS = "SELECT * FROM session ORDER BY session, agent"
     }
 }
+
+/** The bytes of a column that are in the row, or of the spill file in [bodies] that it names. */
+private fun ResultSet.inlineOrSpilled(bodies: Path, inline: String, ref: String): ByteArray =
+    getBytes(inline) ?: Files.readAllBytes(bodies.resolve(getString(ref)))
+
+/**
+ * One exchange row, with its frames unless [withFrames] is off, and the completed line the select
+ * read beside it. A row mapper beside the others, rather than a member: it needs nothing of the
+ * store but where the spilled bodies are.
+ */
+private fun ResultSet.toRecorded(bodies: Path, withFrames: Boolean = true): Recorded {
+    val exchange =
+        Exchange(
+            Exchange.Request(
+                getString("method"),
+                getString("path"),
+                Json.parseToJsonElement(getString("request_headers")).jsonObject.toHeaders(),
+                inlineOrSpilled(bodies, "request_body", "request_body_ref"),
+            ),
+            route = getString("route"),
+            // A row keeps the mode it ran under; strict and the cassette were the route's at the
+            // time, and the cassette it belongs to now is [Recorded.cassette].
+            routing = Route(Mode.valueOf(getString("mode"))),
+            id = getString("id"),
+            receivedAt = Instant.ofEpochMilli(getLong("received_at")),
+        )
+    exchange.response =
+        Exchange.Response(
+            getInt("status"),
+            Json.parseToJsonElement(getString("response_headers")).jsonObject.toHeaders(),
+        )
+    exchange.fingerprint = getString("fingerprint")
+    exchange.clientDisconnected = getBoolean("client_disconnected")
+    val frames =
+        if (!withFrames) emptyList()
+        else
+            Json.parseToJsonElement(
+                    inlineOrSpilled(bodies, "frames", "frames_ref").decodeToString()
+                )
+                .jsonArray
+                .toFrames()
+    return Recorded(
+        exchange,
+        frames,
+        getString("cassette"),
+        getString("completed")?.let { Json.parseToJsonElement(it).jsonObject },
+    )
+}
+
+private fun ResultSet.toTouched(): Touched =
+    Touched(
+        eventId = getLong("id"),
+        exchangeId = getString("exchange_id"),
+        // The line's own `ts` and not the row's epoch column, so a touch and the feed's line spell
+        // one turn's time the same way.
+        ts = getString("line_ts"),
+        session = getString("session"),
+        agent = getString("agent"),
+        tools = Json.parseToJsonElement(getString("tools")).jsonArray.mapNotNull { it.text() },
+    )
 
 private fun ResultSet.toSession(): Session =
     Session(

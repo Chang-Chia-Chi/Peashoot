@@ -15,6 +15,7 @@ import io.ktor.client.request.header
 import io.ktor.client.request.prepareGet
 import io.ktor.client.statement.bodyAsChannel
 import io.ktor.client.statement.bodyAsText
+import io.ktor.http.Headers
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpMethod
 import io.ktor.utils.io.ByteReadChannel
@@ -33,6 +34,7 @@ import kotlin.test.Test
 import kotlin.test.assertContains
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlinx.coroutines.delay
@@ -40,16 +42,22 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.boolean
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.double
 import kotlinx.serialization.json.int
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.long
 import kotlinx.serialization.json.put
 
-/** The control API on the proxy's own port: token, health, events, exchanges, sessions, routes. */
+/**
+ * The control API on the proxy's own port: token, health, events, exchanges, touches, sessions,
+ * routes.
+ */
 class ControlApiTest {
     @Test
     fun `a missing or wrong token gets a 401 problem on everything except health`() = withProxy {
@@ -58,6 +66,7 @@ class ControlApiTest {
                 HttpMethod.Get to "/events",
                 HttpMethod.Get to "/exchanges",
                 HttpMethod.Get to "/exchanges/01ABC",
+                HttpMethod.Get to "/touches?path=src/Main.kt",
                 HttpMethod.Get to "/sessions",
                 HttpMethod.Get to "/routes",
                 HttpMethod.Put to "/routes/default",
@@ -334,6 +343,51 @@ class ControlApiTest {
                 assertProblem(call(HttpMethod.Get, "/exchanges?cursor=$it"), 400)
             }
         }
+
+    @Test
+    fun `a summary row says what the turn used, cost, and took, and whether it was a hit`() =
+        withProxy {
+            upstream.reply = { streamReply("stream-with-file-tools.sse") }
+            relay(REQUEST, mapOf("x-claude-code-session-id" to "s1"))
+            awaitRecordings(1)
+            awaitEvents(2)
+
+            val row = json("/exchanges").getValue("exchanges").jsonArray.single().jsonObject
+            assertEquals(
+                Json.parseToJsonElement(
+                    """{"input":1200,"output":95,"cacheRead":8000,"cacheWrite":300}"""
+                ),
+                row.getValue("usage"),
+                "verbatim from the completed line, not computed a second way",
+            )
+            assertEquals(0.00855, row.getValue("costUsd").jsonPrimitive.double, 1e-9)
+            assertTrue(row.getValue("latencyMs").jsonPrimitive.long >= 0, "$row")
+            // False on every stored row by construction: a replay hit is never recorded. It is
+            // here so a pane reads one row and needs to know none of that.
+            assertFalse(row.getValue("replayHit").jsonPrimitive.boolean)
+            // A detail answer is the summary plus the rest, so it carries them too.
+            val detail = json("/exchanges/${row.getValue("id").jsonPrimitive.content}")
+            assertEquals(row.getValue("usage"), detail.getValue("usage"))
+        }
+
+    @Test
+    fun `a row with no completed line behind it answers null for all four`() = withProxy {
+        // An imported cassette's rows were never derived here. Null is "nobody said"; zero would
+        // be "it cost nothing", which is what a replay hit's line really says.
+        val imported =
+            Exchange(
+                Exchange.Request("POST", "/v1/messages", Headers.Empty, "{}".encodeToByteArray()),
+                DEFAULT_ROUTE,
+                Route(Mode.RECORD),
+            )
+        imported.response = Exchange.Response(200, Headers.Empty)
+        store.put(listOf(Recorded(imported, emptyList())), cassette = "nightly")
+
+        val row = json("/exchanges").getValue("exchanges").jsonArray.single().jsonObject
+        listOf("usage", "costUsd", "latencyMs", "replayHit").forEach {
+            assertEquals(JsonNull, row.getValue(it), it)
+        }
+    }
 
     @Test
     fun `one exchange carries its request, and its frames when asked`() = withProxy {

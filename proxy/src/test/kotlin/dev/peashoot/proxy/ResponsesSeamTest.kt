@@ -446,6 +446,12 @@ class ResponsesSeamTest {
                         "cancelled",
                         completed.getValue("stopReason").jsonPrimitive.content,
                     )
+                    // The response was created by some other exchange, and the line says so, which
+                    // is what keeps the farm from counting this one as a turn of its own (#94).
+                    assertEquals(
+                        "true",
+                        completed.getValue("generatedNothing").jsonPrimitive.content,
+                    )
                 }
             }
         }

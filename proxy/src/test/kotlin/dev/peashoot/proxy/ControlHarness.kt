@@ -1,5 +1,6 @@
 package dev.peashoot.proxy
 
+import dev.peashoot.core.FrameParser
 import dev.peashoot.core.Interceptor
 import dev.peashoot.core.Mode
 import dev.peashoot.core.Route
@@ -129,6 +130,25 @@ internal suspend fun okJson(response: HttpResponse): JsonObject {
     assertEquals(200, response.status.value, text)
     return Json.parseToJsonElement(text).jsonObject
 }
+
+/**
+ * One of the core parser's captured provider streams, as the fake upstream replays it: the way a
+ * control API test gets a turn with real tools and real usage on its completed line.
+ */
+internal fun streamReply(name: String) =
+    FakeUpstream.Reply(
+        contentType = ContentType.Text.EventStream,
+        frames =
+            FrameParser.parse(
+                    checkNotNull(
+                            ControlApi::class.java.getResourceAsStream("/anthropic-messages/$name")
+                        ) {
+                            name
+                        }
+                        .readBytes()
+                )
+                .map { it.raw },
+    )
 
 internal suspend fun Proxy.relay(body: String, headers: Map<String, String> = emptyMap()) =
     client

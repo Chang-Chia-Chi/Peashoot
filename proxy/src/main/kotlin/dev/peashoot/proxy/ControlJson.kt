@@ -108,6 +108,19 @@ private fun JsonObjectBuilder.putSummary(recorded: Recorded) {
     put("client", client.type)
     put("cassette", recorded.cassette)
     put("clientDisconnected", exchange.clientDisconnected)
+    // Verbatim from the `exchange.completed` line this exchange left, rather than worked out a
+    // second way here: one number that disagreed with the feed's would be worse than none (#85).
+    // Null where no line was stored, which is an imported cassette's row: "nobody said", which is
+    // not "it cost nothing" — that is a replay hit, and it says so with a zero.
+    val completed = recorded.completed
+    put("usage", completed?.get("usage") ?: JsonNull)
+    put("costUsd", completed?.get("costUsd") ?: JsonNull)
+    put("latencyMs", completed?.get("latencyMs") ?: JsonNull)
+    // False on every row this proxy recorded, and deliberately so: a replay hit is never stored,
+    // for the reason a resumed answer is not, so the row a hit shows up as on a timeline is the
+    // original recording it was served from. It is here so that a pane reads one row and has to
+    // know none of that.
+    put("replayHit", completed?.get("replayHit") ?: JsonNull)
 }
 
 internal fun Session.toJson(): JsonObject = buildJsonObject {

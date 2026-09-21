@@ -135,36 +135,6 @@ data class ShippingBin(
     val unpriced: Int = 0,
 )
 
-/** What one turn did to one crop, which is the three things a tool call can do to a file. */
-enum class TouchKind {
-    PLANTED,
-    GROWN,
-    INSPECTED,
-}
-
-/**
- * One turn against one file: which villager's turn it was, the `ts` of the line as it spelled it,
- * and what the turn did. The villager and not the session, because a helper touching its parent's
- * file is the thing the pane exists to show.
- */
-data class Touch(val villager: String, val ts: String?, val kind: TouchKind)
-
-/**
- * How many touches a crop remembers.
- *
- * This is the whole of the history the window has, and not because the proxy lacks it: every touch
- * is in a `tools` array on a stored `exchange.completed` line, and `GET /events?since=0` serves the
- * whole event table. The window asks for no backfill on its first connection, so it only ever hears
- * what happened after it opened, and these are what that leaves.
- *
- * ponytail: the newest [TOUCH_HISTORY], oldest dropped, so a file a run edits a thousand times
- * costs a bounded amount of memory. `Detail.touchNote` is what says so in the pane, rather than
- * letting the list simply end. Upgrade: a backfilled feed would give the pane the rest — though
- * that is a decision beyond this pane, since folding a day-old feed would end every finished
- * session's day at the first tick and put a card up for each.
- */
-internal const val TOUCH_HISTORY = 50
-
 /**
  * One file the agents have touched. [label] is its path, kept in the state because the farm draws
  * it when [FarmState.labelsHidden] is off, and it is the crop's key as well.
@@ -178,17 +148,7 @@ data class Crop(
     val growth: Growth,
     /** Reads of this file: an inspection, which advances nothing. */
     val inspections: Int,
-    /**
-     * Every turn that touched it, oldest first, up to [TOUCH_HISTORY]: #22's pane reads this. A
-     * touch whose line carried no `ts` is kept with none rather than dropped or stamped with a
-     * neighbour's time — the turn happened, and a made-up time is worse than an admitted gap.
-     */
-    val touches: List<Touch> = emptyList(),
-) {
-    /** One more turn on this crop's history, the oldest dropped once it is [TOUCH_HISTORY] long. */
-    internal fun touched(villager: String, ts: String?, kind: TouchKind): Crop =
-        copy(touches = (touches + Touch(villager, ts, kind)).takeLast(TOUCH_HISTORY))
-}
+)
 
 /** A directory: the field the files under it grow in, labelled with the directory itself. */
 data class Field(val label: String, val crops: Map<String, Crop>)
@@ -262,12 +222,12 @@ fun reduce(state: FarmState, event: JsonObject): FarmState =
  * — and nothing else: no water, no crops, no weather, no bin, no day. A villager whose session this
  * window never heard is not made by a line that is not a turn.
  *
- * Reporting no usage is the whole of the test. #81's own wording was "no usage and no model", and
- * the model half does not hold against the data: a cancel's body carries a `model` and the reader
- * reads it, so the event line for one names a model like a turn's does. What guards the usage
- * instead are the three ways a turn can report none and still be a turn, each of them a fixture: a
- * status outside [ANSWERED] failed rather than generated nothing (`rate-limit.jsonl`'s 429,
- * `weather.jsonl`'s 529), a stop reason that says it [ENDED] ended whatever it reported
+ * Reporting no usage was the whole of the test (#81). #81's own wording was "no usage and no
+ * model", and the model half does not hold against the data: a cancel's body carries a `model` and
+ * the reader reads it, so the event line for one names a model like a turn's does. What guards the
+ * usage instead are the three ways a turn can report none and still be a turn, each of them a
+ * fixture: a status outside [ANSWERED] failed rather than generated nothing (`rate-limit.jsonl`'s
+ * 429, `weather.jsonl`'s 529), a stop reason that says it [ENDED] ended whatever it reported
  * (`odd-lines.jsonl`), and a stream whose client left was being answered (`stream-cut.jsonl`). A
  * replay hit and a resumed line (#26) both report usage and a zero cost, so both stay turns, which
  * is what they are.
@@ -279,17 +239,32 @@ fun reduce(state: FarmState, event: JsonObject): FarmState =
  * What it buys is a Responses create whose usage never parsed, which says `completed` and is a turn
  * for exactly the reason an `end_turn` that reported nothing is one.
  *
- * The walk is undone and not prevented. A `started` cannot know: what tells these apart is the
- * request's path, which is on no event line, and #81 ruled out putting it there. So a poll still
- * costs its villager the trip out and back, and this is what brings it home rather than leaving it
- * at a well it has no reason to be at.
+ * What leads is no longer the usage, though. #94: a `GET /v1/responses/{id}` of a response that has
+ * already *finished* answers with the whole object, usage and all, so every reading of the line's
+ * own numbers calls it a turn — a second produce, a second cost and the create's tokens a second
+ * time on the day's card, once per poll. The Deriver knows what the reducer cannot, the request's
+ * method and path, and now says it on the line: `generatedNothing`, set from the same rule #27's
+ * `createsResponse()` already draws. So the flag leads where a line carries one and the usage is
+ * the fallback for every line recorded before it, which is every cassette taken so far. The guards
+ * belong to the fallback and not to the flag: they exist to keep the heuristic from calling a turn
+ * a poll, and a line that states the fact outright needs no guarding — a finished-response poll
+ * says `completed` and carries usage, so guarding the flag would be refusing to believe it.
+ *
+ * A status outside [ANSWERED] is the one thing still read ahead of the flag. A 429 or a 529 on a
+ * poll is the key's news and not the poll's: the sky and the well want it, and reading it first
+ * leaves every line recorded before #94 reduced exactly as it was.
+ *
+ * The walk is undone and not prevented. A `started` cannot know: the flag is on the completed line
+ * only, for the reason the cost is. So a poll still costs its villager the trip out and back, and
+ * this is what brings it home rather than leaving it at a well it has no reason to be at.
  */
 private fun nonGenerating(state: FarmState, event: JsonObject): FarmState? {
     val generated =
-        usage(event) != null ||
-            status(event)?.let { it in ANSWERED } != true ||
-            event["stopReason"].text() in ENDED ||
-            event.scalar("clientDisconnected") { booleanOrNull } == true
+        status(event)?.let { it in ANSWERED } != true ||
+            (event.scalar("generatedNothing") { booleanOrNull }?.not()
+                ?: (usage(event) != null ||
+                    event["stopReason"].text() in ENDED ||
+                    event.scalar("clientDisconnected") { booleanOrNull } == true))
     if (generated) return null
     val session = event["session"].text()
     val villager = session?.let { state.villagers[villagerOf(state, it, event).id] }
@@ -368,7 +343,7 @@ private fun completed(state: FarmState, event: JsonObject): FarmState {
         )
     return state.copy(
         villagers = state.villagers + (villager.id to back),
-        fields = touched(state.fields, event, villager.id),
+        fields = touched(state.fields, event),
         // Resting is resting *at the well*: the villager keeps its place until a turn really ends,
         // and is given one if the refusal is the first this window heard of it.
         wellQueue =
@@ -418,14 +393,8 @@ private fun villagerOf(state: FarmState, session: String, event: JsonObject): Vi
 internal fun nameFor(id: String): String = VILLAGER_NAMES[id.hashCode().mod(VILLAGER_NAMES.size)]
 
 /** Every path the turn's tools named, in the order the turn named them. */
-private fun touched(
-    fields: Map<String, Field>,
-    event: JsonObject,
-    villager: String,
-): Map<String, Field> {
-    val ts = event["ts"].text()
-    return tools(event).fold(fields) { grown, tool -> grown.touch(tool, ts, villager) }
-}
+private fun touched(fields: Map<String, Field>, event: JsonObject): Map<String, Field> =
+    tools(event).fold(fields) { grown, tool -> grown.touch(tool) }
 
 /**
  * One tool call against the fields: the directory is the field, the file is the crop. Separators
@@ -435,11 +404,7 @@ private fun touched(
  * file existed before the app was watching. A tool that named no path, or named one but only
  * searched it, changes nothing.
  */
-private fun Map<String, Field>.touch(
-    tool: JsonObject,
-    ts: String?,
-    villager: String,
-): Map<String, Field> {
+private fun Map<String, Field>.touch(tool: JsonObject): Map<String, Field> {
     val path = touchedPath(tool) ?: return this
     val name = tool["name"].text()
     val directory = path.substringBeforeLast('/', ROOT_FIELD)
@@ -448,14 +413,9 @@ private fun Map<String, Field>.touch(
     val next =
         when {
             crop == null && name == READ -> null
-            crop == null ->
-                Crop(label = path, growth = Growth.SEED, inspections = 0)
-                    .touched(villager, ts, TouchKind.PLANTED)
-            name == READ ->
-                crop
-                    .copy(inspections = crop.inspections + 1)
-                    .touched(villager, ts, TouchKind.INSPECTED)
-            else -> crop.copy(growth = crop.growth.next()).touched(villager, ts, TouchKind.GROWN)
+            crop == null -> Crop(label = path, growth = Growth.SEED, inspections = 0)
+            name == READ -> crop.copy(inspections = crop.inspections + 1)
+            else -> crop.copy(growth = crop.growth.next())
         }
     return if (next == null) this
     else plus(directory to field.copy(crops = field.crops + (path to next)))
