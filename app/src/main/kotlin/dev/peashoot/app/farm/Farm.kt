@@ -4,44 +4,6 @@ import dev.peashoot.core.text
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.booleanOrNull
 
-/**
- * The names a villager can have, short enough to sit under a sprite. Which one a villager gets is
- * its id's hash, so one session is one villager in every run and in every replay of a feed.
- */
-internal val VILLAGER_NAMES =
-    listOf(
-        "Ada",
-        "Bede",
-        "Cass",
-        "Dot",
-        "Elm",
-        "Fern",
-        "Gil",
-        "Hazel",
-        "Ida",
-        "Jory",
-        "Kit",
-        "Lark",
-        "Mira",
-        "Nell",
-        "Otto",
-        "Pim",
-        "Quill",
-        "Rosa",
-        "Sage",
-        "Tam",
-        "Una",
-        "Vee",
-        "Wren",
-        "Xan",
-        "Yara",
-        "Zeb",
-        "Bram",
-        "Clover",
-        "Dill",
-        "Ember",
-    )
-
 /** The field a file with no directory in front of it grows in: every crop belongs to one. */
 private const val ROOT_FIELD = "."
 
@@ -403,11 +365,8 @@ private fun villagerOf(state: FarmState, session: String, event: JsonObject): Vi
     val parent = agent?.let {
         event["parentAgent"].text()?.let { named -> "$session/$named" } ?: session
     }
-    return state.villagers[id] ?: Villager(id, nameFor(id), session, parent)
+    return state.villagers[id] ?: Villager(id, uniqueName(state, id), session, parent)
 }
-
-/** `String.hashCode` is specified, so the same id picks the same name on every JVM. */
-internal fun nameFor(id: String): String = VILLAGER_NAMES[id.hashCode().mod(VILLAGER_NAMES.size)]
 
 /** Every path the turn's tools named, in the order the turn named them. */
 private fun touched(fields: Map<String, Field>, event: JsonObject): Map<String, Field> =
