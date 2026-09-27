@@ -81,6 +81,7 @@ var _reader := Thread.new()
 var _reading := true
 var _from_app := false
 var _last_heard := 0
+var _drawn := false
 var _feed: Array[String] = []
 var _feed_every := 0.5
 var _feed_clock := 0.0
@@ -125,24 +126,26 @@ func _exit_tree() -> void:
 		_reader.wait_to_finish()
 
 
-## Reads the app's lines off stdin. An empty line is the app's heartbeat: a closed pipe reads the
-## same as a quiet one, so silence is how [method _check_app] knows the app has gone.
+## Reads the app's lines off stdin, a byte at a time: `read_buffer_from_stdin(n)` waits for all n
+## bytes or the end of the pipe, so asking for more than one would hold back every farm and every
+## heartbeat until enough had queued behind it. An empty line is the app's heartbeat: a closed pipe
+## reads the same as a quiet one, so silence is how [method _check_app] knows the app has gone.
 func _read_stdin() -> void:
-	var pending := ""
+	var pending := PackedByteArray()
 	while _reading:
-		var chunk := OS.read_buffer_from_stdin(65536)
-		if chunk.is_empty():
+		var byte := OS.read_buffer_from_stdin(1)
+		if byte.is_empty():
 			OS.delay_msec(15)
 			continue
-		pending += chunk.get_string_from_utf8()
-		var lines := pending.split("\n")
-		pending = lines[lines.size() - 1]
+		if byte[0] != 10:
+			pending.append_array(byte)
+			continue
+		var line := pending.get_string_from_utf8().strip_edges()
+		pending.clear()
 		_lock.lock()
 		_last_heard = Time.get_ticks_msec()
-		for i in lines.size() - 1:
-			var line := lines[i].strip_edges()
-			if not line.is_empty():
-				_inbox.append(line)
+		if not line.is_empty():
+			_inbox.append(line)
 		_lock.unlock()
 
 
@@ -156,6 +159,13 @@ func _check_app() -> void:
 
 
 func _process(delta: float) -> void:
+	if not _drawn:
+		# The first frames of a software renderer can take longer than the app's silence allowance;
+		# the count starts once the farm is on screen.
+		_drawn = true
+		_lock.lock()
+		_last_heard = Time.get_ticks_msec()
+		_lock.unlock()
 	_play_feed(delta)
 	_lock.lock()
 	var latest := "" if _inbox.is_empty() else _inbox[_inbox.size() - 1]
@@ -189,7 +199,10 @@ func _shoot_later(seconds: float) -> void:
 	await get_tree().create_timer(seconds).timeout
 	settled.emit()
 	await RenderingServer.frame_post_draw
-	get_viewport().get_texture().get_image().save_png("res://shot.png")
+	# An exported farm is packed and cannot write into itself; it keeps its still in user://.
+	var still := "res://shot.png" if OS.has_feature("editor") else "user://shot.png"
+	get_viewport().get_texture().get_image().save_png(still)
+	printerr("still: ", ProjectSettings.globalize_path(still))
 	get_tree().quit()
 
 
@@ -345,6 +358,11 @@ func _walk(delta: float) -> void:
 # --- sky ------------------------------------------------------------------------------------
 
 
+## The light over the diorama from the farm's night and weather.
+##
+## ponytail: the season is on every farm line and nothing here reads it, so the trees keep the same
+## greens and ambers all year. Upgrade: rebuild the tree crowns from a palette per season — blossom,
+## summer green, autumn amber, snow on their tops — whenever the season on the line changes.
 func _apply_sky(farm: Dictionary) -> void:
 	var night: bool = farm.get("night", false)
 	var weather := str(farm.get("weather", "CLEAR"))

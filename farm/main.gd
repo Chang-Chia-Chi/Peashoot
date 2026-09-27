@@ -546,7 +546,10 @@ func farmer_look(look: int) -> MultiMesh:
 	if _looks.has(look):
 		return _looks[look]
 	var name := "villager_a" if look == 0 else "villager_b"
-	var img := Image.load_from_file(ProjectSettings.globalize_path("res://art/%s.png" % name))
+	# Read as bytes through Godot's own file access: in an exported farm the picture lives inside
+	# the packed project, where no path on disk reaches it.
+	var img := Image.new()
+	img.load_png_from_buffer(FileAccess.get_file_as_bytes("res://art/%s.png" % name))
 	var rows := 30
 	var cols := int(round(img.get_width() * rows / float(img.get_height())))
 	img.resize(cols, rows, Image.INTERPOLATE_LANCZOS)
