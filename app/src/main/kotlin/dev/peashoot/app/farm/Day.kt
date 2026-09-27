@@ -90,9 +90,9 @@ private fun endDay(state: FarmState, session: String): FarmState {
     val card =
         EndOfDayCard(
             session = session,
-            // Not looked up: a session's villager is named by this same rule, so the card carries
-            // the right name even for a day only a helper was ever heard in.
-            villager = nameFor(session),
+            // The name the farm gave, which is not always the hash's: see [uniqueName]. A day only
+            // a helper was ever heard in has no villager for the session, and gets the hash's.
+            villager = state.villagers[session]?.name ?: nameFor(session),
             tokens = day.tokens,
             cost = day.cost,
             filesTouched = day.files.size,

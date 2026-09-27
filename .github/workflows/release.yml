@@ -36,14 +36,19 @@ jobs:
           - os: windows-latest
             task: packageMsi
             format: msi
+            farm: Windows
           # macos-latest is Apple Silicon, and jpackage builds for the machine it runs on, so
           # this DMG is arm64 only. An Intel Mac needs a second leg on macos-13; nobody has asked.
+          # No farm window on macOS yet (ADR 0003): an unsigned app inside the DMG would meet
+          # Gatekeeper on its own, and nobody has tried one there.
           - os: macos-latest
             task: packageDmg
             format: dmg
+            farm: ""
           - os: ubuntu-latest
             task: packageDeb
             format: deb
+            farm: Linux
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     steps:
@@ -92,10 +97,18 @@ jobs:
       #
       # If the Linux leg ever fails for a missing `fakeroot`, install it in a step above this one;
       # the runner image has carried it so far.
+      # The Godot farm window (ADR 0003), exported for this leg's OS by the same script a developer
+      # runs, and carried in the installer beside the proxy's jar. The app starts it when no
+      # PEASHOOT_GODOT is set.
+      - if: matrix.farm != ''
+        shell: bash
+        run: bash farm/export.sh ${{ matrix.farm }} build/farm
+
       - shell: bash
         env:
           VERSION: ${{ steps.version.outputs.version }}
-        run: ./gradlew :app:${{ matrix.task }} ${VERSION:+-Ppeashoot.version=$VERSION}
+          FARM: ${{ matrix.farm != '' && '-Ppeashoot.farm=build/farm' || '' }}
+        run: ./gradlew :app:${{ matrix.task }} ${VERSION:+-Ppeashoot.version=$VERSION} $FARM
 
       - uses: actions/upload-artifact@v7
         with:

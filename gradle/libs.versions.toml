@@ -1,5 +1,7 @@
 # Single source of truth for every version. Dependabot watches this file.
 [versions]
+# Not a Gradle dependency: the Godot that farm/export.sh exports the farm with, for releases.
+godot = "4.7-stable"
 archunit = "1.5.0"
 compose = "1.12.0"
 compose-rules = "0.6.6"

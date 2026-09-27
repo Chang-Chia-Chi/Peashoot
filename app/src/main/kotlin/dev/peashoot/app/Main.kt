@@ -24,6 +24,7 @@ import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontFamily
@@ -104,7 +105,11 @@ private fun proxyPort(env: (String) -> String? = System::getenv): Int =
  * worth testing is in [ControlClient], in [reduce] and in the pure halves of
  * `dev.peashoot.app.render`, none of which needs a window.
  */
-class AppModel(private val home: Path = homeDir(), private val port: Int = proxyPort()) {
+class AppModel(
+    private val home: Path = homeDir(),
+    private val port: Int = proxyPort(),
+    private val farmWindow: List<String>? = farmWindowCommand(),
+) {
     private val url = "http://127.0.0.1:$port"
 
     var status by mutableStateOf("looking for a proxy on $url")
@@ -150,6 +155,11 @@ class AppModel(private val home: Path = homeDir(), private val port: Int = proxy
             coroutineScope {
                 val polling = launch { pollHealth(client) }
                 val ticking = launch { tickFarm() }
+                // The Godot farm (ADR 0003), when one is configured: it is sent every farm this
+                // window folds, and a click in it opens the same pane a click on the canvas does.
+                val window = farmWindow?.let { command ->
+                    launch { runFarmWindow(command, snapshotFlow { farm }, panes::select) }
+                }
                 panes.attach(this, client)
                 control.attach(this, client)
                 client.events(lastId).collect { feed ->
@@ -162,6 +172,7 @@ class AppModel(private val home: Path = homeDir(), private val port: Int = proxy
                 // left to poll for, or to age; without this the scope would wait on them for ever.
                 polling.cancel()
                 ticking.cancel()
+                window?.cancel()
                 // Inside the scope, not in a `finally` around it: a pane's load is a child of this
                 // scope, so a `finally` outside would not run until that load had finished anyway
                 // — and the client is built with no request timeout, so a body fetch in flight
