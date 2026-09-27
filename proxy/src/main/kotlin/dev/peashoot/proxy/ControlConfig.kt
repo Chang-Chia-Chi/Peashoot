@@ -125,13 +125,15 @@ private suspend fun ControlApi.rewrite(body: JsonObject, running: JsonObject) {
 }
 
 /**
- * `POST /shutdown`: the answer is written, and then whoever started the server stops it. Here that
- * is `serve`, which closes the server and the store and lets the process end; a test holds the
- * server itself and closes it the same way.
+ * `POST /shutdown`: the answer is sent, and then whoever started the server stops it. Here that is
+ * `serve`, which closes the server and the store and lets the process end; a test holds the server
+ * itself and closes it the same way. Stopping the engine drops an answer it has not flushed yet, so
+ * the handler waits for the answer to be in the socket before it says so.
  */
 internal fun Route.shutdown(api: ControlApi) =
     endpoint(HttpMethod.Post, "shutdown") {
         call.json(buildJsonObject { put("stopping", true) })
+        call.awaitSent()
         api.stopping.complete(Unit)
     }
 
