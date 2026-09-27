@@ -57,6 +57,16 @@ const YELLOWING := Color(0.72, 0.68, 0.2)
 const SNOW := Color(0.95, 0.97, 1.0)
 const BARE := Color(0.42, 0.3, 0.2)
 const WINTER_LEAF := Color(0.1, 0.3, 0.18)
+const STRAW := Color(0.74, 0.62, 0.24)
+## What share of the flowers is out in each season, and in which colours.
+const FLOWERING := {"SPRING": 1.0, "SUMMER": 0.35, "AUTUMN": 0.22, "WINTER": 0.0}
+const BLOOMS := {
+	"SPRING":
+	[Color(1, 0.55, 0.7), Color(1, 0.88, 0.25), WHITE, Color(0.72, 0.55, 0.95), Color(1, 0.7, 0.8)],
+	"SUMMER": [Color(1, 0.88, 0.25), WHITE, Color(0.9, 0.2, 0.15)],
+	"AUTUMN": [Color(0.95, 0.55, 0.1), Color(0.95, 0.8, 0.2), WHITE],
+	"WINTER": [WHITE],
+}
 
 ## Studded bricks, and sloped bricks whose slope faces [code]yaw[/code] (0 = +z).
 ## The eight raised beds, empty: which crops grow in them is the live farm's business.
@@ -74,6 +84,8 @@ const BEDS: Array[Vector2i] = [
 var bricks := {}
 ## Tree crowns, painted by season: position to [kind, hue, shade, roll]; see [method _lollipop].
 var crowns := {}
+## Flowers in the grass, painted by season: position to [roll, pick]; see [method _flower_colour].
+var flowers := {}
 var slopes := {}
 var glows: Array[Vector3] = []
 var rng := RandomNumberGenerator.new()
@@ -86,6 +98,12 @@ var material: StandardMaterial3D
 var brick_mesh: Mesh
 var _crown_order: Array[Vector3i] = []
 var _crown_layer: MultiMeshInstance3D
+var _flower_order: Array[Vector3i] = []
+var _flower_layer: MultiMeshInstance3D
+## The grass and sand on top of the island, which snow covers: [index in the ground layer, colour
+## as built, whether it is grass, roll].
+var _ground: Array[Array] = []
+var _ground_layer: MultiMeshInstance3D
 ## A farmer as HD-2D pixel art built of tiny bricks: the sprite is read down to a small grid and
 ## every opaque pixel becomes a brick, two deep. Built once per look and shared by every farmer
 ## wearing it; the live farm stands each one up facing the camera.
@@ -523,16 +541,11 @@ func _details() -> void:
 		var ry := maxi(top(rk.x, rk.y), 0) + 1
 		box(rk.x, ry, rk.y, 3, 1, 2, STONE)
 		box(rk.x + 1, ry + 1, rk.y, 2, 1, 1, STONE_DARK)
-	for i in 160:
+	for i in 600:
 		var x := rng.randi_range(0, W)
 		var z := rng.randi_range(0, D)
 		if top(x, z) == GROUND and bricks.get(Vector3i(x, GROUND, z)) in [GRASS, GRASS_LIGHT]:
-			put(
-				x,
-				GROUND + 1,
-				z,
-				[Color(1, 0.55, 0.7), Color(1, 0.88, 0.25), WHITE][rng.randi() % 3]
-			)
+			flowers[Vector3i(x, GROUND + 1, z)] = [rng.randf(), rng.randf()]
 	for lamp in [Vector2i(24, 28), Vector2i(40, 28), Vector2i(70, 28)]:
 		box(lamp.x, GROUND + 1, lamp.y, 1, 4, 1, WOOD_DARK)
 		put(lamp.x, GROUND + 5, lamp.y, GLASS)
@@ -611,14 +624,44 @@ func _mini_brick(px: float) -> Mesh:
 	return st.commit()
 
 
-## Colours every tree for [param season], one of the reducer's WINTER, SPRING, SUMMER or AUTUMN:
-## blossom in spring, deep green in summer, turning in autumn, snow and bare wood in winter. Only
-## instance colours change, so it costs one pass over the crowns and nothing is rebuilt.
+## Dresses the island for [param season], one of the reducer's WINTER, SPRING, SUMMER or AUTUMN.
+## The trees: blossom in spring, deep green in summer, turning in autumn, snow and bare wood in
+## winter. The ground: fresh in spring, gold-flecked in autumn, under snow in winter. The flowers:
+## a meadow in spring, fewer through summer and autumn, none in winter. Only instances already
+## built are recoloured, or hidden, so nothing is rebuilt.
 func paint_season(season: String) -> void:
-	var mm := _crown_layer.multimesh
+	var leaves := _crown_layer.multimesh
 	for i in _crown_order.size():
 		var leaf: Array = crowns[_crown_order[i]]
-		mm.set_instance_color(i, _leaf_colour(season, leaf[0], leaf[1], leaf[2], leaf[3]))
+		leaves.set_instance_color(i, _leaf_colour(season, leaf[0], leaf[1], leaf[2], leaf[3]))
+	var ground := _ground_layer.multimesh
+	for g in _ground:
+		ground.set_instance_color(g[0], _ground_colour(season, g[1], g[2], g[3]))
+	var blooms := _flower_layer.multimesh
+	for i in _flower_order.size():
+		var p := _flower_order[i]
+		var flower: Array = flowers[p]
+		var out: bool = flower[0] < FLOWERING[season]
+		var palette: Array = BLOOMS[season]
+		var size := 1.0 if out else 0.0
+		var at := Vector3(p.x * B, p.y * H, p.z * B)
+		blooms.set_instance_transform(i, Transform3D(Basis().scaled(Vector3.ONE * size), at))
+		blooms.set_instance_color(i, palette[int(flower[1] * palette.size())])
+
+
+## The top of the island in [param season]. Snow leaves a little grass showing, and more of the
+## sand, which the sea keeps clearing.
+func _ground_colour(season: String, built: Color, grass: bool, roll: float) -> Color:
+	var colour := built
+	match season:
+		"WINTER":
+			var bare := 0.08 if grass else 0.45
+			colour = built.darkened(0.3) if roll < bare else SNOW.darkened(roll * 0.07)
+		"SPRING":
+			colour = built.lightened(0.1) if grass else built
+		"AUTUMN":
+			colour = built.lerp(STRAW, 0.15 + 0.3 * roll) if grass else built
+	return colour
 
 
 func _leaf_colour(season: String, kind: String, hue: Color, shade: int, roll: float) -> Color:
@@ -721,14 +764,12 @@ func _emit() -> void:
 		for n in around:
 			if not bricks.has(p + n):
 				var c: Color = bricks[p]
-				shown.append(
-					[
-						Transform3D(Basis(), Vector3(p.x * B, p.y * H, p.z * B)),
-						c * rng.randf_range(0.96, 1.04)
-					]
-				)
+				var jittered := c * rng.randf_range(0.96, 1.04)
+				if p.y <= GROUND and c in [GRASS, GRASS_LIGHT, SAND, SAND_DARK]:
+					_ground.append([shown.size(), jittered, c in [GRASS, GRASS_LIGHT], rng.randf()])
+				shown.append([Transform3D(Basis(), Vector3(p.x * B, p.y * H, p.z * B)), jittered])
 				break
-	instances(brick_mesh, shown, mat)
+	_ground_layer = instances(brick_mesh, shown, mat)
 	var leaves := []
 	for p in crowns:
 		for n in around:
@@ -737,6 +778,11 @@ func _emit() -> void:
 				leaves.append([Transform3D(Basis(), Vector3(p.x * B, p.y * H, p.z * B)), LEAF])
 				break
 	_crown_layer = instances(brick_mesh, leaves, mat)
+	var blooms := []
+	for p in flowers:
+		_flower_order.append(p)
+		blooms.append([Transform3D(Basis(), Vector3(p.x * B, p.y * H, p.z * B)), WHITE])
+	_flower_layer = instances(brick_mesh, blooms, mat)
 	paint_season("AUTUMN")
 	var wedges := []
 	for p in slopes:

@@ -361,9 +361,9 @@ func _walk(delta: float) -> void:
 
 ## The light over the diorama from the farm's night and weather, and the trees from its season.
 ##
-## ponytail: the season recolours the trees and nothing else, so a winter farm has snow on its
-## crowns and green grass under them. Upgrade: a winter ground (white on the grass, ice at the
-## shore) and spring flowers, if the trees alone ever stop saying which month it is.
+## ponytail: the season dresses the trees, the ground and the flowers, and leaves the roofs, the
+## sea and the weather alone, so winter rain still falls as rain. Upgrade: snow on the roofs and
+## snowflakes for winter rain, if a winter farm ever needs to look colder than its ground.
 func _apply_sky(farm: Dictionary) -> void:
 	var season := str(farm.get("season", "AUTUMN"))
 	if season != _season:
