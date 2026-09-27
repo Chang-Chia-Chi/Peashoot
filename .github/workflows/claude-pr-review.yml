@@ -64,7 +64,7 @@ jobs:
             fetch --no-tags --depth=1 origin "$BASE_SHA"
           git cat-file -e "$BASE_SHA^{commit}"
 
-      - uses: anthropics/claude-code-action@2261fcfc88e7de1b55f179edd588805e12de71f2 # v1.0.228
+      - uses: anthropics/claude-code-action@8cf3482550831fb35a4fc3fbf7ca139cf8028b4c # v1.0.233
         with:
           # Whichever of the two the repository has; the job does not start without one.
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
