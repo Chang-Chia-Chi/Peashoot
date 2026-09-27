@@ -34,6 +34,13 @@ const GLASS := Color(1.0, 0.82, 0.4)
 const BLACK := Color(0.1, 0.1, 0.1)
 const SKIN := Color(0.97, 0.78, 0.6)
 const HAY := Color(0.93, 0.78, 0.3)
+## What each kind's ripe crop looks like from across the table.
+const CROP_COLOURS := {
+	"turnip": Color(0.96, 0.95, 0.9),
+	"pumpkin": Color(0.97, 0.5, 0.05),
+	"tomato": Color(0.86, 0.1, 0.07),
+	"carrot": Color(1.0, 0.56, 0.1),
+}
 const LEAF := Color(0.14, 0.45, 0.14)
 const LEAF_LIGHT := Color(0.3, 0.6, 0.16)
 
@@ -189,15 +196,15 @@ func _room() -> void:
 	cam.fov = 30
 	var yaw := deg_to_rad(CAMERA_YAW)
 	var pitch := deg_to_rad(36.0)
-	var back := Vector3(sin(yaw) * cos(pitch), sin(pitch), cos(yaw) * cos(pitch)) * 38
+	var back := Vector3(sin(yaw) * cos(pitch), sin(pitch), cos(yaw) * cos(pitch)) * 31
 	cam.position = centre + back
 	cam.look_at_from_position(cam.position, centre + Vector3(0, 0.3, 0.6))
 	var a := CameraAttributesPractical.new()
 	a.dof_blur_far_enabled = true
-	a.dof_blur_far_distance = 42
+	a.dof_blur_far_distance = 35
 	a.dof_blur_far_transition = 10
 	a.dof_blur_near_enabled = true
-	a.dof_blur_near_distance = 31
+	a.dof_blur_near_distance = 25
 	a.dof_blur_near_transition = 5
 	a.dof_blur_amount = 0.14
 	cam.attributes = a
@@ -368,44 +375,30 @@ func _beds() -> void:
 				put(x, GROUND + 1, z, WOOD if rim else SOIL)
 
 
+## One crop in its 3 x 2 cell, readable from across the table at every stage: a bright sprout, a
+## leafy plant, the plant with its fruit coming, then the fruit ripe and big in the kind's colour.
 func crop(kind: String, stage: int, x: int, z: int) -> void:
 	var y := GROUND + 2
-	var green := LEAF_LIGHT
-	if stage == 0:
-		put(x + 1, y, z, green)
-		return
-	match kind:
-		"pumpkin":
-			box(x, y, z, 3, 1, 1, LEAF)
-			if stage >= 2:
-				var ripe := stage == 3
-				box(
-					x,
-					y,
-					z,
-					2 if not ripe else 3,
-					2,
-					2,
-					Color(0.96, 0.5, 0.06) if ripe else Color(0.45, 0.65, 0.2)
-				)
-				put(x + 1, y + 2, z, TRUNK)
-		"turnip":
-			if stage >= 2:
-				box(x, y, z, 2, 2, 2, WHITE)
-				box(x, y + 1, z, 2, 1, 2, Color(0.66, 0.34, 0.66))
-			box(x, y + (2 if stage >= 2 else 0), z, 2, stage, 1, green)
-		"carrot":
-			if stage == 3:
-				box(x, y, z, 2, 1, 2, Color(0.98, 0.5, 0.08))
-			box(x, y + (1 if stage == 3 else 0), z, 1, stage + 1, 1, green)
-			box(x + 1, y + (1 if stage == 3 else 0), z + 1, 1, stage, 1, LEAF)
+	var ripe: Color = CROP_COLOURS.get(kind, RED)
+	match stage:
+		0:
+			put(x + 1, y, z, LEAF_LIGHT)
+			put(x + 1, y + 1, z, LEAF_LIGHT)
+			put(x, y + 1, z + 1, LEAF_LIGHT)
+			put(x + 2, y + 1, z + 1, LEAF_LIGHT)
+		1:
+			box(x, y, z, 3, 1, 2, LEAF_LIGHT)
+			box(x + 1, y + 1, z, 1, 2, 2, LEAF)
+		2:
+			box(x, y, z, 3, 2, 2, LEAF)
+			box(x, y + 2, z, 3, 1, 1, LEAF_LIGHT)
+			box(x + 1, y + 1, z + 1, 1, 1, 1, ripe.lerp(LEAF_LIGHT, 0.55))
 		_:
-			box(x + 1, y, z, 1, stage + 2, 1, LEAF)
-			box(x, y + 1, z, 3, stage, 1, LEAF_LIGHT)
-			if stage >= 2:
-				var f := RED if stage == 3 else Color(0.5, 0.72, 0.2)
-				put(x, y + stage, z + 1, f)
-				put(x + 2, y + stage - 1, z + 1, f)
+			box(x, y, z, 3, 1, 2, LEAF)
+			box(x, y + 1, z, 3, 2, 2, ripe)
+			box(x + 1, y + 3, z, 1, 1, 1, LEAF_LIGHT)
+			if kind == "turnip":
+				box(x, y + 2, z, 3, 1, 2, Color(0.66, 0.34, 0.66))
 
 
 func _fence(x0: int, z0: int, x1: int, z1: int) -> void:
@@ -679,7 +672,7 @@ func _emit() -> void:
 		o.position = Vector3(g.x * B, g.y * H, g.z * B)
 		o.light_color = Color(1.0, 0.75, 0.4)
 		o.light_energy = 1.2
-		o.omni_range = 2.2
+		o.omni_range = 3.2
 		add_child(o)
 		lamps.append(o)
 	printerr("bricks shown: ", shown.size(), " slopes: ", wedges.size())

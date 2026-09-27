@@ -12,9 +12,20 @@ visible one as an instance of one brick mesh. The farmers are read from `art/vil
 `art/villager_b.png`, the owner's generated sprites, down to a 30-pixel-tall grid, one brick a
 pixel.
 
-Run it with Godot 4.7 (Forward+): `godot --path farm`. A still: `godot --path farm -- --shot`
-writes `farm/shot.png` after 40 frames; `docs/farm-godot.png` is one.
+It is live: `live.gd` reads one JSON farm per line — the app's `FarmState` as `Snapshot.kt` writes
+it — and moves the world to match. Each directory gets a raised bed and each file a crop, grown a
+stage per edit; each session is a farmer who walks to the well for every model call and home again,
+with `…` while it waits and `zzz` while it rests off a rate limit; replay is night with the
+lanterns lit; rain, storms and lightning follow the provider; the shipping bin shows the ledger.
+Clicking a farmer or a crop prints `{"villager": id}` or `{"crop": path}`, which the app turns into
+its detail pane.
 
-Not wired to the proxy yet: the fields, crops and farmers are placed by hand.
+- From the app: set `PEASHOOT_GODOT` to a Godot 4.7 executable (and `PEASHOOT_FARM_PROJECT` to this
+  directory if the app does not run from the repository root). The app starts
+  `godot --path farm -- --from-app`, writes farms to its stdin and an empty heartbeat line every five
+  seconds; the window closes itself after fifteen seconds of silence.
+- From a recording: `godot --path farm -- --feed farms.jsonl [--every 0.3] [--shot]` plays the lines
+  and, with `--shot`, writes `farm/shot.png` once they are done. `docs/farm-godot.png` is the README
+  demo's sixteen turns, recorded from the real app and played this way.
 
 Gate: `gdformat --check` and `gdlint` (gdtoolkit 4.x), on their defaults.

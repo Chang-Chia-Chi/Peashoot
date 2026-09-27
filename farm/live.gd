@@ -355,8 +355,8 @@ func _apply_sky(farm: Dictionary) -> void:
 		dim = 0.8
 	if night:
 		world.beam.light_color = Color(0.55, 0.65, 1.0)
-		world.beam.light_energy = _day["beam"] * 0.35 * dim
-		world.environment.ambient_light_energy = _day["ambient"] * 0.45
+		world.beam.light_energy = _day["beam"] * 0.5 * dim
+		world.environment.ambient_light_energy = _day["ambient"] * 0.75
 		world.fill.light_energy = _day["fill"] * 0.4
 	else:
 		world.beam.light_color = _day["beam_colour"]
@@ -364,7 +364,7 @@ func _apply_sky(farm: Dictionary) -> void:
 		world.environment.ambient_light_energy = _day["ambient"] * (0.6 + 0.4 * dim)
 		world.fill.light_energy = _day["fill"]
 	for lamp in world.lamps:
-		lamp.light_energy = 3.2 if night else 1.2
+		lamp.light_energy = 4.0 if night else 1.2
 	_rain.emitting = weather != "CLEAR"
 	_rain.amount = 260 if weather == "RAIN" else 600
 	var spills := 0
@@ -447,7 +447,7 @@ func _tag(text: String, size: int) -> Label3D:
 	var label := Label3D.new()
 	label.text = text
 	label.font_size = size
-	label.pixel_size = 0.004
+	label.pixel_size = 0.011
 	label.outline_size = 8
 	label.billboard = BaseMaterial3D.BILLBOARD_ENABLED
 	label.no_depth_test = true
