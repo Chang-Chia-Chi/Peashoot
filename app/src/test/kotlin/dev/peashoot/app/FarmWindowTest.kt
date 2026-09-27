@@ -59,11 +59,10 @@ class FarmWindowTest {
     }
 
     @Test
-    fun `no godot configured is no farm window, and one configured is told who its parent is`() {
+    fun `no godot configured is no farm window, and one configured is told it is fed by the app`() {
         assertNull(farmWindowCommand { null })
         val command = farmWindowCommand { if (it == "PEASHOOT_GODOT") "/opt/godot" else null }
-        assertEquals(listOf("/opt/godot", "--path", "farm", "--", "--parent"), command?.take(5))
-        assertEquals(ProcessHandle.current().pid().toString(), command?.last())
+        assertEquals(listOf("/opt/godot", "--path", "farm", "--", "--from-app"), command)
     }
 }
 

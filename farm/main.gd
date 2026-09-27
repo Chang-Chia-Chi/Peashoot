@@ -5,6 +5,10 @@ const H := 0.2
 const W := 96
 const D := 64
 const GROUND := 3
+## How tall a farmer stands, in world units: a little under two tiles.
+const FARMER_HEIGHT := 1.9
+## Which way the camera looks from, so a farmer can face it.
+const CAMERA_YAW := 28.0
 
 const GRASS := Color(0.3, 0.56, 0.16)
 const GRASS_LIGHT := Color(0.44, 0.66, 0.18)
@@ -34,10 +38,33 @@ const LEAF := Color(0.14, 0.45, 0.14)
 const LEAF_LIGHT := Color(0.3, 0.6, 0.16)
 
 ## Studded bricks, and sloped bricks whose slope faces [code]yaw[/code] (0 = +z).
+## The eight raised beds, empty: which crops grow in them is the live farm's business.
+const BEDS: Array[Vector2i] = [
+	Vector2i(20, 35),
+	Vector2i(32, 35),
+	Vector2i(8, 35),
+	Vector2i(44, 35),
+	Vector2i(20, 46),
+	Vector2i(32, 46),
+	Vector2i(8, 46),
+	Vector2i(44, 46)
+]
+
 var bricks := {}
 var slopes := {}
 var glows: Array[Vector3] = []
 var rng := RandomNumberGenerator.new()
+var environment: Environment
+var beam: SpotLight3D
+var fill: DirectionalLight3D
+var camera: Camera3D
+var lamps: Array[OmniLight3D] = []
+var material: StandardMaterial3D
+var brick_mesh: Mesh
+## A farmer as HD-2D pixel art built of tiny bricks: the sprite is read down to a small grid and
+## every opaque pixel becomes a brick, two deep. Built once per look and shared by every farmer
+## wearing it; the live farm stands each one up facing the camera.
+var _looks := {}
 
 
 func _ready() -> void:
@@ -47,20 +74,16 @@ func _ready() -> void:
 	_farmhouse(12, 12)
 	_barn(66, 8)
 	_well(44, 24)
-	_fields()
+	_beds()
 	_paddock(60, 34)
 	_trees()
 	_details()
-	_folk()
 	_emit()
-	_smoke(Vector3(24.5 * B, 21 * H, 15.5 * B))
+	_smoke(Vector3(9.5 * B, 24 * H, 17.5 * B))
 	_dust()
-	if "--shot" in OS.get_cmdline_user_args():
-		for i in 40:
-			await get_tree().process_frame
-		await RenderingServer.frame_post_draw
-		get_viewport().get_texture().get_image().save_png("res://shot.png")
-		get_tree().quit()
+	var live: Node3D = preload("res://live.gd").new()
+	live.world = self
+	add_child(live)
 
 
 func put(x: int, y: int, z: int, c: Color) -> void:
@@ -111,12 +134,13 @@ func _room() -> void:
 	e.adjustment_enabled = true
 	e.adjustment_saturation = 1.15
 	e.adjustment_contrast = 1.08
+	environment = e
 	var we := WorldEnvironment.new()
 	we.environment = e
 	add_child(we)
 	var centre := Vector3(W * B / 2, 0, D * B / 2)
 	# the window: one warm beam from the upper left, the room's only real light
-	var beam := SpotLight3D.new()
+	beam = SpotLight3D.new()
 	beam.position = centre + Vector3(-16, 18, -10)
 	beam.look_at_from_position(beam.position, centre + Vector3(2, 0, 2))
 	beam.light_color = Color(1.0, 0.84, 0.6)
@@ -124,11 +148,11 @@ func _room() -> void:
 	beam.spot_range = 60
 	beam.spot_angle = 30
 	beam.spot_angle_attenuation = 0.6
-	beam.light_volumetric_fog_energy = 0.5
+	beam.light_volumetric_fog_energy = 1.0
 	beam.shadow_enabled = true
 	beam.shadow_blur = 1.5
 	add_child(beam)
-	var fill := DirectionalLight3D.new()
+	fill = DirectionalLight3D.new()
 	fill.rotation_degrees = Vector3(-50, 40, 0)
 	fill.light_energy = 0.45
 	fill.light_color = Color(0.7, 0.78, 1.0)
@@ -161,8 +185,9 @@ func _room() -> void:
 	bench.material_override = wood
 	add_child(bench)
 	var cam := Camera3D.new()
+	camera = cam
 	cam.fov = 30
-	var yaw := deg_to_rad(28.0)
+	var yaw := deg_to_rad(CAMERA_YAW)
 	var pitch := deg_to_rad(36.0)
 	var back := Vector3(sin(yaw) * cos(pitch), sin(pitch), cos(yaw) * cos(pitch)) * 38
 	cam.position = centre + back
@@ -261,7 +286,20 @@ func _farmhouse(x: int, z: int) -> void:
 	for gx in [x + 3, x + 15]:
 		box(gx, y + 10, z + 5, 2, 2, 1, GLASS)
 	_gable(x - 1, y + 9, z - 1, 22, 14, ROOF)
-	box(x + 11, y + 9, z + 2, 2, 12, 2, STONE)
+	# the stone chimney stands outside the west gable, as in the owner's farmhouse
+	for yy in range(y, y + 19):
+		var w := 4 if yy < y + 8 else 3
+		for cx in range(x - w, x):
+			for cz in range(z + 4, z + 8):
+				put(cx, yy, cz, STONE if (cx + yy + cz) % 3 else STONE_DARK)
+	box(x - 3, y + 19, z + 4, 3, 1, 4, STONE_DARK)
+	# a dormer with a lit window on the front slope
+	box(x + 8, y + 11, z + 4, 5, 3, 3, LOG)
+	box(x + 9, y + 12, z + 7, 3, 2, 1, GLASS)
+	_gable(x + 7, y + 14, z + 3, 7, 5, ROOF)
+	# a barrel on the porch
+	box(x + 12, y + 1, z + 13, 2, 3, 2, WOOD)
+	box(x + 12, y + 2, z + 13, 2, 1, 2, STONE_DARK)
 	glows.append(Vector3(x + 5.5, y + 5, z + 15.5))
 	glows.append(Vector3(x + 15.5, y + 5, z + 15.5))
 	# the shipping bin by the door: a dark lidded box, the farm's ledger
@@ -283,7 +321,8 @@ func _barn(x: int, z: int) -> void:
 	for d in 6:
 		put(x + 5 + d, y + d, z + 13, WHITE)
 		put(x + 10 - d, y + d, z + 13, WHITE)
-	box(x + 7, y + 8, z + 12, 2, 1, 1, WHITE)
+	box(x + 6, y + 11, z + 11, 4, 3, 1, WHITE)
+	box(x + 7, y + 11, z + 12, 2, 2, 1, HAY)
 	# the curved roof: two steep courses, then a gentle slope to the ridge
 	var ry := y + 10
 	for k in 2:
@@ -303,6 +342,8 @@ func _barn(x: int, z: int) -> void:
 		for sz in range(z + 3, z + 8):
 			if Vector2(sx - (x + 20), sz - (z + 5)).length() <= 2.2:
 				put(sx, y + 22, sz, Color(0.7, 0.71, 0.73))
+	box(x + 20, y + 23, z + 5, 1, 3, 1, BLACK)
+	box(x + 19, y + 25, z + 5, 3, 1, 1, BLACK)
 
 
 func _well(x: int, z: int) -> void:
@@ -319,27 +360,15 @@ func _well(x: int, z: int) -> void:
 	box(x, y + 4, z, 1, 2, 1, WOOD)
 
 
-func _fields() -> void:
-	# two rows of four raised beds, each edged in wood, on the south side of the lane
-	var kinds := ["turnip", "pumpkin", "tomato", "carrot"]
-	var n := 0
-	for row in 2:
-		for col in 4:
-			var bx := 8 + col * 12
-			var bz := 35 + row * 11
-			for x in range(bx, bx + 11):
-				for z in range(bz, bz + 9):
-					var rim := x == bx or x == bx + 10 or z == bz or z == bz + 8
-					put(x, GROUND + 1, z, WOOD if rim else SOIL)
-			var count := rng.randi_range(5, 9)
-			for i in count:
-				_crop(
-					kinds[n % 4], rng.randi_range(0, 3), bx + 1 + (i % 3) * 3, bz + 1 + (i / 3) * 2
-				)
-			n += 1
+func _beds() -> void:
+	for bed in BEDS:
+		for x in range(bed.x, bed.x + 11):
+			for z in range(bed.y, bed.y + 9):
+				var rim := x == bed.x or x == bed.x + 10 or z == bed.y or z == bed.y + 8
+				put(x, GROUND + 1, z, WOOD if rim else SOIL)
 
 
-func _crop(kind: String, stage: int, x: int, z: int) -> void:
+func crop(kind: String, stage: int, x: int, z: int) -> void:
 	var y := GROUND + 2
 	var green := LEAF_LIGHT
 	if stage == 0:
@@ -448,6 +477,24 @@ func _trees() -> void:
 	]:
 		if top(spot.x, spot.y) == GROUND:
 			_lollipop(spot.x, spot.y, rng.randi_range(2, 3), autumn[rng.randi() % autumn.size()])
+	for i in 400:
+		var x := rng.randi_range(0, W)
+		var z := rng.randi_range(0, D)
+		var busy := (z > 18 and z < 58 and x > 4 and x < 88) or (x > 8 and x < 36 and z > 8)
+		busy = busy or (x > 60 and x < 92 and z < 22)
+		if _coast(x, z) < -0.22 and not busy and _room_for_tree(x, z):
+			if rng.randf() < 0.5:
+				_lollipop(x, z, 2, autumn[rng.randi() % autumn.size()])
+			else:
+				_lollipop(x, z, 2, LEAF if rng.randf() < 0.6 else LEAF_LIGHT)
+
+
+func _room_for_tree(x: int, z: int) -> bool:
+	for dx in range(-3, 4):
+		for dz in range(-3, 4):
+			if top(x + dx, z + dz) != GROUND or bricks.has(Vector3i(x + dx, GROUND + 1, z + dz)):
+				return false
+	return true
 
 
 func _details() -> void:
@@ -480,19 +527,6 @@ func _details() -> void:
 	box(84, GROUND + 1, 22, 3, 2, 2, HAY)
 
 
-func _figure(x: int, z: int, shirt: Color, hat: Color) -> void:
-	var y := GROUND + 1
-	box(x, y, z, 1, 2, 2, Color(0.2, 0.3, 0.62))
-	box(x + 2, y, z, 1, 2, 2, Color(0.2, 0.3, 0.62))
-	box(x, y + 2, z, 3, 2, 2, Color(0.22, 0.34, 0.68))
-	box(x, y + 4, z, 3, 2, 2, shirt)
-	box(x, y + 6, z, 3, 3, 3, SKIN)
-	put(x, y + 7, z + 3, BLACK)
-	put(x + 2, y + 7, z + 3, BLACK)
-	box(x - 1, y + 9, z - 1, 5, 1, 5, hat)
-	box(x, y + 10, z, 3, 1, 3, hat)
-
-
 func _cow(x: int, z: int) -> void:
 	var y := GROUND + 1
 	for lx in [0, 4]:
@@ -515,21 +549,15 @@ func _hen(x: int, z: int) -> void:
 	put(x + 2, y + 1, z, Color(1, 0.7, 0.1))
 
 
-func _folk() -> void:
-	_pixel_farmer("villager_a", Vector3(26 * B, (GROUND + 1) * H, 30 * B))
-	_pixel_farmer("villager_b", Vector3(47 * B, (GROUND + 1) * H, 30 * B))
-	_pixel_farmer("villager_a", Vector3(61 * B, (GROUND + 1) * H, 31 * B))
-	_pixel_farmer("villager_b", Vector3(36 * B, (GROUND + 1) * H, 27 * B))
-
-
-## A farmer as HD-2D pixel art built of tiny bricks: the sprite is read down to a small grid and
-## every opaque pixel becomes a brick, two deep, the figure turned to face the camera.
-func _pixel_farmer(name: String, at: Vector3) -> void:
+func farmer_look(look: int) -> MultiMesh:
+	if _looks.has(look):
+		return _looks[look]
+	var name := "villager_a" if look == 0 else "villager_b"
 	var img := Image.load_from_file(ProjectSettings.globalize_path("res://art/%s.png" % name))
 	var rows := 30
 	var cols := int(round(img.get_width() * rows / float(img.get_height())))
 	img.resize(cols, rows, Image.INTERPOLATE_LANCZOS)
-	var px := 1.9 / rows
+	var px := FARMER_HEIGHT / rows
 	var items := []
 	for y in rows:
 		for x in cols:
@@ -548,15 +576,8 @@ func _pixel_farmer(name: String, at: Vector3) -> void:
 	for i in items.size():
 		mm.set_instance_transform(i, Transform3D(Basis(), items[i][0]))
 		mm.set_instance_color(i, items[i][1])
-	var mi := MultiMeshInstance3D.new()
-	mi.multimesh = mm
-	var mat := StandardMaterial3D.new()
-	mat.vertex_color_use_as_albedo = true
-	mat.roughness = 0.35
-	mi.material_override = mat
-	mi.position = at
-	mi.rotation.y = deg_to_rad(28.0)
-	add_child(mi)
+	_looks[look] = mm
+	return mm
 
 
 func _mini_brick(px: float) -> Mesh:
@@ -599,7 +620,7 @@ func _slope_mesh() -> Mesh:
 	return st.commit()
 
 
-func _instances(mesh: Mesh, items: Array, mat: Material) -> void:
+func instances(mesh: Mesh, items: Array, mat: Material) -> MultiMeshInstance3D:
 	var mm := MultiMesh.new()
 	mm.transform_format = MultiMesh.TRANSFORM_3D
 	mm.use_colors = true
@@ -612,6 +633,7 @@ func _instances(mesh: Mesh, items: Array, mat: Material) -> void:
 	mi.multimesh = mm
 	mi.material_override = mat
 	add_child(mi)
+	return mi
 
 
 func _emit() -> void:
@@ -619,6 +641,8 @@ func _emit() -> void:
 	mat.vertex_color_use_as_albedo = true
 	mat.roughness = 0.3
 	mat.metallic_specular = 0.65
+	material = mat
+	brick_mesh = _brick_mesh()
 	var around := [
 		Vector3i(0, 1, 0),
 		Vector3i(1, 0, 0),
@@ -638,13 +662,13 @@ func _emit() -> void:
 					]
 				)
 				break
-	_instances(_brick_mesh(), shown, mat)
+	instances(brick_mesh, shown, mat)
 	var wedges := []
 	for p in slopes:
 		var s: Array = slopes[p]
 		var t := Transform3D(Basis(Vector3.UP, s[1]), Vector3(p.x * B, p.y * H, p.z * B))
 		wedges.append([t, s[0]])
-	_instances(_slope_mesh(), wedges, mat)
+	instances(_slope_mesh(), wedges, mat)
 	var lit := StandardMaterial3D.new()
 	lit.albedo_color = GLASS
 	lit.emission_enabled = true
@@ -657,17 +681,18 @@ func _emit() -> void:
 		o.light_energy = 1.2
 		o.omni_range = 2.2
 		add_child(o)
+		lamps.append(o)
 	printerr("bricks shown: ", shown.size(), " slopes: ", wedges.size())
 
 
 func _dust() -> void:
 	var p := CPUParticles3D.new()
-	p.amount = 160
+	p.amount = 70
 	p.lifetime = 12.0
 	p.preprocess = 12.0
 	p.emission_shape = CPUParticles3D.EMISSION_SHAPE_BOX
-	p.emission_box_extents = Vector3(14, 5, 10)
-	p.position = Vector3(W * B / 2 - 4, 6, D * B / 2 - 3)
+	p.emission_box_extents = Vector3(5, 4, 4)
+	p.position = Vector3(W * B / 2 - 7, 7, D * B / 2 - 5)
 	p.gravity = Vector3(0, 0.02, 0)
 	p.initial_velocity_min = 0.05
 	p.initial_velocity_max = 0.2

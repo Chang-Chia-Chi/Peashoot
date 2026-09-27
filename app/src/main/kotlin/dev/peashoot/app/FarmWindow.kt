@@ -3,14 +3,18 @@ package dev.peashoot.app
 import dev.peashoot.app.farm.FarmState
 import dev.peashoot.app.farm.snapshot
 import dev.peashoot.app.render.Hit
+import java.io.BufferedWriter
 import java.io.IOException
 import java.lang.ProcessBuilder.Redirect
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.conflate
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.SerializationException
 import kotlinx.serialization.json.Json
@@ -25,10 +29,14 @@ private const val PROJECT_ENV = "PEASHOOT_FARM_PROJECT"
 private const val DEFAULT_PROJECT = "farm"
 
 /**
- * How to start the farm window, or null when no Godot is configured. The window is told the app's
- * own process id so that it can close itself when the app is gone: a pipe that has been closed
- * reads the same as one with nothing on it yet, so it cannot tell by reading.
+ * How often the app says it is still there: an empty line, so that a window whose app has gone
+ * closes itself. A pipe that has been closed reads the same as one with
+ * nothing on it yet, and Godot can only ask after its own children, not its parent, so silence is
+ * the one sign it has; it gives up after three of these go missing.
  */
+private const val HEARTBEAT_MILLIS = 5_000L
+
+/** How to start the farm window, or null when no Godot is configured. */
 internal fun farmWindowCommand(env: (String) -> String? = System::getenv): List<String>? {
     val godot = env(GODOT_ENV)?.takeIf { it.isNotBlank() } ?: return null
     val project = env(PROJECT_ENV)?.takeIf { it.isNotBlank() } ?: DEFAULT_PROJECT
@@ -37,8 +45,7 @@ internal fun farmWindowCommand(env: (String) -> String? = System::getenv): List<
         "--path",
         project,
         "--",
-        "--parent",
-        ProcessHandle.current().pid().toString(),
+        "--from-app",
     )
 }
 
@@ -95,13 +102,7 @@ internal suspend fun runFarmWindow(
             val writing =
                 launch(Dispatchers.IO) {
                     try {
-                        process.outputStream.bufferedWriter().use { out ->
-                            farms.conflate().collect { farm ->
-                                out.write(snapshot(farm))
-                                out.newLine()
-                                out.flush()
-                            }
-                        }
+                        process.outputStream.bufferedWriter().use { writeFarms(it, farms) }
                     } catch (_: IOException) {
                         // The window has gone; the reader below sees it end and so does the scope.
                     }
@@ -121,5 +122,29 @@ internal suspend fun runFarmWindow(
         }
     } finally {
         process.destroy()
+    }
+}
+
+/**
+ * Every farm as a line, and an empty line every [HEARTBEAT_MILLIS] whatever the farm is doing. Both
+ * go through one lock, so a heartbeat never lands in the middle of a farm.
+ */
+private suspend fun writeFarms(out: BufferedWriter, farms: Flow<FarmState>) = coroutineScope {
+    val lock = Mutex()
+    launch {
+        while (true) {
+            delay(HEARTBEAT_MILLIS)
+            lock.withLock {
+                out.newLine()
+                out.flush()
+            }
+        }
+    }
+    farms.conflate().collect { farm ->
+        lock.withLock {
+            out.write(snapshot(farm))
+            out.newLine()
+            out.flush()
+        }
     }
 }
