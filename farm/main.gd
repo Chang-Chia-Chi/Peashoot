@@ -154,6 +154,8 @@ func _world() -> void:
 		Vector3(19.1, 0, 4.8)
 	]:
 		sprite("chicken", at, 0.62)
+	for at in [Vector3(22.5, 0, 3.2), Vector3(24.6, 0, 4.6)]:
+		sprite("cow", at, 0.95)
 	for v in [
 		[Vector3(2.0, 0, 6.0), "a"],
 		[Vector3(7.0, 0, 6.0), "b"],
