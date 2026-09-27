@@ -7,7 +7,8 @@ Octopath-style pixel sprites built of tiny bricks and turned to face the camera;
 Seasons farm — a farmhouse with its shipping bin and porch lanterns, raised beds, a well by an apple
 tree, a barn and silo, a paddock of cows and hens, a pier. The island follows the farm's season:
 blossom and a meadow of flowers in spring, deep green in summer, gold trees, red apples and
-straw-flecked grass in autumn, and snow over the ground, the roofs and the crowns in winter.
+straw-flecked grass in autumn, and in winter snow over the ground, the roofs and the crowns, ice
+along the shore, and snow rather than rain when the provider has a bad day.
 
 The world is built from code: `main.gd` places bricks and sloped bricks in a grid and draws every
 visible one as an instance of one brick mesh. The farmers are read from `art/villager_a.png` and

@@ -70,6 +70,7 @@ var _labels: Array[Label3D] = []
 var _bin_label: Label3D
 var _badge: Label
 var _rain: CPUParticles3D
+var _snow: CPUParticles3D
 var _day := {}
 var _weather := "CLEAR"
 var _season := "AUTUMN"
@@ -361,9 +362,9 @@ func _walk(delta: float) -> void:
 
 ## The light over the diorama from the farm's night and weather, and the trees from its season.
 ##
-## ponytail: the season dresses the trees, the ground, the roofs and the flowers, and leaves the
-## sea and the weather alone, so winter rain still falls as rain. Upgrade: snowflakes for winter
-## rain and ice at the shore, if a winter farm ever needs to look colder than its ground.
+## ponytail: the season dresses the island and turns winter rain to snow, but leaves the light
+## alone, so a winter day has the same warm sun as an autumn one. Upgrade: a paler, cooler sun in
+## winter, if the snow alone ever stops saying it is cold.
 func _apply_sky(farm: Dictionary) -> void:
 	var season := str(farm.get("season", "AUTUMN"))
 	if season != _season:
@@ -388,8 +389,13 @@ func _apply_sky(farm: Dictionary) -> void:
 		world.fill.light_energy = _day["fill"]
 	for lamp in world.lamps:
 		lamp.light_energy = 4.0 if night else 1.2
-	_rain.emitting = weather != "CLEAR"
+	var winter := season == "WINTER"
+	_rain.emitting = weather != "CLEAR" and not winter
 	_rain.amount = 260 if weather == "RAIN" else 600
+	_snow.emitting = weather != "CLEAR" and winter
+	_snow.amount = 420 if weather == "RAIN" else 900
+	# a storm drives the snow sideways
+	_snow.direction = Vector3(0.2, -1, 0) if weather == "RAIN" else Vector3(1.2, -1, 0.3)
 	var spills := 0
 	for v in farm.get("villagers", []):
 		spills += int(v.get("spills", 0))
@@ -422,6 +428,35 @@ func _weather_fx() -> void:
 	streak.material = m
 	_rain.mesh = streak
 	add_child(_rain)
+	_snowfall()
+
+
+## Winter's rain: slow flakes that are tiny white bricks, tumbling as they fall. It starts with the
+## air already full, rather than a first flake taking seconds to reach the ground.
+func _snowfall() -> void:
+	_snow = CPUParticles3D.new()
+	_snow.emitting = false
+	_snow.amount = 420
+	_snow.lifetime = 7.0
+	_snow.preprocess = 7.0
+	_snow.emission_shape = CPUParticles3D.EMISSION_SHAPE_BOX
+	_snow.emission_box_extents = Vector3(15, 0.5, 11)
+	_snow.position = Vector3(world.W * world.B / 2, 9, world.D * world.B / 2)
+	_snow.spread = 25
+	_snow.gravity = Vector3(0, -0.4, 0)
+	_snow.initial_velocity_min = 1.0
+	_snow.initial_velocity_max = 1.6
+	_snow.particle_flag_rotate_y = true
+	_snow.angular_velocity_min = -180
+	_snow.angular_velocity_max = 180
+	var flake := BoxMesh.new()
+	flake.size = Vector3(0.05, 0.04, 0.05)
+	var m := StandardMaterial3D.new()
+	m.albedo_color = Color(0.97, 0.98, 1.0)
+	m.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	flake.material = m
+	_snow.mesh = flake
+	add_child(_snow)
 
 
 # --- words ----------------------------------------------------------------------------------

@@ -58,6 +58,7 @@ const SNOW := Color(0.95, 0.97, 1.0)
 const BARE := Color(0.42, 0.3, 0.2)
 const WINTER_LEAF := Color(0.1, 0.3, 0.18)
 const STRAW := Color(0.74, 0.62, 0.24)
+const ICE := Color(0.7, 0.84, 0.95)
 ## What share of the flowers is out in each season, and in which colours.
 const FLOWERING := {"SPRING": 1.0, "SUMMER": 0.35, "AUTUMN": 0.22, "WINTER": 0.0}
 const BLOOMS := {
@@ -89,6 +90,8 @@ var flowers := {}
 var slopes := {}
 ## Where the roofs are, which winter covers in snow; see [method _gable].
 var roofs := {}
+## The sea near the island, which freezes in winter: position to how far out it is, 0 at the beach.
+var shore := {}
 var glows: Array[Vector3] = []
 var rng := RandomNumberGenerator.new()
 var environment: Environment
@@ -110,6 +113,9 @@ var _ground_layer: MultiMeshInstance3D
 ## built, roll].
 var _roof_bricks: Array[Array] = []
 var _roof_wedges: Array[Array] = []
+## The sea near the island, in the ground layer: [index, colour as built, how far out,
+## roll].
+var _shore: Array[Array] = []
 var _slope_layer: MultiMeshInstance3D
 ## A farmer as HD-2D pixel art built of tiny bricks: the sprite is read down to a small grid and
 ## every opaque pixel becomes a brick, two deep. Built once per look and shared by every farmer
@@ -274,6 +280,8 @@ func _island() -> void:
 				elif edge < 0.16 and rng.randf() < 0.35:
 					c = FOAM_BLUE
 				put(x, 0, z, c)
+				if edge < 0.9:
+					shore[Vector3i(x, 0, z)] = edge
 				continue
 			var height := GROUND
 			if edge > -0.1:
@@ -640,8 +648,9 @@ func _mini_brick(px: float) -> Mesh:
 ## Dresses the island for [param season], one of the reducer's WINTER, SPRING, SUMMER or AUTUMN.
 ## The trees: blossom in spring, deep green in summer, turning in autumn, snow and bare wood in
 ## winter. The ground: fresh in spring, gold-flecked in autumn, under snow in winter, as are the
-## roofs. The flowers: a meadow in spring, fewer through summer and autumn, none in winter. Only
-## instances already built are recoloured, or hidden, so nothing is rebuilt.
+## roofs, with ice on the sea along the shore. The flowers: a meadow in spring, fewer through
+## summer and autumn, none in winter. Only instances already built are recoloured, or hidden, so
+## nothing is rebuilt.
 func paint_season(season: String) -> void:
 	var leaves := _crown_layer.multimesh
 	for i in _crown_order.size():
@@ -652,6 +661,8 @@ func paint_season(season: String) -> void:
 		ground.set_instance_color(g[0], _ground_colour(season, g[1], g[2], g[3]))
 	for r in _roof_bricks:
 		ground.set_instance_color(r[0], _roof_colour(season, r[1], r[2]))
+	for w in _shore:
+		ground.set_instance_color(w[0], _sea_colour(season, w[1], w[2], w[3]))
 	var wedges := _slope_layer.multimesh
 	for r in _roof_wedges:
 		wedges.set_instance_color(r[0], _roof_colour(season, r[1], r[2]))
@@ -684,6 +695,14 @@ func _roof_colour(season: String, built: Color, roll: float) -> Color:
 	if season != "WINTER" or roll < 0.1:
 		return built
 	return SNOW.darkened(roll * 0.06)
+
+
+## The sea in [param season]: in winter it freezes along the beach, and breaks into floes further
+## out, where [param out] runs from 0 at the sand to 0.9, past which the sea stays open.
+func _sea_colour(season: String, built: Color, out: float, roll: float) -> Color:
+	if season != "WINTER" or roll > 1.4 - out * 1.6:
+		return built
+	return ICE.lightened(roll * 0.35)
 
 
 ## The top of the island in [param season]. Snow leaves a little grass showing, and more of the
@@ -806,6 +825,8 @@ func _emit() -> void:
 					_ground.append([shown.size(), jittered, c in [GRASS, GRASS_LIGHT], rng.randf()])
 				if _open_roof(p):
 					_roof_bricks.append([shown.size(), jittered, _roll(p)])
+				if shore.has(p):
+					_shore.append([shown.size(), jittered, shore[p], _roll(p)])
 				shown.append([Transform3D(Basis(), Vector3(p.x * B, p.y * H, p.z * B)), jittered])
 				break
 	_ground_layer = instances(brick_mesh, shown, mat)
