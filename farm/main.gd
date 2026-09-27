@@ -43,6 +43,20 @@ const CROP_COLOURS := {
 }
 const LEAF := Color(0.14, 0.45, 0.14)
 const LEAF_LIGHT := Color(0.3, 0.6, 0.16)
+## The crowns through the year, dark to light where there are three; see [method paint_season].
+const SPRING_LEAVES: Array[Color] = [
+	Color(0.22, 0.52, 0.18), Color(0.36, 0.66, 0.2), Color(0.55, 0.8, 0.28)
+]
+const SUMMER_LEAVES: Array[Color] = [
+	Color(0.08, 0.34, 0.1), Color(0.14, 0.46, 0.13), Color(0.28, 0.58, 0.15)
+]
+const BLOSSOM := Color(1.0, 0.95, 0.97)
+const PINK_BLOSSOM := Color(1.0, 0.72, 0.82)
+const GREEN_APPLE := Color(0.55, 0.75, 0.2)
+const YELLOWING := Color(0.72, 0.68, 0.2)
+const SNOW := Color(0.95, 0.97, 1.0)
+const BARE := Color(0.42, 0.3, 0.2)
+const WINTER_LEAF := Color(0.1, 0.3, 0.18)
 
 ## Studded bricks, and sloped bricks whose slope faces [code]yaw[/code] (0 = +z).
 ## The eight raised beds, empty: which crops grow in them is the live farm's business.
@@ -58,6 +72,8 @@ const BEDS: Array[Vector2i] = [
 ]
 
 var bricks := {}
+## Tree crowns, painted by season: position to [kind, hue, shade, roll]; see [method _lollipop].
+var crowns := {}
 var slopes := {}
 var glows: Array[Vector3] = []
 var rng := RandomNumberGenerator.new()
@@ -68,6 +84,8 @@ var camera: Camera3D
 var lamps: Array[OmniLight3D] = []
 var material: StandardMaterial3D
 var brick_mesh: Mesh
+var _crown_order: Array[Vector3i] = []
+var _crown_layer: MultiMeshInstance3D
 ## A farmer as HD-2D pixel art built of tiny bricks: the sprite is read down to a small grid and
 ## every opaque pixel becomes a brick, two deep. Built once per look and shared by every farmer
 ## wearing it; the live farm stands each one up facing the camera.
@@ -424,25 +442,26 @@ func _paddock(x: int, z: int) -> void:
 		_hen(h.x, h.y)
 
 
-func _lollipop(x: int, z: int, r: int, leaf: Color, apples := false) -> void:
+## A round tree: a trunk and a crown. The crown's bricks are not coloured here but remembered:
+## which kind of tree, how high in the crown, and a roll of the dice for blossom, fruit and
+## yellowing, so that [method paint_season] can colour the whole wood for the month without
+## rebuilding it. [param kind] is "apple", "evergreen" (green all year) or "turning" (it turns
+## [param hue] in autumn and goes bare in winter).
+func _lollipop(x: int, z: int, r: int, kind: String, hue := LEAF) -> void:
 	var y := top(x, z) + 1
 	box(x, y, z, 1, r + 2, 1, TRUNK)
 	var cy := y + r + 2 + r - 1
-	var light := leaf.lightened(0.18)
-	var dark := leaf.darkened(0.2)
 	for dx in range(-r, r + 1):
 		for dy in range(-r, r + 1):
 			for dz in range(-r, r + 1):
 				if Vector3(dx, dy * 1.25, dz).length() > r + 0.35:
 					continue
-				var c := leaf
+				var shade := 1
 				if dy >= r - 1:
-					c = light
+					shade = 2
 				elif dy <= -r + 1:
-					c = dark
-				if apples and rng.randf() < 0.12:
-					c = RED
-				put(x + dx, cy + dy, z + dz, c)
+					shade = 0
+				crowns[Vector3i(x + dx, cy + dy, z + dz)] = [kind, hue, shade, rng.randf()]
 
 
 func _trees() -> void:
@@ -452,8 +471,8 @@ func _trees() -> void:
 		Color(0.55, 0.62, 0.12),
 		Color(0.8, 0.3, 0.06)
 	]
-	_lollipop(52, 22, 3, LEAF, true)
-	_lollipop(88, 26, 3, LEAF, true)
+	_lollipop(52, 22, 3, "apple")
+	_lollipop(88, 26, 3, "apple")
 	for spot in [
 		Vector2i(8, 6),
 		Vector2i(14, 4),
@@ -469,7 +488,8 @@ func _trees() -> void:
 		Vector2i(88, 52)
 	]:
 		if top(spot.x, spot.y) == GROUND:
-			_lollipop(spot.x, spot.y, rng.randi_range(2, 3), autumn[rng.randi() % autumn.size()])
+			var hue: Color = autumn[rng.randi() % autumn.size()]
+			_lollipop(spot.x, spot.y, rng.randi_range(2, 3), "turning", hue)
 	for i in 400:
 		var x := rng.randi_range(0, W)
 		var z := rng.randi_range(0, D)
@@ -477,9 +497,9 @@ func _trees() -> void:
 		busy = busy or (x > 60 and x < 92 and z < 22)
 		if _coast(x, z) < -0.22 and not busy and _room_for_tree(x, z):
 			if rng.randf() < 0.5:
-				_lollipop(x, z, 2, autumn[rng.randi() % autumn.size()])
+				_lollipop(x, z, 2, "turning", autumn[rng.randi() % autumn.size()])
 			else:
-				_lollipop(x, z, 2, LEAF if rng.randf() < 0.6 else LEAF_LIGHT)
+				_lollipop(x, z, 2, "evergreen", LEAF if rng.randf() < 0.6 else LEAF_LIGHT)
 
 
 func _room_for_tree(x: int, z: int) -> bool:
@@ -591,6 +611,56 @@ func _mini_brick(px: float) -> Mesh:
 	return st.commit()
 
 
+## Colours every tree for [param season], one of the reducer's WINTER, SPRING, SUMMER or AUTUMN:
+## blossom in spring, deep green in summer, turning in autumn, snow and bare wood in winter. Only
+## instance colours change, so it costs one pass over the crowns and nothing is rebuilt.
+func paint_season(season: String) -> void:
+	var mm := _crown_layer.multimesh
+	for i in _crown_order.size():
+		var leaf: Array = crowns[_crown_order[i]]
+		mm.set_instance_color(i, _leaf_colour(season, leaf[0], leaf[1], leaf[2], leaf[3]))
+
+
+func _leaf_colour(season: String, kind: String, hue: Color, shade: int, roll: float) -> Color:
+	match season:
+		"SPRING":
+			return _spring_leaf(kind, shade, roll)
+		"SUMMER":
+			return _summer_leaf(kind, shade, roll)
+		"WINTER":
+			return _winter_leaf(kind, shade, roll)
+	return _autumn_leaf(kind, hue, shade, roll)
+
+
+func _spring_leaf(kind: String, shade: int, roll: float) -> Color:
+	if kind == "apple" and roll < 0.25:
+		return BLOSSOM
+	if kind == "turning" and roll < 0.35:
+		return PINK_BLOSSOM
+	return SPRING_LEAVES[shade]
+
+
+func _summer_leaf(kind: String, shade: int, roll: float) -> Color:
+	if kind == "apple" and roll < 0.12:
+		return GREEN_APPLE
+	return SUMMER_LEAVES[shade]
+
+
+func _winter_leaf(kind: String, shade: int, roll: float) -> Color:
+	if shade == 2 or roll < 0.15:
+		return SNOW
+	var bough := BARE if kind == "turning" else WINTER_LEAF
+	return bough.darkened(0.15 * (1 - shade))
+
+
+func _autumn_leaf(kind: String, hue: Color, shade: int, roll: float) -> Color:
+	if kind == "apple" and roll < 0.12:
+		return RED
+	if kind == "evergreen" and roll < 0.25:
+		return YELLOWING
+	return [hue.darkened(0.2), hue, hue.lightened(0.18)][shade]
+
+
 func _brick_mesh() -> Mesh:
 	var st := SurfaceTool.new()
 	var cube := BoxMesh.new()
@@ -659,6 +729,15 @@ func _emit() -> void:
 				)
 				break
 	instances(brick_mesh, shown, mat)
+	var leaves := []
+	for p in crowns:
+		for n in around:
+			if not crowns.has(p + n) and not bricks.has(p + n):
+				_crown_order.append(p)
+				leaves.append([Transform3D(Basis(), Vector3(p.x * B, p.y * H, p.z * B)), LEAF])
+				break
+	_crown_layer = instances(brick_mesh, leaves, mat)
+	paint_season("AUTUMN")
 	var wedges := []
 	for p in slopes:
 		var s: Array = slopes[p]

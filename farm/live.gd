@@ -72,6 +72,7 @@ var _badge: Label
 var _rain: CPUParticles3D
 var _day := {}
 var _weather := "CLEAR"
+var _season := "AUTUMN"
 var _spills := 0
 var _flash := 0.0
 
@@ -358,12 +359,16 @@ func _walk(delta: float) -> void:
 # --- sky ------------------------------------------------------------------------------------
 
 
-## The light over the diorama from the farm's night and weather.
+## The light over the diorama from the farm's night and weather, and the trees from its season.
 ##
-## ponytail: the season is on every farm line and nothing here reads it, so the trees keep the same
-## greens and ambers all year. Upgrade: rebuild the tree crowns from a palette per season — blossom,
-## summer green, autumn amber, snow on their tops — whenever the season on the line changes.
+## ponytail: the season recolours the trees and nothing else, so a winter farm has snow on its
+## crowns and green grass under them. Upgrade: a winter ground (white on the grass, ice at the
+## shore) and spring flowers, if the trees alone ever stop saying which month it is.
 func _apply_sky(farm: Dictionary) -> void:
+	var season := str(farm.get("season", "AUTUMN"))
+	if season != _season:
+		_season = season
+		world.paint_season(season)
 	var night: bool = farm.get("night", false)
 	var weather := str(farm.get("weather", "CLEAR"))
 	var dim := 1.0
