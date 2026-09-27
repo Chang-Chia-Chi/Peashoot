@@ -1,11 +1,9 @@
 # Style studies
 
-Two looks for the farm, each a self-contained Godot 4.7 project built entirely from code — no art
-files — so the owner can compare them against the sprite scene in `farm/`:
+Looks the farm was compared in before the owner chose nanoblock bricks (now `farm/` itself):
 
-- `bricks/`: a nanoblock-style island of studded bricks. Still: `docs/farm-study-bricks.png`.
-- `toy/`: a smooth toy diorama in a display case — vegetable houses, bumpy trees, big-headed
-  farmers, a painted sky. Still: `docs/farm-study-toy.png`.
+- `sprites/`: HD-2D, the owner's generated pixel-art sprites standing upright in a tilted 3D world.
+- `toy/`: a smooth toy diorama in a display case, built from code. Still: `docs/farm-study-toy.png`.
 
-`godot --path farm/studies/toy -- --shot` writes `shot.png` beside it. Studies, not the farm: not
-gated by gdlint and not wired to anything.
+Each is a self-contained Godot 4.7 project; `godot --path farm/studies/toy -- --shot` writes
+`shot.png` beside it. Studies, not the farm: not gated and not wired to anything.

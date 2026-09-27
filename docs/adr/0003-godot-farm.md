@@ -1,6 +1,6 @@
 # The farm moves to Godot; the farm's logic stays in Kotlin
 
-Status: Accepted — decided by the owner on 2026-09-26; not yet built
+Status: Accepted — decided by the owner on 2026-09-26; the style revised by the owner on 2026-09-27 (below)
 
 The Compose farm renderer never adopted the village the design canvas proposed (the "Peashoot Village" canvas, 2026-09-20), and what it draws — a flat top-down field of Kenney Tiny Town and Tiny Farm tiles at 3x — is neither charming nor legible: `docs/farm.gif` shows a dark field with no crops, lanterns cut in half by the window edge, and nothing that says what a villager, a field or the well stands for. The owner's references are HD-2D pixel art in the manner of Octopath Traveler and Story of Seasons: a tilted, looking-down camera, detailed sprites, warm grading, sunbeams, depth of field.
 
@@ -15,6 +15,19 @@ Decided:
 - **The world, as the study laid it out:** a farmhouse where idle sessions wait, the well under an apple tree on the lane (model calls), villagers queueing on the lane, eight fenced plots (directories; crops are files; the rest counted as "+N fields"), the barn and its crate (the cost ledger), animals and trees for life, and a one-line key on screen.
 - **GDScript is gated by `gdformat` and `gdlint`** (gdtoolkit, from PyPI) on their defaults, locally and in CI, the way ktfmt and detekt gate Kotlin.
 - **The Compose farm is retired** once the Godot farm is live: one farm to maintain.
+
+## Revised: nanoblock bricks, built from code
+
+After seeing the sprite scene, and photos of a nanoblock island and a museum display case, the owner
+chose **nanoblock bricks enhanced with the original HD-2D look and a Story of Seasons farm**. So the
+first two decisions above change: the farm is no longer drawn from generated sprites, and it is
+built entirely from code — every building, crop, animal and farmer is a set of studded bricks in a
+grid, drawn as instances of one brick mesh. The HD-2D part is the light and the camera (a low warm
+sun, volumetric light, glow, dust, depth of field); the Story of Seasons part is what stands on the
+island. People and animals are therefore real 3D, and a new crop or animal is code, not a new image
+to ask for. Everything else here — Godot as a child process, the reducer in Kotlin, slots, the
+GDScript gate, retiring the Compose farm — stands. The sprite scene and a toy-diorama study are kept
+in `farm/studies/` for comparison.
 
 ## Considered options
 

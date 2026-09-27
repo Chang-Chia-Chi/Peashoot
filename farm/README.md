@@ -1,16 +1,17 @@
-# The Godot farm (look prototype)
+# The Godot farm
 
-What the farm will look like, per `docs/adr/0003-godot-farm.md`: a tilted camera, the owner's
-generated sprites standing upright, a low warm sun with shadows, volumetric light, depth of field,
-glow, dust and chimney smoke. Not wired to the proxy yet — the world is placed by hand in `main.gd`.
+The farm as the owner chose it (`docs/adr/0003-godot-farm.md`): a nanoblock-style island of studded
+bricks, lit the HD-2D way — a low warm sun with light shafts, glow, soft shadows, drifting dust,
+chimney smoke and a tilt-shift depth of field — with a Story of Seasons farm on it: a farmhouse with
+its shipping bin at the door, fenced fields, a well by an apple tree, a barn and silo, a paddock of
+animals, and a forest round the shore.
+
+Everything is built from code: `main.gd` places bricks in a grid and draws every brick that can be
+seen as one instance of one studded-brick mesh. No art files.
 
 Run it with Godot 4.7 (Forward+): `godot --path farm`. A still: `godot --path farm -- --shot`
-writes `farm/shot.png` after 40 frames.
+writes `farm/shot.png` after 40 frames; `docs/farm-godot.png` is one.
 
-Art in `art/`: `farmhouse`, `barn`, `well`, `apple_tree`, `chicken`, `cow`, and `pumpkin`, `turnip`,
-`carrot`, `tomato` at stages `_0`..`_3` are the owner's generated sprites, cut from a magenta backdrop and brought down to their own pixel grid.
-`tree_green` and `tree_autumn` are the apple tree with its apples painted out, the second with its
-leaves turned amber. `villager_a` and `villager_b` are the owner's two farmers, and `cow` is theirs too.
-`ground.png` is painted by `tools/ground.py`, which holds the lane, the road and the eight plots.
+Not wired to the proxy yet: the fields, crops and farmers are placed by hand.
 
 Gate: `gdformat --check` and `gdlint` (gdtoolkit 4.x), on their defaults.
