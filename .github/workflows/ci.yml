@@ -44,3 +44,13 @@ jobs:
           path: proxy/build/libs/peashoot.jar
           retention-days: 14
           if-no-files-found: error
+  # The Godot farm's GDScript, gated the way ktfmt and detekt gate the Kotlin (ADR 0003): layout by
+  # gdformat, and gdlint's default rules. The studies under farm/studies are comparisons, not the
+  # farm, and are not gated. One leg: the tools and the scripts do not care which OS reads them.
+  farm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: python3 -m pip install --user -r farm/requirements-lint.txt
+      - run: gdformat --check farm/*.gd
+      - run: gdlint farm/*.gd

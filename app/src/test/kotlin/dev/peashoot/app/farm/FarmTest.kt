@@ -7,7 +7,9 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.put
 
 private const val ALPHA = "sess-alpha"
 private const val BRAVO = "sess-bravo"
@@ -162,6 +164,31 @@ class FarmTest {
         // villager between runs of the app.
         assertEquals("Clover", name)
         assertEquals("Yara", replay("sub-agents.jsonl").last().villager("$CHARLIE/agent-one").name)
+    }
+
+    @Test
+    fun `two sessions whose names collide are told apart, the same way every run`() {
+        // Two ids the hash sends to one name, found rather than written down, so the test holds
+        // whatever the list holds.
+        val first = "sess-0"
+        val second =
+            (1..10_000).map { "sess-$it" }.first { nameFor(it) == nameFor(first) && it != first }
+        val farm =
+            listOf(first, second)
+                .map { session ->
+                    buildJsonObject {
+                        put("event", "exchange.started")
+                        put("session", session)
+                        put("exchangeId", "ex-$session")
+                    }
+                }
+                .fold(FarmState()) { state, event -> reduce(state, event) }
+        val one = farm.villager(first).name
+        val two = farm.villager(second).name
+        assertEquals(nameFor(first), one, "the first keeps the name its id picks")
+        assertTrue(one != two, "two farmers answer to $one")
+        val next = VILLAGER_NAMES[(VILLAGER_NAMES.indexOf(one) + 1) % VILLAGER_NAMES.size]
+        assertEquals(next, two, "the second takes the next free name, so a replay names it alike")
     }
 
     @Test

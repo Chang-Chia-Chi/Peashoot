@@ -1,0 +1,2 @@
+# The GDScript gate (docs/gates.md): gdformat and gdlint on their defaults.
+gdtoolkit==4.5.0

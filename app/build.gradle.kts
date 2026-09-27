@@ -74,6 +74,29 @@ val bundleProxy =
         into(layout.buildDirectory.dir("appResources/common/proxy"))
     }
 
+/**
+ * The farm window a packaged app starts (ADR 0003), when one was exported: `-Ppeashoot.farm=<dir>`
+ * names the directory `farm/export.sh` wrote. It is staged under this OS's own resources, not
+ * `common/`, because the executable is built for one OS; Compose carries `<os>/` beside `common/`.
+ * Without the property nothing is staged and an installed app has no farm window, as before.
+ */
+val farmExport = providers.gradleProperty("peashoot.farm").orNull
+val farmOs =
+    System.getProperty("os.name").lowercase().let {
+        when {
+            it.contains("win") -> "windows"
+            it.contains("mac") -> "macos"
+            else -> "linux"
+        }
+    }
+val bundleFarm = farmExport?.let { exported ->
+    tasks.register<Sync>("bundleFarm") {
+        description = "Stages an exported farm window as an app resource."
+        from(rootProject.file(exported))
+        into(layout.buildDirectory.dir("appResources/$farmOs/farm"))
+    }
+}
+
 compose.desktop {
     application {
         mainClass = "dev.peashoot.app.MainKt"
@@ -128,7 +151,24 @@ compose.desktop {
 // registers this task from its own `afterEvaluate`, so it does not exist while this script runs,
 // and a pattern that matched nothing would ship installers with an empty `resources/proxy/` and
 // say nothing. Named, a rename breaks the build instead of the installer.
-afterEvaluate { tasks.named("prepareAppResources") { dependsOn(bundleProxy) } }
+afterEvaluate {
+    tasks.named("prepareAppResources") {
+        dependsOn(bundleProxy)
+        bundleFarm?.let { dependsOn(it) }
+    }
+    // jpackage copies resources into the app image as plain 0644 files, and the farm is a program:
+    // it gets its executable bit back in the image every installer is made from — everyone's, for
+    // the reason the `java` launcher below does.
+    tasks
+        .matching { it.name == "createDistributable" || it.name == "createReleaseDistributable" }
+        .configureEach {
+            doLast {
+                outputs.files.asFileTree
+                    .matching { include("**/resources/farm/peashoot-farm*") }
+                    .forEach { it.setExecutable(true, false) }
+            }
+        }
+}
 
 /**
  * The `java` an installed app starts its proxy with. jlink strips a runtime image's own launchers,
