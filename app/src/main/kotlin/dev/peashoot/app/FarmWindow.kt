@@ -4,6 +4,7 @@ import dev.peashoot.app.farm.FarmState
 import dev.peashoot.app.farm.snapshot
 import dev.peashoot.app.render.Hit
 import java.io.BufferedWriter
+import java.io.File
 import java.io.IOException
 import java.lang.ProcessBuilder.Redirect
 import kotlinx.coroutines.Dispatchers
@@ -24,9 +25,13 @@ import kotlinx.serialization.json.JsonPrimitive
 /** The Godot executable that draws the farm; unset, the farm stays in the window's own tab. */
 private const val GODOT_ENV = "PEASHOOT_GODOT"
 
-/** The Godot project the farm is, which is `farm/` in a checkout. */
+/**
+ * The Godot project the farm is: `farm/` in a checkout, looked for from the repository root and
+ * from one directory down, where `./gradlew :app:run` starts the app — the same two places the app
+ * looks for the proxy's jar.
+ */
 private const val PROJECT_ENV = "PEASHOOT_FARM_PROJECT"
-private const val DEFAULT_PROJECT = "farm"
+private val DEFAULT_PROJECTS = listOf("farm", "../farm")
 
 /**
  * How often the app says it is still there: an empty line, so that a window whose app has gone
@@ -37,9 +42,15 @@ private const val DEFAULT_PROJECT = "farm"
 private const val HEARTBEAT_MILLIS = 5_000L
 
 /** How to start the farm window, or null when no Godot is configured. */
-internal fun farmWindowCommand(env: (String) -> String? = System::getenv): List<String>? {
+internal fun farmWindowCommand(
+    env: (String) -> String? = System::getenv,
+    isProject: (String) -> Boolean = { File(it, "project.godot").isFile },
+): List<String>? {
     val godot = env(GODOT_ENV)?.takeIf { it.isNotBlank() } ?: return null
-    val project = env(PROJECT_ENV)?.takeIf { it.isNotBlank() } ?: DEFAULT_PROJECT
+    val project =
+        env(PROJECT_ENV)?.takeIf { it.isNotBlank() }
+            ?: DEFAULT_PROJECTS.firstOrNull(isProject)
+            ?: DEFAULT_PROJECTS.first()
     return listOf(
         godot,
         "--path",

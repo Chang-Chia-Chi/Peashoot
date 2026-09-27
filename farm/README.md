@@ -20,8 +20,8 @@ lanterns lit; rain, storms and lightning follow the provider; the shipping bin s
 Clicking a farmer or a crop prints `{"villager": id}` or `{"crop": path}`, which the app turns into
 its detail pane.
 
-- From the app: set `PEASHOOT_GODOT` to a Godot 4.7 executable (and `PEASHOOT_FARM_PROJECT` to this
-  directory if the app does not run from the repository root). The app starts
+- From the app: set `PEASHOOT_GODOT` to a Godot 4.7 executable. The app finds this directory from
+  the repository root or from `app/`; `PEASHOOT_FARM_PROJECT` names it anywhere else. The app starts
   `godot --path farm -- --from-app`, writes farms to its stdin and an empty heartbeat line every five
   seconds; the window closes itself after fifteen seconds of silence.
 - From a recording: `godot --path farm -- --feed farms.jsonl [--every 0.3] [--shot]` plays the lines

@@ -60,9 +60,21 @@ class FarmWindowTest {
 
     @Test
     fun `no godot configured is no farm window, and one configured is told it is fed by the app`() {
-        assertNull(farmWindowCommand { null })
-        val command = farmWindowCommand { if (it == "PEASHOOT_GODOT") "/opt/godot" else null }
+        assertNull(farmWindowCommand({ null }) { true })
+        val godot = { name: String -> if (name == "PEASHOOT_GODOT") "/opt/godot" else null }
+        val command = farmWindowCommand(godot) { false }
         assertEquals(listOf("/opt/godot", "--path", "farm", "--", "--from-app"), command)
+    }
+
+    @Test
+    fun `the farm project is found from the repository root or from app, or named outright`() {
+        val godot = { name: String -> if (name == "PEASHOOT_GODOT") "/opt/godot" else null }
+        assertEquals("farm", farmWindowCommand(godot) { it == "farm" }?.get(2))
+        assertEquals("../farm", farmWindowCommand(godot) { it == "../farm" }?.get(2))
+        val named = { name: String ->
+            if (name == "PEASHOOT_FARM_PROJECT") "/srv/farm" else godot(name)
+        }
+        assertEquals("/srv/farm", farmWindowCommand(named) { false }?.get(2))
     }
 }
 
