@@ -1,0 +1,16 @@
+config_version=5
+
+[application]
+
+config/name="Peashoot Farm (look)"
+run/main_scene="res://main.tscn"
+
+[display]
+
+window/size/viewport_width=1600
+window/size/viewport_height=900
+
+[rendering]
+
+renderer/rendering_method="forward_plus"
+environment/volumetric_fog/volume_size=96

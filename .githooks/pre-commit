@@ -13,4 +13,12 @@ for f in $files; do
   esac
 done
 [ -n "$files" ] && git add $files
+# The farm's GDScript, when any is staged: formatted, re-staged and linted (farm/requirements-lint.txt).
+scripts=$(git diff --cached --name-only --diff-filter=ACMR -- 'farm/*.gd' | grep -v '^farm/studies/' || true)
+if [ -n "$scripts" ]; then
+  command -v gdformat >/dev/null || { echo "pip install -r farm/requirements-lint.txt"; exit 1; }
+  gdformat $scripts
+  git add $scripts
+  gdlint $scripts
+fi
 ./gradlew -q check
