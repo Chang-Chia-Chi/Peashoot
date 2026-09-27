@@ -126,7 +126,14 @@ func _world() -> void:
 	sprite("farmhouse", Vector3(4.4, 0, 5.2), 6.2)
 	sprite("well", Vector3(12.5, 0, 5.7), 2.3)
 	sprite("apple_tree", Vector3(14.6, 0, 5.4), 3.8)
-	for plot in [
+	var kinds := ["pumpkin", "turnip", "carrot", "tomato"]
+	var heights := {
+		"pumpkin": [0.35, 0.75, 0.85, 0.95],
+		"turnip": [0.3, 0.55, 0.8, 1.0],
+		"carrot": [0.3, 0.6, 0.85, 1.0],
+		"tomato": [0.3, 0.6, 1.1, 1.25],
+	}
+	var plots := [
 		Vector2(11, 9),
 		Vector2(6, 9),
 		Vector2(16, 9),
@@ -135,26 +142,29 @@ func _world() -> void:
 		Vector2(11, 13),
 		Vector2(6, 13),
 		Vector2(16, 13)
-	]:
+	]
+	for n in plots.size():
+		var plot: Vector2 = plots[n]
+		var kind: String = kinds[n % kinds.size()]
 		var crops := rng.randi_range(5, 12)
 		for i in crops:
 			var stage := rng.randi_range(0, 3)
-			var size: float = [0.35, 0.75, 0.85, 0.95][stage]
 			sprite(
-				"pumpkin_%d" % stage,
+				"%s_%d" % [kind, stage],
 				Vector3(plot.x + i % 4 + 0.5, 0, plot.y + i / 4 + 0.8),
-				size * 1.05
+				heights[kind][stage]
 			)
+	sprite("barn", Vector3(22.6, 0, 2.7), 4.4)
 	_forest()
 	for at in [
 		Vector3(8.2, 0, 5.8),
 		Vector3(9.4, 0, 5.1),
-		Vector3(20.3, 0, 3.6),
-		Vector3(21.5, 0, 4.4),
-		Vector3(19.1, 0, 4.8)
+		Vector3(19.4, 0, 3.9),
+		Vector3(20.6, 0, 4.7),
+		Vector3(18.8, 0, 5.0)
 	]:
 		sprite("chicken", at, 0.62)
-	for at in [Vector3(22.5, 0, 3.2), Vector3(24.6, 0, 4.6)]:
+	for at in [Vector3(21.2, 0, 5.2), Vector3(25.0, 0, 4.9)]:
 		sprite("cow", at, 0.95)
 	for v in [
 		[Vector3(2.0, 0, 6.0), "a"],
