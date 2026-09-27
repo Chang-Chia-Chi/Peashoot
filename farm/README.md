@@ -10,7 +10,7 @@ writes `farm/shot.png` after 40 frames.
 Art in `art/`: `farmhouse`, `well`, `apple_tree`, `pumpkin_0`..`3`, `chicken` are the owner's
 generated sprites, cut from a magenta backdrop and brought down to their own pixel grid.
 `tree_green` and `tree_autumn` are the apple tree with its apples painted out, the second with its
-leaves turned amber. `villager_a`/`_b` are Kenney stand-ins until the villager sprites exist.
+leaves turned amber. `villager_a` and `villager_b` are the owner's two farmers, and `cow` is theirs too.
 `ground.png` is painted by `tools/ground.py`, which holds the lane, the road and the eight plots.
 
 Gate: `gdformat --check` and `gdlint` (gdtoolkit 4.x), on their defaults.

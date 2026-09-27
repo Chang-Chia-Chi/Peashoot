@@ -162,7 +162,7 @@ func _world() -> void:
 		[Vector3(13.6, 0, 6.7), "a"],
 		[Vector3(18.5, 0, 7.4), "b"]
 	]:
-		sprite("villager_" + v[1], v[0], 0.85)
+		sprite("villager_" + v[1], v[0], 1.5)
 
 
 func _forest() -> void:
