@@ -101,7 +101,7 @@ Control API
 
 Desktop app and farm
 - Unidirectional: a control client feeds a pure reducer from events to farm state; Compose renders the state; an animator interpolates positions per frame.
-- Farm state holds villagers with activity and stamina, fields and crops with growth stage and hidden labels, the well queue, weather, time (season by calendar month, night in replay mode), the shipping bin with its ledger, and pending end-of-day cards. Villager names come from a fixed list indexed by session hash.
+- Farm state holds villagers with activity and stamina, fields and crops with growth stage and hidden labels, the well queue, weather, time (season by calendar month, night in replay mode), the shipping bin with its ledger, and pending end-of-day cards. Villager names come from a fixed list indexed by session hash, moving on to the next free name when that one is taken.
 - The mapping is fixed for v1 as described in the design; animals, relationships, festivals, and a shop are cut because no signal drives them.
 - Labels are off by default; the show-paths toggle draws a visible badge on the canvas.
 - Rendering targets 60 fps with 200 entities from one CC0 sprite atlas; under 30 fps villagers teleport instead of walking.
