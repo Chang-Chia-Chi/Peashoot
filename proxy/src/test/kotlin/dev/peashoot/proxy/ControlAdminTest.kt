@@ -5,6 +5,8 @@ import dev.peashoot.core.Rules
 import dev.peashoot.core.text
 import io.ktor.client.request.get
 import io.ktor.http.HttpMethod
+import java.net.Socket
+import java.net.URI
 import java.nio.file.Files
 import kotlin.io.path.readText
 import kotlin.test.Test
@@ -224,6 +226,22 @@ class ControlAdminTest {
         assertFails { client.get("$base/health") }
         assertEquals(0, upstream.received.size, "stopping is never relayed")
     }
+
+    @Test
+    fun `a client that keeps its connection after the answer holds the stop only briefly`() =
+        withProxy {
+            val at = URI(server.url)
+            Socket(at.host.trim('[', ']'), at.port).use { socket ->
+                val request =
+                    "POST /_peashoot/v1/shutdown HTTP/1.1\r\nHost: peashoot\r\n" +
+                        "Authorization: Bearer $token\r\nContent-Length: 0\r\n\r\n"
+                socket.getOutputStream().write(request.toByteArray())
+                val answer = socket.getInputStream().bufferedReader().readLine()
+                assertEquals("HTTP/1.1 200 OK", answer)
+                // The socket is never closed from this side, and the proxy stops all the same.
+                withTimeout(SHUTDOWN_TIMEOUT) { control.stopping.await() }
+            }
+        }
 
     /** A `{"path": ...}` body, with the separators a JSON string needs on Windows. */
     private fun path(of: java.nio.file.Path) = """{"path":${JsonPrimitive(of.toString())}}"""

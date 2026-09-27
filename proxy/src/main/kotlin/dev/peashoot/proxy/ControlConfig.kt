@@ -3,9 +3,14 @@ package dev.peashoot.proxy
 import dev.peashoot.core.DEFAULT_PRICES
 import dev.peashoot.core.Price
 import dev.peashoot.core.Route as Routing
+import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpMethod
+import io.ktor.server.netty.NettyApplicationCall
+import io.ktor.server.response.header
 import io.ktor.server.routing.Route
 import java.nio.file.Files
+import java.util.concurrent.TimeUnit
+import kotlin.time.Duration.Companion.seconds
 import kotlin.time.DurationUnit
 import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.json.JsonArray
@@ -128,12 +133,34 @@ private suspend fun ControlApi.rewrite(body: JsonObject, running: JsonObject) {
  * `POST /shutdown`: the answer is written, and then whoever started the server stops it. Here that
  * is `serve`, which closes the server and the store and lets the process end; a test holds the
  * server itself and closes it the same way.
+ *
+ * "Written" means on the wire, not handed to Ktor: Netty writes the answer from a thread of its own
+ * a moment later, and an engine stopped before then closes the connection with nothing on it. So
+ * the answer asks the client to close the connection, and the stop waits for that close, which
+ * comes only once the answer is out; a client that keeps the connection anyway holds the stop for
+ * at most [SHUTDOWN_LINGER].
  */
 internal fun Route.shutdown(api: ControlApi) =
     endpoint(HttpMethod.Post, "shutdown") {
+        call.response.header(HttpHeaders.Connection, "close")
         call.json(buildJsonObject { put("stopping", true) })
-        api.stopping.complete(Unit)
+        val connection = (call.pipelineCall.engineCall as? NettyApplicationCall)?.context?.channel()
+        if (connection == null) {
+            api.stopping.complete(Unit)
+        } else {
+            connection.closeFuture().addListener { api.stopping.complete(Unit) }
+            connection
+                .eventLoop()
+                .schedule(
+                    { api.stopping.complete(Unit) },
+                    SHUTDOWN_LINGER.inWholeMilliseconds,
+                    TimeUnit.MILLISECONDS,
+                )
+        }
     }
+
+/** How long `POST /shutdown` waits for its client to take the answer and hang up. */
+private val SHUTDOWN_LINGER = 2.seconds
 
 /**
  * The reloaded config with every value this process cannot change put back to what it is really
