@@ -11,12 +11,22 @@ on:
 permissions:
   contents: read
 
+# A newer push to a PR makes the run before it moot, so that run stops. A push to `main` gets a
+# group of its own and always finishes: it is the only run that has the Windows leg.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
+
 jobs:
   build:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        # Windows only on a push to `main`. A Windows minute is billed double and that leg was
+        # about two thirds of this private repo's Actions minutes, spent mostly re-proving on
+        # every PR what the Ubuntu leg and the Stop hook had just proved. A Windows-only break
+        # now shows up on `main` after the merge, not on the PR before it.
+        os: ${{ github.event_name == 'push' && fromJSON('["ubuntu-latest","windows-latest"]') || fromJSON('["ubuntu-latest"]') }}
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
@@ -29,7 +39,7 @@ jobs:
         shell: bash
       # `build` proves a zip was written; this proves it starts. Nothing else in the gate runs the
       # jar the installers carry, so a lost main class, a dropped service file or a manifest
-      # without a version would reach a user before it reached a check. On both legs, because it
+      # without a version would reach a user before it reached a check. On every leg, because it
       # costs seconds and a jar packed on Windows is the one Windows users would get.
       # The version is the untagged fallback from the root build script: change it there and here.
       - run: bash examples/jar-boot/boot.sh 1.0.0-dev

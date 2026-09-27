@@ -14,7 +14,7 @@ What checks the code, where it runs, where it is configured. Why each exists and
 | Kover | Untested branches; report only, no threshold | `koverHtmlReport` on demand, output in `build/kover/html` | `build.gradle.kts` |
 | Stop hook | An agent stopping while `check` is red; three bounces, then it lets go | Claude Code `Stop` event | `.claude/hooks/check.sh`, `.claude/settings.json` |
 | Pre-commit hook | A human committing unformatted or red code | `git commit`, after `git config core.hooksPath .githooks` | `.githooks/pre-commit` |
-| CI | The same `build` on Ubuntu and Windows, and the GDScript gate, every PR and push to `main` | GitHub Actions | `.github/workflows/ci.yml` |
+| CI | `build` and the GDScript gate on Ubuntu, every PR and push to `main`; the same `build` on Windows too, on a push to `main` only (billed double) | GitHub Actions | `.github/workflows/ci.yml` |
 | Dependabot and dependency submission | Stale or vulnerable dependencies | Weekly PRs; security alerts | `.github/dependabot.yml`, `.github/workflows/dependency-submission.yml` |
 
 Not gates: the Kotlin LSP plugin, installed per machine, gives agents navigation and diagnostics. CodeQL and a required-checks merge gate wait for the repo to go public. Every version lives in `gradle/libs.versions.toml`.

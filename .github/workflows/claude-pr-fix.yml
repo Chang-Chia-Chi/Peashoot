@@ -19,6 +19,18 @@ jobs:
   credentials:
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    # Only when someone who can already push comments "@claude fix" on a PR: the fix job
+    # runs an agent with repository write access, so a drive-by comment must not start it.
+    # The check sits here, not on the fix job, because every other comment on an issue or a
+    # PR fires this workflow too, and a job that starts is a billed minute; a skipped one is
+    # free, and skips the fix job with it.
+    if: |
+      github.event.issue.pull_request &&
+      contains(github.event.comment.body, '@claude fix') &&
+      github.event.comment.user.login != 'claude[bot]' &&
+      (github.event.comment.author_association == 'OWNER' ||
+       github.event.comment.author_association == 'MEMBER' ||
+       github.event.comment.author_association == 'COLLABORATOR')
     outputs:
       configured: ${{ steps.probe.outputs.configured }}
     steps:
@@ -34,16 +46,8 @@ jobs:
     needs: credentials
     runs-on: ubuntu-latest
     timeout-minutes: 45
-    # Only when someone who can already push comments "@claude fix" on a PR: this job
-    # runs an agent with repository write access, so a drive-by comment must not start it.
-    if: |
-      needs.credentials.outputs.configured == 'true' &&
-      github.event.issue.pull_request &&
-      contains(github.event.comment.body, '@claude fix') &&
-      github.event.comment.user.login != 'claude[bot]' &&
-      (github.event.comment.author_association == 'OWNER' ||
-       github.event.comment.author_association == 'MEMBER' ||
-       github.event.comment.author_association == 'COLLABORATOR')
+    # Who may start this, and with what comment, is decided on the credentials job above.
+    if: needs.credentials.outputs.configured == 'true'
     steps:
       # Pinned to a commit: a tag can be moved, and this action runs with write access.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
