@@ -87,6 +87,8 @@ var crowns := {}
 ## Flowers in the grass, painted by season: position to [roll, pick]; see [method _flower_colour].
 var flowers := {}
 var slopes := {}
+## Where the roofs are, which winter covers in snow; see [method _gable].
+var roofs := {}
 var glows: Array[Vector3] = []
 var rng := RandomNumberGenerator.new()
 var environment: Environment
@@ -104,6 +106,11 @@ var _flower_layer: MultiMeshInstance3D
 ## as built, whether it is grass, roll].
 var _ground: Array[Array] = []
 var _ground_layer: MultiMeshInstance3D
+## The roofs' bricks open to the sky, in the ground layer and the slope layer: [index, colour as
+## built, roll].
+var _roof_bricks: Array[Array] = []
+var _roof_wedges: Array[Array] = []
+var _slope_layer: MultiMeshInstance3D
 ## A farmer as HD-2D pixel art built of tiny bricks: the sprite is read down to a small grid and
 ## every opaque pixel becomes a brick, two deep. Built once per look and shared by every farmer
 ## wearing it; the live farm stands each one up facing the camera.
@@ -293,13 +300,16 @@ func _island() -> void:
 			put(x, GROUND, z, PATH)
 
 
-## A gable roof of sloped bricks over [x0, x0 + sx) x [z0, z0 + sz), its ridge along x.
+## A gable roof of sloped bricks over [x0, x0 + sx) x [z0, z0 + sz), its ridge along x. Its
+## bricks are marked as roof, for the snow.
 func _gable(x0: int, y0: int, z0: int, sx: int, sz: int, c: Color) -> int:
 	var layer := 0
 	while sz - layer * 2 > 0:
 		var zf := z0 + layer
 		var zb := z0 + sz - 1 - layer
 		for x in range(x0, x0 + sx):
+			for z in range(zf, zb + 1):
+				roofs[Vector3i(x, y0 + layer, z)] = true
 			if zf == zb:
 				put(x, y0 + layer, zf, c)
 			else:
@@ -326,6 +336,9 @@ func _farmhouse(x: int, z: int) -> void:
 	for px in [x + 6, x + 14]:
 		box(px, y + 1, z + 15, 1, 5, 1, WOOD_DARK)
 	box(x + 6, y + 6, z + 12, 9, 1, 4, ROOF)
+	for px in range(x + 6, x + 15):
+		for pz in range(z + 12, z + 16):
+			roofs[Vector3i(px, y + 6, pz)] = true
 	for gx in [x + 3, x + 15]:
 		box(gx, y + 10, z + 5, 2, 2, 1, GLASS)
 	_gable(x - 1, y + 9, z - 1, 22, 14, ROOF)
@@ -626,9 +639,9 @@ func _mini_brick(px: float) -> Mesh:
 
 ## Dresses the island for [param season], one of the reducer's WINTER, SPRING, SUMMER or AUTUMN.
 ## The trees: blossom in spring, deep green in summer, turning in autumn, snow and bare wood in
-## winter. The ground: fresh in spring, gold-flecked in autumn, under snow in winter. The flowers:
-## a meadow in spring, fewer through summer and autumn, none in winter. Only instances already
-## built are recoloured, or hidden, so nothing is rebuilt.
+## winter. The ground: fresh in spring, gold-flecked in autumn, under snow in winter, as are the
+## roofs. The flowers: a meadow in spring, fewer through summer and autumn, none in winter. Only
+## instances already built are recoloured, or hidden, so nothing is rebuilt.
 func paint_season(season: String) -> void:
 	var leaves := _crown_layer.multimesh
 	for i in _crown_order.size():
@@ -637,6 +650,11 @@ func paint_season(season: String) -> void:
 	var ground := _ground_layer.multimesh
 	for g in _ground:
 		ground.set_instance_color(g[0], _ground_colour(season, g[1], g[2], g[3]))
+	for r in _roof_bricks:
+		ground.set_instance_color(r[0], _roof_colour(season, r[1], r[2]))
+	var wedges := _slope_layer.multimesh
+	for r in _roof_wedges:
+		wedges.set_instance_color(r[0], _roof_colour(season, r[1], r[2]))
 	var blooms := _flower_layer.multimesh
 	for i in _flower_order.size():
 		var p := _flower_order[i]
@@ -647,6 +665,25 @@ func paint_season(season: String) -> void:
 		var at := Vector3(p.x * B, p.y * H, p.z * B)
 		blooms.set_instance_transform(i, Transform3D(Basis().scaled(Vector3.ONE * size), at))
 		blooms.set_instance_color(i, palette[int(flower[1] * palette.size())])
+
+
+## A roof brick with nothing on top of it, which is where snow settles.
+func _open_roof(p: Vector3i) -> bool:
+	var above := p + Vector3i.UP
+	return roofs.has(p) and not bricks.has(above) and not slopes.has(above)
+
+
+## A fixed roll of the dice for a brick, from where it is, so it draws nothing from [member rng]
+## and adding one leaves the rest of the island as it was.
+func _roll(p: Vector3i) -> float:
+	return posmod(hash(p), 1000) / 1000.0
+
+
+## A roof in [param season]: under snow in winter, bar a few bricks the wind has cleared.
+func _roof_colour(season: String, built: Color, roll: float) -> Color:
+	if season != "WINTER" or roll < 0.1:
+		return built
+	return SNOW.darkened(roll * 0.06)
 
 
 ## The top of the island in [param season]. Snow leaves a little grass showing, and more of the
@@ -767,6 +804,8 @@ func _emit() -> void:
 				var jittered := c * rng.randf_range(0.96, 1.04)
 				if p.y <= GROUND and c in [GRASS, GRASS_LIGHT, SAND, SAND_DARK]:
 					_ground.append([shown.size(), jittered, c in [GRASS, GRASS_LIGHT], rng.randf()])
+				if _open_roof(p):
+					_roof_bricks.append([shown.size(), jittered, _roll(p)])
 				shown.append([Transform3D(Basis(), Vector3(p.x * B, p.y * H, p.z * B)), jittered])
 				break
 	_ground_layer = instances(brick_mesh, shown, mat)
@@ -783,13 +822,15 @@ func _emit() -> void:
 		_flower_order.append(p)
 		blooms.append([Transform3D(Basis(), Vector3(p.x * B, p.y * H, p.z * B)), WHITE])
 	_flower_layer = instances(brick_mesh, blooms, mat)
-	paint_season("AUTUMN")
 	var wedges := []
 	for p in slopes:
 		var s: Array = slopes[p]
 		var t := Transform3D(Basis(Vector3.UP, s[1]), Vector3(p.x * B, p.y * H, p.z * B))
+		if _open_roof(p):
+			_roof_wedges.append([wedges.size(), s[0], _roll(p)])
 		wedges.append([t, s[0]])
-	instances(_slope_mesh(), wedges, mat)
+	_slope_layer = instances(_slope_mesh(), wedges, mat)
+	paint_season("AUTUMN")
 	var lit := StandardMaterial3D.new()
 	lit.albedo_color = GLASS
 	lit.emission_enabled = true
