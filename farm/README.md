@@ -23,7 +23,7 @@ pixel.
 It is live: `live.gd` reads one JSON farm per line — the app's `FarmState` as `Snapshot.kt` writes
 it — and moves the world to match. Each directory gets a raised bed and each file a crop, grown a
 stage per edit; each session is a farmer who walks to the well for every model call, then on its
-way home walks the rounds of the crops that trip planted or grew and bends to each one, with `…`
+way home walks the rounds of the crops that turn planted or grew and bends to each one, with `…`
 while it waits, `zzz` while it rests off a rate limit and `♪` while it tends; replay is night with the
 lanterns lit; rain, storms and lightning follow the provider; the shipping bin shows the ledger.
 Clicking a farmer or a crop prints `{"villager": id}` or `{"crop": path}`, which the app turns into
