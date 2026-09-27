@@ -59,6 +59,9 @@ const KEY := (
 const SILENCE_MS := 15000
 ## How near a click has to land to a farmer or a crop, in pixels.
 const REACH := 40.0
+## A winter day's low sun, and the haze it lights: paler and cooler than the rest of the year's.
+const WINTER_SUN := Color(0.86, 0.92, 1.0)
+const WINTER_HAZE := Color(0.88, 0.93, 1.0)
 
 var world: Node3D
 
@@ -96,6 +99,8 @@ func _ready() -> void:
 		"beam_colour": world.beam.light_color,
 		"ambient": world.environment.ambient_light_energy,
 		"fill": world.fill.light_energy,
+		"haze": world.environment.volumetric_fog_albedo,
+		"saturation": world.environment.adjustment_saturation,
 	}
 	_hud()
 	_weather_fx()
@@ -360,11 +365,9 @@ func _walk(delta: float) -> void:
 # --- sky ------------------------------------------------------------------------------------
 
 
-## The light over the diorama from the farm's night and weather, and the trees from its season.
-##
-## ponytail: the season dresses the island and turns winter rain to snow, but leaves the light
-## alone, so a winter day has the same warm sun as an autumn one. Upgrade: a paler, cooler sun in
-## winter, if the snow alone ever stops saying it is cold.
+## The light over the diorama from the farm's night, weather and season, and the island dressed
+## for the season: a winter day has a paler, cooler sun, a little weaker so the snow does not
+## glare, in a bluer haze and with the colours a touch greyer.
 func _apply_sky(farm: Dictionary) -> void:
 	var season := str(farm.get("season", "AUTUMN"))
 	if season != _season:
@@ -372,6 +375,7 @@ func _apply_sky(farm: Dictionary) -> void:
 		world.paint_season(season)
 	var night: bool = farm.get("night", false)
 	var weather := str(farm.get("weather", "CLEAR"))
+	var winter := season == "WINTER"
 	var dim := 1.0
 	if weather in ["STORM", "LIGHTNING"]:
 		dim = 0.55
@@ -383,13 +387,14 @@ func _apply_sky(farm: Dictionary) -> void:
 		world.environment.ambient_light_energy = _day["ambient"] * 0.75
 		world.fill.light_energy = _day["fill"] * 0.4
 	else:
-		world.beam.light_color = _day["beam_colour"]
-		world.beam.light_energy = _day["beam"] * dim
+		world.beam.light_color = WINTER_SUN if winter else _day["beam_colour"]
+		world.beam.light_energy = _day["beam"] * dim * (0.8 if winter else 1.0)
 		world.environment.ambient_light_energy = _day["ambient"] * (0.6 + 0.4 * dim)
 		world.fill.light_energy = _day["fill"]
+	world.environment.volumetric_fog_albedo = WINTER_HAZE if winter else _day["haze"]
+	world.environment.adjustment_saturation = _day["saturation"] * (0.9 if winter else 1.0)
 	for lamp in world.lamps:
 		lamp.light_energy = 4.0 if night else 1.2
-	var winter := season == "WINTER"
 	_rain.emitting = weather != "CLEAR" and not winter
 	_rain.amount = 260 if weather == "RAIN" else 600
 	_snow.emitting = weather != "CLEAR" and winter
