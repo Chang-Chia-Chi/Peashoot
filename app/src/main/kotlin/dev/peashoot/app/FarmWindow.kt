@@ -30,9 +30,9 @@ private const val DEFAULT_PROJECT = "farm"
 
 /**
  * How often the app says it is still there: an empty line, so that a window whose app has gone
- * closes itself. A pipe that has been closed reads the same as one with
- * nothing on it yet, and Godot can only ask after its own children, not its parent, so silence is
- * the one sign it has; it gives up after three of these go missing.
+ * closes itself. A pipe that has been closed reads the same as one with nothing on it yet, and
+ * Godot can only ask after its own children, not its parent, so silence is the one sign it has; it
+ * gives up after three of these go missing.
  */
 private const val HEARTBEAT_MILLIS = 5_000L
 
