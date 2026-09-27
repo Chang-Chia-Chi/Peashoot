@@ -11,6 +11,10 @@ const WALK := 2.6
 ## How high a walking farmer's step lifts it, in world units.
 const STEP := 0.06
 const STEPS_A_SECOND := 5.0
+## How long a farmer works at each crop its trip planted or grew, in seconds.
+const TENDING := 1.4
+## How far a farmer at home drifts about its spot while it waits, in world units.
+const DRIFT := Vector2(0.5, 0.25)
 
 ## Where a farmer with nothing out waits, in bricks, first heard first: the farmhouse yard, then
 ## the verge by the paddock. Past the last one farmers share it.
@@ -67,6 +71,9 @@ var world: Node3D
 
 var _farmers := {}
 var _crops: Array = []
+## Where a farmer stands to tend each drawn crop, by path: in the bed, just in front of it.
+var _tending_spots := {}
+var _rng := RandomNumberGenerator.new()
 var _crop_layer: MultiMeshInstance3D
 var _fields_seen := ""
 var _labels: Array[Label3D] = []
@@ -102,6 +109,7 @@ func _ready() -> void:
 		"haze": world.environment.volumetric_fog_albedo,
 		"saturation": world.environment.adjustment_saturation,
 	}
+	_rng.seed = 5
 	_hud()
 	_weather_fx()
 	var args := OS.get_cmdline_user_args()
@@ -237,6 +245,7 @@ func _apply_fields(fields: Array, hidden: bool) -> void:
 		label.queue_free()
 	_labels.clear()
 	_crops.clear()
+	_tending_spots.clear()
 	var saved: Dictionary = world.bricks
 	world.bricks = {}
 	var beds: Array[Vector2i] = world.BEDS
@@ -249,7 +258,9 @@ func _apply_fields(fields: Array, hidden: bool) -> void:
 			var x := bed.x + 1 + (cell % 3) * 3
 			var z := bed.y + 1 + (cell / 3) * 2
 			world.crop(KINDS[slot % KINDS.size()], int(crop.get("growth", 0)), x, z)
-			_crops.append([str(crop.get("path", "")), _at(Vector2i(x + 1, z))])
+			var path := str(crop.get("path", ""))
+			_crops.append([path, _at(Vector2i(x + 1, z))])
+			_tending_spots[path] = _at(Vector2i(x + 1, z + 2)) + Vector3(0.1, world.H, 0)
 		if not hidden:
 			var more := crops.size() - CELLS
 			var name: String = field.get("label", "")
@@ -283,6 +294,7 @@ func _apply_farmers(villagers: Array) -> void:
 			_farmers[id] = _new_farmer(v)
 		var f: Dictionary = _farmers[id]
 		f["data"] = v
+		_heard_tended(f, v)
 	for id in _farmers.keys():
 		if not here.has(id):
 			_farmers[id]["node"].queue_free()
@@ -314,25 +326,69 @@ func _new_farmer(v: Dictionary) -> Dictionary:
 	mood.position = Vector3(0, world.FARMER_HEIGHT + 0.55, 0)
 	node.add_child(mood)
 	add_child(node)
-	var f := {"node": node, "body": body, "mood": mood, "data": v, "nth": 0, "moving": false}
+	var f := {
+		"node": node,
+		"body": body,
+		"mood": mood,
+		"data": v,
+		"nth": 0,
+		"moving": false,
+		"turns": 0,
+		"rounds": [],
+		"work": 0.0,
+		"drift": Vector3.ZERO,
+		"wait": 0.0,
+	}
 	node.position = _target(f)
 	return f
 
 
+## The crops a turn planted or grew join the farmer's rounds for its way home, each once. A turn is
+## new when the count of them moves, which is what tells two turns that worked the same files apart.
+func _heard_tended(f: Dictionary, v: Dictionary) -> void:
+	var turns := int(v.get("turns", 0))
+	if turns == f["turns"]:
+		return
+	f["turns"] = turns
+	var rounds: Array = f["rounds"]
+	for path in v.get("tended", []):
+		if not rounds.has(path):
+			rounds.append(path)
+
+
+## Whether the farmer is off at the well, where no round can take it.
+func _at_well(f: Dictionary) -> bool:
+	var activity := str(f["data"].get("activity", "IDLE"))
+	return activity in ["WALKING_TO_WELL", "RESTING"] and f["data"].get("queue") != null
+
+
+## The crop the farmer is on its way to, or null once its rounds are done. A crop no bed shows,
+## past the eighth field or the ninth crop, is skipped: there is nowhere to stand.
+func _next_round(f: Dictionary) -> Variant:
+	var rounds: Array = f["rounds"]
+	while not rounds.is_empty() and not _tending_spots.has(rounds[0]):
+		rounds.pop_front()
+	return null if rounds.is_empty() else _tending_spots[rounds[0]]
+
+
 ## Where a farmer is headed: its place in the queue while a turn is out or it is resting off a
-## rate limit, and home otherwise; a helper's home is beside whoever it helps, wherever they are.
+## rate limit; then each crop its trip planted or grew, in turn; and home otherwise, drifting
+## about there. A helper's home is beside whoever it helps, wherever they are.
 func _target(f: Dictionary) -> Vector3:
 	var v: Dictionary = f["data"]
-	var activity := str(v.get("activity", "IDLE"))
-	if activity in ["WALKING_TO_WELL", "RESTING"] and v.get("queue") != null:
+	if _at_well(f):
 		return _at(QUEUE[mini(int(v["queue"]), QUEUE.size() - 1)])
+	var crop = _next_round(f)
+	if crop != null:
+		return crop
 	var parent = v.get("parent")
 	if parent != null and _farmers.has(str(parent)) and str(parent) != str(v.get("id")):
 		var at: Vector3 = _farmers[str(parent)]["node"].position
 		return at + Vector3(0.55 * (int(f["nth"]) + 1), 0, 0.3)
+	var home := HOMES[0]
 	if v.get("home") != null:
-		return _at(HOMES[mini(int(v["home"]), HOMES.size() - 1)])
-	return _at(HOMES[0])
+		home = HOMES[mini(int(v["home"]), HOMES.size() - 1)]
+	return _at(home) + f["drift"]
 
 
 func _walk(delta: float) -> void:
@@ -349,10 +405,16 @@ func _walk(delta: float) -> void:
 			flat += gap.normalized() * step
 		var lift := absf(sin(t * STEPS_A_SECOND * PI)) * STEP if moving else 0.0
 		node.position = Vector3(flat.x, goal.y + lift, flat.z)
+		var tending := not moving and not _at_well(f) and _next_round(f) != null
+		_tend(f, delta, tending)
+		if not moving and not tending and not _at_well(f):
+			_idle(f, delta)
 		var activity := str(f["data"].get("activity", "IDLE"))
 		var mood: Label3D = f["mood"]
 		if moving:
 			mood.text = ""
+		elif tending:
+			mood.text = "♪"
 		elif activity == "WALKING_TO_WELL":
 			mood.text = "…"
 		elif activity == "RESTING":
@@ -360,6 +422,34 @@ func _walk(delta: float) -> void:
 		else:
 			mood.text = ""
 		f["moving"] = moving
+
+
+## A farmer at a crop of its rounds bends to it, hoe and watering can, for [constant TENDING]
+## seconds, and then moves on to the next.
+func _tend(f: Dictionary, delta: float, tending: bool) -> void:
+	var body: MultiMeshInstance3D = f["body"]
+	if not tending:
+		f["work"] = 0.0
+		body.rotation.x = lerpf(body.rotation.x, 0.0, minf(1.0, delta * 8.0))
+		return
+	f["work"] += delta
+	body.rotation.x = -absf(sin(float(f["work"]) * 7.0)) * 0.3
+	if f["work"] >= TENDING:
+		f["work"] = 0.0
+		var rounds: Array = f["rounds"]
+		rounds.pop_front()
+
+
+## A farmer with nothing out does not stand like a post: every few seconds it shifts to another
+## spot near its home.
+func _idle(f: Dictionary, delta: float) -> void:
+	f["wait"] -= delta
+	if f["wait"] > 0.0:
+		return
+	f["wait"] = _rng.randf_range(2.5, 6.0)
+	f["drift"] = Vector3(
+		_rng.randf_range(-DRIFT.x, DRIFT.x), 0, _rng.randf_range(-DRIFT.y, DRIFT.y)
+	)
 
 
 # --- sky ------------------------------------------------------------------------------------

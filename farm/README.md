@@ -11,6 +11,10 @@ straw-flecked grass in autumn, and in winter snow over the ground, the roofs and
 along the shore, a paler, cooler sun, and snow rather than rain when the provider has a bad
 day.
 
+Around the farmers the farm keeps living (`life.gd`): the cows wander the paddock and graze, the
+hens scurry and peck, gulls circle over the sea, a rowboat rocks by the pier, the weathervane on the
+silo swings, and butterflies are out over the meadows but in winter.
+
 The world is built from code: `main.gd` places bricks and sloped bricks in a grid and draws every
 visible one as an instance of one brick mesh. The farmers are read from `art/villager_a.png` and
 `art/villager_b.png`, the owner's generated sprites, down to a 30-pixel-tall grid, one brick a
@@ -18,8 +22,9 @@ pixel.
 
 It is live: `live.gd` reads one JSON farm per line — the app's `FarmState` as `Snapshot.kt` writes
 it — and moves the world to match. Each directory gets a raised bed and each file a crop, grown a
-stage per edit; each session is a farmer who walks to the well for every model call and home again,
-with `…` while it waits and `zzz` while it rests off a rate limit; replay is night with the
+stage per edit; each session is a farmer who walks to the well for every model call, then on its
+way home walks the rounds of the crops that trip planted or grew and bends to each one, with `…`
+while it waits, `zzz` while it rests off a rate limit and `♪` while it tends; replay is night with the
 lanterns lit; rain, storms and lightning follow the provider; the shipping bin shows the ledger.
 Clicking a farmer or a crop prints `{"villager": id}` or `{"crop": path}`, which the app turns into
 its detail pane.

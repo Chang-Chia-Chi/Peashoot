@@ -101,6 +101,8 @@ var camera: Camera3D
 var lamps: Array[OmniLight3D] = []
 var material: StandardMaterial3D
 var brick_mesh: Mesh
+## The animals and the small things that move whatever the agents do; see life.gd.
+var life: Node3D
 var _crown_order: Array[Vector3i] = []
 var _crown_layer: MultiMeshInstance3D
 var _flower_order: Array[Vector3i] = []
@@ -137,6 +139,9 @@ func _ready() -> void:
 	_emit()
 	_smoke(Vector3(9.5 * B, 24 * H, 17.5 * B))
 	_dust()
+	life = preload("res://life.gd").new()
+	life.world = self
+	add_child(life)
 	var live: Node3D = preload("res://live.gd").new()
 	live.world = self
 	add_child(live)
@@ -406,8 +411,7 @@ func _barn(x: int, z: int) -> void:
 		for sz in range(z + 3, z + 8):
 			if Vector2(sx - (x + 20), sz - (z + 5)).length() <= 2.2:
 				put(sx, y + 22, sz, Color(0.7, 0.71, 0.73))
-	box(x + 20, y + 23, z + 5, 1, 3, 1, BLACK)
-	box(x + 19, y + 25, z + 5, 3, 1, 1, BLACK)
+	# the weathervane on top is life.gd's, which swings it
 
 
 func _well(x: int, z: int) -> void:
@@ -474,11 +478,7 @@ func _paddock(x: int, z: int) -> void:
 	_fence(x, z, x + 24, z + 16)
 	box(x + 16, GROUND + 1, z + 2, 6, 2, 3, STONE)
 	box(x + 17, GROUND + 2, z + 3, 4, 1, 1, WATER)
-	_cow(x + 3, z + 4)
-	_cow(x + 9, z + 9)
-	_cow(x + 15, z + 11)
-	for h in [Vector2i(x + 5, z + 13), Vector2i(x + 12, z + 5), Vector2i(x + 20, z + 8)]:
-		_hen(h.x, h.y)
+	# its cows and hens are life.gd's, which moves them
 
 
 ## A round tree: a trunk and a crown. The crown's bricks are not coloured here but remembered:
@@ -574,28 +574,6 @@ func _details() -> void:
 	box(84, GROUND + 1, 22, 3, 2, 2, HAY)
 
 
-func _cow(x: int, z: int) -> void:
-	var y := GROUND + 1
-	for lx in [0, 4]:
-		for lz in [0, 2]:
-			put(x + lx, y, z + lz, WHITE)
-	box(x, y + 1, z, 5, 2, 3, WHITE)
-	box(x + 1, y + 2, z, 2, 1, 3, BLACK)
-	box(x + 3, y + 1, z + 2, 1, 1, 1, BLACK)
-	box(x + 5, y + 2, z, 2, 2, 3, WHITE)
-	box(x + 6, y + 2, z, 1, 1, 3, Color(0.96, 0.68, 0.66))
-	put(x + 5, y + 4, z, BLACK)
-	put(x + 5, y + 4, z + 2, BLACK)
-
-
-func _hen(x: int, z: int) -> void:
-	var y := GROUND + 1
-	box(x, y, z, 2, 1, 2, WHITE)
-	put(x + 1, y + 1, z, WHITE)
-	put(x + 1, y + 2, z, RED)
-	put(x + 2, y + 1, z, Color(1, 0.7, 0.1))
-
-
 func farmer_look(look: int) -> MultiMesh:
 	if _looks.has(look):
 		return _looks[look]
@@ -652,6 +630,8 @@ func _mini_brick(px: float) -> Mesh:
 ## summer and autumn, none in winter. Only instances already built are recoloured, or hidden, so
 ## nothing is rebuilt.
 func paint_season(season: String) -> void:
+	if life:
+		life.winter = season == "WINTER"
 	var leaves := _crown_layer.multimesh
 	for i in _crown_order.size():
 		var leaf: Array = crowns[_crown_order[i]]
