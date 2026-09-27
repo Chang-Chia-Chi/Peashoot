@@ -43,6 +43,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.channels.ClosedSendChannelException
 import kotlinx.coroutines.coroutineScope
@@ -466,6 +467,20 @@ private tailrec fun ApplicationCall.engineCall(): NettyApplicationCall? =
 internal fun ApplicationCall.clientGone(): () -> Boolean {
     val channel = engineCall()?.context?.channel()
     return { channel?.isOpen == false }
+}
+
+/**
+ * Returns once the answer this call gave is in the socket, as far as the engine can say. `respond`
+ * returns when Netty has the answer, not when it is sent: the write runs later on the channel's
+ * event loop, and its flush is one more task queued behind it. Stopping the engine closes every
+ * open channel before it runs what is queued, so an answer still waiting there is dropped and its
+ * client reads a closed connection. Waiting for the write and then flushing on the event loop puts
+ * the bytes in the socket first. Another engine has nothing to wait for.
+ */
+internal suspend fun ApplicationCall.awaitSent() {
+    val call = engineCall() ?: return
+    call.responseWriteJob.join()
+    withContext(call.context.executor().asCoroutineDispatcher()) { call.context.flush() }
 }
 
 /** What a silent stream sends the client, so a byte-counting watchdog is not tripped by us. */
