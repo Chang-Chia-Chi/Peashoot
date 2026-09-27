@@ -217,14 +217,15 @@ func _gull(body: MultiMesh, wing: MultiMesh, i: int) -> Dictionary:
 		node.add_child(hinge)
 		wings.append(hinge)
 	add_child(node)
-	# over the sea off the front and the right of the island, high above the barn's roof
-	var centres := [Vector3(8, 6.5, 17), Vector3(22, 7.2, 12), Vector3(14, 7.8, 19)]
+	# low over the open sea off the front, the right and the left of the island, where the camera
+	# sees them against the water rather than flying through the beds and the farmers
+	var centres := [Vector3(7, 2.5, 17.8), Vector3(25.5, 3.5, 8), Vector3(0.5, 2.5, 9)]
 	return {
 		"node": node,
 		"left": wings[0],
 		"right": wings[1],
 		"centre": centres[i % centres.size()],
-		"radius": 2.2 + i * 0.6,
+		"radius": 1.6 + i * 0.4,
 		"speed": 0.35 + i * 0.07,
 		"phase": i * 2.1,
 	}
