@@ -1,13 +1,16 @@
 # The Godot farm
 
-The farm as the owner chose it (`docs/adr/0003-godot-farm.md`): a nanoblock-style island of studded
-bricks, lit the HD-2D way — a low warm sun with light shafts, glow, soft shadows, drifting dust,
-chimney smoke and a tilt-shift depth of field — with a Story of Seasons farm on it: a farmhouse with
-its shipping bin at the door, fenced fields, a well by an apple tree, a barn and silo, a paddock of
-animals, and a forest round the shore.
+The farm as the owner chose it (`docs/adr/0003-godot-farm.md`): three styles mixed. A nanoblock
+island of studded bricks on a blue baseplate, standing on a workshop table under one warm window
+beam; HD-2D in the light (glow, volumetric beam, dust, depth of field) and in the farmers, who are
+Octopath-style pixel sprites built of tiny bricks and turned to face the camera; and a Story of
+Seasons farm — a farmhouse with its shipping bin and porch lanterns, raised beds, a well by an apple
+tree, a barn and silo, a paddock of cows and hens, a pier.
 
-Everything is built from code: `main.gd` places bricks in a grid and draws every brick that can be
-seen as one instance of one studded-brick mesh. No art files.
+The world is built from code: `main.gd` places bricks and sloped bricks in a grid and draws every
+visible one as an instance of one brick mesh. The farmers are read from `art/villager_a.png` and
+`art/villager_b.png`, the owner's generated sprites, down to a 30-pixel-tall grid, one brick a
+pixel.
 
 Run it with Godot 4.7 (Forward+): `godot --path farm`. A still: `godot --path farm -- --shot`
 writes `farm/shot.png` after 40 frames; `docs/farm-godot.png` is one.
