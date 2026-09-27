@@ -86,6 +86,21 @@ class SnapshotTest {
     }
 
     @Test
+    fun `a farmer carries the crops its latest turn tended, and how many turns it has done`() {
+        val farmer =
+            parsed(replay("one-turn.jsonl").last())
+                .getValue("villagers")
+                .jsonArray
+                .single()
+                .jsonObject
+        assertEquals(
+            listOf("src/main/App.kt", "src/test/AppTest.kt"),
+            farmer.getValue("tended").jsonArray.map { it.jsonPrimitive.content },
+        )
+        assertEquals(2, farmer.getValue("turns").jsonPrimitive.int)
+    }
+
+    @Test
     fun `the sky, the night, the toggle and the bin travel with the farm`() {
         val state = replay("bin.jsonl").last().copy(night = true, labelsHidden = false)
         val farm = parsed(state)

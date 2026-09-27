@@ -53,6 +53,18 @@ class FarmTest {
         assertEquals(listOf(0, 1, 1, 2), states.map { it.crops().size })
         assertNull(states.last().crop("docs/notes.md"))
         assertEquals(listOf("src/main", "src/test"), states.last().fields.keys.sorted())
+        // What each turn planted or grew, for the walk home: a Read tends nothing, and the list
+        // stands until the next turn completes.
+        assertEquals(
+            listOf(
+                emptyList(),
+                listOf("src/main/App.kt"),
+                listOf("src/main/App.kt"),
+                listOf("src/main/App.kt", "src/test/AppTest.kt"),
+            ),
+            states.map { it.villager(ALPHA).tended },
+        )
+        assertEquals(listOf(0, 1, 1, 2), states.map { it.villager(ALPHA).turns })
     }
 
     @Test
@@ -223,8 +235,17 @@ class FarmTest {
         assertEquals(0, states[5].villager(ECHO).water)
         assertTrue(states[5].crops().isEmpty())
         // No exchangeId, a tool with no path, a path that is an object, a tool that is a string:
-        // nothing about the farm changes but what the turn itself adds to the bin and to the day.
-        assertEquals(states[5].copy(bin = states[6].bin, days = states[6].days), states[6])
+        // nothing about the farm changes but what the turn itself adds to the bin, to the day and
+        // to the villager's count of turns.
+        val echo = states[5].villager(ECHO)
+        assertEquals(
+            states[5].copy(
+                bin = states[6].bin,
+                days = states[6].days,
+                villagers = mapOf(ECHO to echo.copy(turns = echo.turns + 1)),
+            ),
+            states[6],
+        )
         // Both turns ended; only the second reported usage with no cost, which is what unpriced
         // means. The first reported nothing at all, so there was nothing to price.
         assertEquals(ShippingBin(produce = 2, ledger = 0.0, unpriced = 1), states[6].bin)

@@ -73,6 +73,16 @@ data class Villager(
     val stamina: Stamina = Stamina(),
     /** Buckets spilled: turns whose client left before the answer arrived. */
     val spills: Int = 0,
+    /**
+     * The files this villager's latest turn planted or grew, first worked first: what it tends on
+     * its way home from the well.
+     */
+    val tended: List<String> = emptyList(),
+    /**
+     * The turns it has completed, so that a renderer can tell one turn's [tended] from the next's
+     * when both worked the same files.
+     */
+    val turns: Int = 0,
 )
 
 /**
@@ -305,17 +315,19 @@ private fun completed(state: FarmState, event: JsonObject): FarmState {
     // the day's card still counts them.
     val spilled = resting || weather == Weather.LIGHTNING
     val back =
-        villager.copy(
-            activity =
-                when {
-                    !home -> villager.activity
-                    resting -> Activity.RESTING
-                    else -> Activity.RETURNING
-                },
-            water = villager.water + if (spilled) 0 else outputTokens(event),
-            inFlight = remaining,
-            stamina = villager.stamina.after(event),
-        )
+        villager
+            .worked(event)
+            .copy(
+                activity =
+                    when {
+                        !home -> villager.activity
+                        resting -> Activity.RESTING
+                        else -> Activity.RETURNING
+                    },
+                water = villager.water + if (spilled) 0 else outputTokens(event),
+                inFlight = remaining,
+                stamina = villager.stamina.after(event),
+            )
     return state.copy(
         villagers = state.villagers + (villager.id to back),
         // A resumed line's tools are the tools of a line the farm has already worked the fields
@@ -371,6 +383,23 @@ private fun villagerOf(state: FarmState, session: String, event: JsonObject): Vi
 /** Every path the turn's tools named, in the order the turn named them. */
 private fun touched(fields: Map<String, Field>, event: JsonObject): Map<String, Field> =
     tools(event).fold(fields) { grown, tool -> grown.touch(tool) }
+
+/**
+ * The villager having worked the fields with the turn's tools: what they planted or grew, each
+ * once, is what it tends next, and a Read tends nothing. A resumed line changes neither, for the
+ * reason it grows nothing: see [completed].
+ */
+private fun Villager.worked(event: JsonObject): Villager =
+    if (resumed(event)) this
+    else
+        copy(
+            tended =
+                tools(event)
+                    .filter { it["name"].text() != READ }
+                    .mapNotNull(::touchedPath)
+                    .distinct(),
+            turns = turns + 1,
+        )
 
 /**
  * One tool call against the fields: the directory is the field, the file is the crop. Separators

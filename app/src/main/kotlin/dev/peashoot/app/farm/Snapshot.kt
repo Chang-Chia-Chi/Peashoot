@@ -3,6 +3,7 @@ package dev.peashoot.app.farm
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.add
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
@@ -21,7 +22,9 @@ private const val LOOKS = 2
  *
  * Villagers and fields are in the order the farm first heard them, and so are a field's crops.
  * `home` is a villager's slot among those with nobody to stand beside, and null for a helper, which
- * stands beside `parent` instead. `queue` is its place in the line at the well, or null.
+ * stands beside `parent` instead. `queue` is its place in the line at the well, or null. `tended`
+ * is the crops, by path, its latest turn planted or grew, which it visits on the way home, and
+ * `turns` how many turns it has completed, which tells a new turn's `tended` from the last one's.
  */
 fun snapshot(state: FarmState): String {
     val homes =
@@ -95,4 +98,6 @@ private fun villagerOf(state: FarmState, villager: Villager, home: Int?, queue: 
         put("parent", parent?.let(::JsonPrimitive) ?: JsonNull)
         put("queue", queue?.let(::JsonPrimitive) ?: JsonNull)
         put("spills", villager.spills)
+        put("tended", buildJsonArray { villager.tended.forEach { add(it) } })
+        put("turns", villager.turns)
     }
