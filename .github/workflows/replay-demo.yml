@@ -9,6 +9,11 @@ on:
 permissions:
   contents: read
 
+# As in CI: a newer push to a PR stops the run before it; a push to `main` always finishes.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
+
 jobs:
   replay:
     runs-on: ubuntu-latest
