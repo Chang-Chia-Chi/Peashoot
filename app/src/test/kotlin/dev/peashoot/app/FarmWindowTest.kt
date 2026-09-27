@@ -60,21 +60,36 @@ class FarmWindowTest {
 
     @Test
     fun `no godot configured is no farm window, and one configured is told it is fed by the app`() {
-        assertNull(farmWindowCommand({ null }) { true })
+        assertNull(farmWindowCommand({ null }, { true }, packaged = null))
         val godot = { name: String -> if (name == "PEASHOOT_GODOT") "/opt/godot" else null }
-        val command = farmWindowCommand(godot) { false }
+        val command = farmWindowCommand(godot, isProject = { false })
         assertEquals(listOf("/opt/godot", "--path", "farm", "--", "--from-app"), command)
+    }
+
+    @Test
+    fun `an installed app with no godot configured starts the farm it carries`() {
+        val resources = File("resources")
+        val exe = File(resources, "farm/peashoot-farm.exe")
+        val command = farmWindowCommand({ null }, { false }, resources.path) { it == exe }
+        assertEquals(listOf(exe.path, "--", "--from-app"), command)
+        assertNull(farmWindowCommand({ null }, { false }, resources.path) { false })
+        // A Godot configured outright wins over the carried farm: it is how the farm is developed.
+        val godot = { name: String -> if (name == "PEASHOOT_GODOT") "/opt/godot" else null }
+        assertEquals(
+            "/opt/godot",
+            farmWindowCommand(godot, { false }, resources.path) { true }?.first(),
+        )
     }
 
     @Test
     fun `the farm project is found from the repository root or from app, or named outright`() {
         val godot = { name: String -> if (name == "PEASHOOT_GODOT") "/opt/godot" else null }
-        assertEquals("farm", farmWindowCommand(godot) { it == "farm" }?.get(2))
-        assertEquals("../farm", farmWindowCommand(godot) { it == "../farm" }?.get(2))
+        assertEquals("farm", farmWindowCommand(godot, isProject = { it == "farm" })?.get(2))
+        assertEquals("../farm", farmWindowCommand(godot, isProject = { it == "../farm" })?.get(2))
         val named = { name: String ->
             if (name == "PEASHOOT_FARM_PROJECT") "/srv/farm" else godot(name)
         }
-        assertEquals("/srv/farm", farmWindowCommand(named) { false }?.get(2))
+        assertEquals("/srv/farm", farmWindowCommand(named, isProject = { false })?.get(2))
     }
 }
 

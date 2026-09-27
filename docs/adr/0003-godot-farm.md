@@ -40,7 +40,7 @@ in `farm/studies/` for comparison.
 - Building and seeing this needs network access this project's cloud environment does not have today: `dl.google.com` (Compose's AndroidX dependencies) and GitHub release downloads (Godot itself and its export templates).
 - Releases carry a Godot export per platform beside the app, and CI needs Godot's export templates.
 - The farm's placement invariants now in `LayoutTest` (nothing on a field, nobody in the well, nothing already placed moves) split: stable slots stay tested in Kotlin, and the marker geometry is checked by a headless Godot script.
-- The Compose farm stays until releases bundle Godot. Retiring it first would leave an installed app
-  with no farm at all, since the window only starts when `PEASHOOT_GODOT` names a Godot executable.
-  Once a release carries a Godot export of `farm/` and the app starts it from its own resources, the
-  farm tab and `dev.peashoot.app.render` go.
+- Releases carry the farm, exported by `farm/export.sh` into one executable per OS, on the Windows
+  and Linux legs; the app starts it when no `PEASHOOT_GODOT` is set. The Compose farm stays until
+  the Windows installer has been tried by hand and macOS carries one too — retiring it first would
+  leave an installed app with no farm at all. Then the farm tab and `dev.peashoot.app.render` go.

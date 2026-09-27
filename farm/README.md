@@ -28,4 +28,27 @@ its detail pane.
   and, with `--shot`, writes `farm/shot.png` once they are done. `docs/farm-godot.png` is the README
   demo's sixteen turns, recorded from the real app and played this way.
 
+## In an installed app
+
+A release carries the farm exported as one executable, `farm/peashoot-farm.exe` (Windows) or
+`farm/peashoot-farm.x86_64` (Linux), beside the proxy's jar in the app's resources; with no
+`PEASHOOT_GODOT` set, the app starts that. macOS has none yet: an unsigned app inside the DMG is
+untried against Gatekeeper.
+
+`farm/export.sh` makes it, in CI's release legs and on a developer's machine alike, with the Godot
+pinned as `godot` in `gradle/libs.versions.toml` (it downloads the editor and the one export template
+it needs into `build/godot` once). To try the whole thing on Windows, from Git Bash at the
+repository root:
+
+```
+bash farm/export.sh Windows build/farm            # build/farm/peashoot-farm.exe
+./gradlew :app:runDistributable -Ppeashoot.farm=build/farm
+```
+
+`runDistributable` runs the app from the same image the installer is made of, so the farm window
+should open by itself once the app has a proxy. `./gradlew :app:packageMsi -Ppeashoot.farm=build/farm`
+builds the installer itself. Things only Windows can tell: that the window opens, that farms reach it
+(the farm fills in as the feed arrives), that a click on a farmer opens its pane in the app, and that
+closing the app closes the farm within fifteen seconds.
+
 Gate: `gdformat --check` and `gdlint` (gdtoolkit 4.x), on their defaults.

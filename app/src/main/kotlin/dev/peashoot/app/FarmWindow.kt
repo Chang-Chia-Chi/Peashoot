@@ -41,23 +41,35 @@ private val DEFAULT_PROJECTS = listOf("farm", "../farm")
  */
 private const val HEARTBEAT_MILLIS = 5_000L
 
-/** How to start the farm window, or null when no Godot is configured. */
+/** Where an installed app's resources are, the same property `OwnedProxy` reads. */
+private const val PACKAGED_RESOURCES = "compose.application.resources.dir"
+
+/** The farm `farm/export.sh` exports and a release carries, one name per OS it is built for. */
+private val BUNDLED_FARMS = listOf("farm/peashoot-farm.exe", "farm/peashoot-farm.x86_64")
+
+/**
+ * How to start the farm window, or null when there is none to start. A Godot named by [GODOT_ENV]
+ * runs the project in a checkout, which is how the farm is developed; failing that, an installed
+ * app starts the farm it carries, exported by `farm/export.sh` into its resources.
+ */
 internal fun farmWindowCommand(
     env: (String) -> String? = System::getenv,
     isProject: (String) -> Boolean = { File(it, "project.godot").isFile },
+    packaged: String? = System.getProperty(PACKAGED_RESOURCES),
+    isFile: (File) -> Boolean = File::isFile,
 ): List<String>? {
-    val godot = env(GODOT_ENV)?.takeIf { it.isNotBlank() } ?: return null
+    val godot = env(GODOT_ENV)?.takeIf { it.isNotBlank() }
+    if (godot == null) {
+        val bundled = packaged?.let { dir ->
+            BUNDLED_FARMS.map { File(dir, it) }.firstOrNull(isFile)
+        }
+        return bundled?.let { listOf(it.path, "--", "--from-app") }
+    }
     val project =
         env(PROJECT_ENV)?.takeIf { it.isNotBlank() }
             ?: DEFAULT_PROJECTS.firstOrNull(isProject)
             ?: DEFAULT_PROJECTS.first()
-    return listOf(
-        godot,
-        "--path",
-        project,
-        "--",
-        "--from-app",
-    )
+    return listOf(godot, "--path", project, "--", "--from-app")
 }
 
 /**
