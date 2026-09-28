@@ -40,6 +40,9 @@ const CROP_COLOURS := {
 	"pumpkin": Color(0.97, 0.5, 0.05),
 	"tomato": Color(0.86, 0.1, 0.07),
 	"carrot": Color(1.0, 0.56, 0.1),
+	"corn": Color(0.98, 0.84, 0.22),
+	"strawberry": Color(0.93, 0.13, 0.25),
+	"sunflower": Color(1.0, 0.8, 0.05),
 }
 const LEAF := Color(0.14, 0.45, 0.14)
 const LEAF_LIGHT := Color(0.3, 0.6, 0.16)
@@ -517,6 +520,34 @@ func crop(kind: String, stage: int, x: int, z: int) -> void:
 			box(x, y, z, 3, 2, 2, LEAF)
 			box(x, y + 2, z, 3, 1, 1, LEAF_LIGHT)
 			box(x + 1, y + 1, z + 1, 1, 1, 1, ripe.lerp(LEAF_LIGHT, 0.55))
+		_:
+			_ripe(kind, ripe, x, y, z)
+
+
+## A ripe crop: most a big fruit on its leaves, the tall kinds a stalk with the crop at the top,
+## the strawberry a low bush dotted red.
+func _ripe(kind: String, ripe: Color, x: int, y: int, z: int) -> void:
+	match kind:
+		"corn":
+			box(x, y, z, 3, 1, 2, LEAF)
+			box(x + 1, y + 1, z, 1, 4, 1, LEAF)
+			box(x + 1, y + 2, z + 1, 1, 2, 1, ripe)
+			put(x, y + 3, z, LEAF_LIGHT)
+			put(x + 2, y + 2, z, LEAF_LIGHT)
+			put(x + 1, y + 5, z, HAY)
+		"sunflower":
+			box(x + 1, y, z, 1, 4, 1, LEAF)
+			put(x, y + 1, z, LEAF_LIGHT)
+			put(x + 2, y + 2, z, LEAF_LIGHT)
+			box(x, y + 4, z, 3, 3, 1, ripe)
+			put(x + 1, y + 5, z, SOIL)
+		"strawberry":
+			box(x, y, z, 3, 1, 2, LEAF)
+			box(x, y + 1, z, 3, 1, 2, LEAF_LIGHT)
+			put(x, y + 1, z, ripe)
+			put(x + 2, y + 1, z + 1, ripe)
+			put(x + 1, y + 2, z, ripe)
+			put(x + 2, y, z, ripe)
 		_:
 			box(x, y, z, 3, 1, 2, LEAF)
 			box(x, y + 1, z, 3, 2, 2, ripe)

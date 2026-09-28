@@ -20,14 +20,15 @@ private const val LOOKS = 2
  * One farm as one line of JSON, with no newline in it: the pipe to the Godot window is read a line
  * at a time, so a line is a whole farm and the latest line is the only one that matters.
  *
- * Villagers and fields are in the order the farm first heard them, and so are a field's crops.
- * `home` is a villager's slot among those with nobody to stand beside, and null for a helper, which
- * stands beside `parent` instead. `queue` is its place in the line at the well, or null. `tended`
- * is the crops, by path, its latest turn planted or grew, which it visits on the way home, and
- * `turns` how many turns it has completed, which tells a new turn's `tended` from the last one's.
- * `purse` is the coins to spend, the lifetime coins, the level they reach, and the lifetime coins
- * this level began at and the next one begins at, which is the whole of a progress bar. `land` is
- * the plots bought beyond the starting island and what the next one costs.
+ * Villagers and fields are in the order the farm first heard them, and so are a field's crops. A
+ * crop's `kind` is what it grows as, from its file type and the level ([kindOf]). `home` is a
+ * villager's slot among those with nobody to stand beside, and null for a helper, which stands
+ * beside `parent` instead. `queue` is its place in the line at the well, or null. `tended` is the
+ * crops, by path, its latest turn planted or grew, which it visits on the way home, and `turns` how
+ * many turns it has completed, which tells a new turn's `tended` from the last one's. `purse` is
+ * the coins to spend, the lifetime coins, the level they reach, and the lifetime coins this level
+ * began at and the next one begins at, which is the whole of a progress bar. `land` is the plots
+ * bought beyond the starting island and what the next one costs.
  */
 fun snapshot(state: FarmState): String {
     val homes =
@@ -60,6 +61,10 @@ fun snapshot(state: FarmState): String {
                                             buildJsonObject {
                                                 put("path", crop.label)
                                                 put("growth", crop.growth.ordinal)
+                                                put(
+                                                    "kind",
+                                                    kindOf(crop.label, state.purse.level),
+                                                )
                                             }
                                         )
                                     }

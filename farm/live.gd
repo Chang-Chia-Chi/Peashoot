@@ -51,8 +51,6 @@ const QUEUE: Array[Vector2i] = [
 	Vector2i(60, 32),
 	Vector2i(28, 32)
 ]
-## One crop kind per bed, by the bed's slot, so neighbouring directories read apart.
-const KINDS: Array[String] = ["turnip", "pumpkin", "tomato", "carrot"]
 ## Crops a bed has room for: three rows of three.
 const CELLS := 9
 const KEY := (
@@ -294,7 +292,7 @@ func _apply_fields(fields: Array, hidden: bool) -> void:
 			var crop: Dictionary = crops[cell]
 			var x := bed.x + 1 + (cell % 3) * 3
 			var z := bed.y + 1 + (cell / 3) * 2
-			world.crop(KINDS[slot % KINDS.size()], int(crop.get("growth", 0)), x, z)
+			world.crop(str(crop.get("kind", "carrot")), int(crop.get("growth", 0)), x, z)
 			var path := str(crop.get("path", ""))
 			_crops.append([path, _at(Vector2i(x + 1, z))])
 			_tending_spots[path] = _at(Vector2i(x + 1, z + 2)) + Vector3(0.1, world.H, 0)
