@@ -156,6 +156,11 @@ data class FarmState(
      * per day. Upgrade: drop the oldest past some number, if that is ever a real amount of memory.
      */
     val pendingCards: List<EndOfDayCard> = emptyList(),
+    /**
+     * What the agents' work has earned, which outlives the window: the app saves it and hands it
+     * back to the next window's first state, where everything else starts over.
+     */
+    val purse: Purse = Purse(),
 )
 
 /**
@@ -174,13 +179,17 @@ fun FarmState.parentOf(villager: Villager): Villager? =
  * proxy invented — gives back the state it was handed, because the window must not lose the farm
  * over one strange line.
  */
-fun reduce(state: FarmState, event: JsonObject): FarmState =
-    when (event["event"].text()) {
-        "exchange.started" -> started(state, event)
-        "exchange.completed" -> nonGenerating(state, event) ?: completed(state, event)
-        "exchange.client_gone" -> clientGone(state, event)
-        else -> state
-    }
+fun reduce(state: FarmState, event: JsonObject): FarmState {
+    val next =
+        when (event["event"].text()) {
+            "exchange.started" -> started(state, event)
+            "exchange.completed" -> nonGenerating(state, event) ?: completed(state, event)
+            "exchange.client_gone" -> clientGone(state, event)
+            else -> state
+        }
+    val coins = earned(state, next, event)
+    return if (coins == 0) next else next.copy(purse = next.purse.earning(coins))
+}
 
 /**
  * The farm after a completed line that generated nothing, or null when the line is a turn like any

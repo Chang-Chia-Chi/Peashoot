@@ -235,13 +235,14 @@ class FarmTest {
         assertEquals(0, states[5].villager(ECHO).water)
         assertTrue(states[5].crops().isEmpty())
         // No exchangeId, a tool with no path, a path that is an object, a tool that is a string:
-        // nothing about the farm changes but what the turn itself adds to the bin, to the day and
-        // to the villager's count of turns.
+        // nothing about the farm changes but what the turn itself adds to the bin, to the day, to
+        // the purse and to the villager's count of turns.
         val echo = states[5].villager(ECHO)
         assertEquals(
             states[5].copy(
                 bin = states[6].bin,
                 days = states[6].days,
+                purse = states[5].purse.earning(COINS_A_TURN),
                 villagers = mapOf(ECHO to echo.copy(turns = echo.turns + 1)),
             ),
             states[6],
