@@ -5,8 +5,6 @@ extends Node3D
 ## by the pier, the weathervane on the silo swings, and butterflies are out from spring to autumn.
 ## Each is its own node of bricks, so moving one moves nothing else of the island.
 
-## The paddock's inside, in bricks, where the animals keep to: clear of the fence and the trough.
-const PADDOCK := Rect2i(62, 37, 15, 11)
 ## A cow's amble and a hen's scurry, in world units a second.
 const COW_PACE := 0.35
 const HEN_PACE := 1.1
@@ -106,10 +104,7 @@ func herd(counts: Dictionary) -> void:
 	for kind in ["cow", "hen", "sheep", "pig"]:
 		var have: int = _owned.get(kind, 3 if kind in ["cow", "hen"] else 0)
 		for i in range(have, int(counts.get(kind, have))):
-			var at := Vector2i(
-				_rng.randi_range(PADDOCK.position.x, PADDOCK.end.x),
-				_rng.randi_range(PADDOCK.position.y, PADDOCK.end.y)
-			)
+			var at := Vector2i(_patch())
 			match kind:
 				"cow":
 					_cows.append(_cow(_shapes["cow"], _shapes["head"], at))
@@ -153,12 +148,27 @@ func _amble(animal: Dictionary, delta: float, pace: float, herd: Array[Dictionar
 func _somewhere(animal: Dictionary, herd: Array[Dictionary]) -> Vector3:
 	var spot := Vector3.ZERO
 	for attempt in 8:
-		var x := _rng.randf_range(PADDOCK.position.x, PADDOCK.end.x)
-		var z := _rng.randf_range(PADDOCK.position.y, PADDOCK.end.y)
-		spot = Vector3(x * world.B, 0, z * world.B)
+		var at := _patch()
+		spot = Vector3(at.x * world.B, 0, at.y * world.B)
 		if _clear(spot, animal, herd):
 			break
 	return spot
+
+
+## A patch of the paddock, in bricks, as far as the barn's upgrades have stretched it, and not in
+## the trough.
+func _patch() -> Vector2:
+	var inside: Rect2i = world.Pasture.inside(world.stretches)
+	var trough: Rect2i = world.Pasture.TROUGH.grow(1)
+	var at := Vector2.ZERO
+	for attempt in 8:
+		at = Vector2(
+			_rng.randf_range(inside.position.x, inside.end.x),
+			_rng.randf_range(inside.position.y, inside.end.y)
+		)
+		if not trough.has_point(Vector2i(at)):
+			break
+	return at
 
 
 func _clear(spot: Vector3, animal: Dictionary, herd: Array[Dictionary]) -> bool:

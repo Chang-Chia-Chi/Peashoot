@@ -250,9 +250,10 @@ func _shoot_later(seconds: float) -> void:
 
 func _apply(farm: Dictionary) -> void:
 	var land: Dictionary = farm.get("land", {})
-	world.grow(int(land.get("plots", 0)))
-	_apply_sign(land, farm.get("purse", {}))
 	var herd: Dictionary = farm.get("herd", {})
+	var barn := mini(int(herd.get("barn", 0)), world.Pasture.MOST_STRETCHES)
+	world.grow(int(land.get("plots", 0)), barn)
+	_apply_sign(land, farm.get("purse", {}))
 	var buildings: Dictionary = farm.get("buildings", {})
 	_shop.apply(herd, buildings)
 	world.life.herd(herd)
