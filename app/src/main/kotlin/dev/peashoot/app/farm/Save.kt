@@ -16,11 +16,12 @@ import kotlinx.serialization.json.put
 private const val SAVE_FILE = "farm.json"
 
 /**
- * What one window leaves the next: the purse, and the id of the last line that went into it. The
- * two are one write, so the next window resumes the feed from exactly where the purse stops, and
- * the proxy's store hands it every turn made while no window was open, each counted once.
+ * What one window leaves the next: the purse, the plots bought, and the id of the last line that
+ * went into the purse. The two are one write, so the next window resumes the feed from exactly
+ * where the purse stops, and the proxy's store hands it every turn made while no window was open,
+ * each counted once.
  */
-data class Saved(val purse: Purse = Purse(), val lastId: Long? = null)
+data class Saved(val purse: Purse = Purse(), val land: Int = 0, val lastId: Long? = null)
 
 /**
  * The save in [home], or a new farm's when there is none. One that cannot be read is also a new
@@ -38,6 +39,7 @@ fun readSave(home: Path): Saved {
                 coins = json.scalar("coins") { intOrNull } ?: 0,
                 earned = json.scalar("earned") { intOrNull } ?: 0,
             ),
+        land = json.scalar("land") { intOrNull } ?: 0,
         lastId = json.scalar("lastId") { longOrNull },
     )
 }
@@ -59,6 +61,7 @@ fun writeSave(home: Path, saved: Saved) {
     val json = buildJsonObject {
         put("coins", saved.purse.coins)
         put("earned", saved.purse.earned)
+        put("land", saved.land)
         saved.lastId?.let { put("lastId", it) }
     }
     Files.createDirectories(home)

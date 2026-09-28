@@ -6,7 +6,9 @@ import dev.peashoot.app.render.Hit
 import java.io.File
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNull
+import kotlin.test.assertTrue
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
@@ -34,8 +36,12 @@ class FarmWindowTest {
                     )
             )
         val hits = mutableListOf<Hit>()
-        withTimeout(TIMEOUT_MILLIS) { runFarmWindow(fakeWindow(), flowOf(farm), hits::add) }
+        var buys = 0
+        withTimeout(TIMEOUT_MILLIS) {
+            runFarmWindow(fakeWindow(), flowOf(farm), hits::add) { buys++ }
+        }
         assertEquals(listOf<Hit>(Hit.OnVillager("sess-a")), hits)
+        assertEquals(1, buys, "the sign's click is a purchase, and not a hit")
     }
 
     @Test
@@ -56,6 +62,10 @@ class FarmWindowTest {
         assertNull(hitOf("""{"villager":7}"""))
         assertNull(hitOf("""{"weather":"CLEAR"}"""))
         assertNull(hitOf("{not json"))
+        assertNull(hitOf("""{"buy":"plot"}"""))
+        assertTrue(buysPlot("""{"buy":"plot"}"""))
+        assertFalse(buysPlot("""{"buy":"cow"}"""))
+        assertFalse(buysPlot("""{"villager":"sess-a"}"""))
     }
 
     @Test
@@ -102,12 +112,13 @@ private fun fakeWindow(): List<String> =
     )
 
 /**
- * The stand-in window: reads one farm, clicks its first villager, and closes, which is the window
- * being closed by hand.
+ * The stand-in window: reads one farm, clicks its first villager and then the "For sale" sign, and
+ * closes, which is the window being closed by hand.
  */
 fun main() {
     val farm = Json.parseToJsonElement(readln()).jsonObject
     val first = farm.getValue("villagers").jsonArray.first().jsonObject
     println("Godot Engine v4.7 - a banner line the app must ignore")
     println("""{"villager":"${first.getValue("id").jsonPrimitive.content}"}""")
+    println("""{"buy":"plot"}""")
 }

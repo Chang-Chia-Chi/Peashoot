@@ -82,6 +82,9 @@ var _badge: Label
 ## The farm's level, its coins, and how far it is to the next level; see [method _apply_purse].
 var _level: Label
 var _progress: ProgressBar
+## The "For sale" sign standing in the sea where the next plot will rise, and its price tag.
+var _sign: Node3D
+var _sign_tag: Label3D
 var _rain: CPUParticles3D
 var _snow: CPUParticles3D
 var _day := {}
@@ -225,6 +228,9 @@ func _shoot_later(seconds: float) -> void:
 
 
 func _apply(farm: Dictionary) -> void:
+	var land: Dictionary = farm.get("land", {})
+	world.grow(int(land.get("plots", 0)))
+	_apply_sign(land, farm.get("purse", {}))
 	_apply_fields(farm.get("fields", []), farm.get("labelsHidden", true))
 	_apply_farmers(farm.get("villagers", []))
 	_apply_sky(farm)
@@ -235,6 +241,19 @@ func _apply(farm: Dictionary) -> void:
 	_bin_label.text = line
 	_badge.visible = not farm.get("labelsHidden", true)
 	_apply_purse(farm.get("purse", {}))
+
+
+## The sign moved to where the next plot will rise, in the sea off the shore it will join, with its
+## price; gold when the purse can pay for it, and grey until then.
+func _apply_sign(land: Dictionary, purse: Dictionary) -> void:
+	var price := int(land.get("price", 20))
+	var corner: Vector2i = world.Land.corner(int(land.get("plots", 0)))
+	_sign.position = (
+		_at(corner + Vector2i(world.Land.PLOT_W / 2, 5)) - Vector3(0, world.GROUND * world.H, 0)
+	)
+	_sign_tag.text = "FOR SALE\n%d coins" % price
+	var affordable := int(purse.get("coins", 0)) >= price
+	_sign_tag.modulate = Color(1, 0.85, 0.3) if affordable else Color(0.75, 0.75, 0.72)
 
 
 ## What the agents' work has earned: the level, the coins to spend, and the bar to the next level,
@@ -266,7 +285,7 @@ func _apply_fields(fields: Array, hidden: bool) -> void:
 	_tending_spots.clear()
 	var saved: Dictionary = world.bricks
 	world.bricks = {}
-	var beds: Array[Vector2i] = world.BEDS
+	var beds: Array[Vector2i] = world.beds()
 	for slot in mini(fields.size(), beds.size()):
 		var field: Dictionary = fields[slot]
 		var bed := beds[slot]
@@ -603,6 +622,8 @@ func _hud() -> void:
 	_badge.visible = false
 	layer.add_child(_badge)
 	_hud_purse(layer)
+	_sign = _sign_post()
+	add_child(_sign)
 	_bin_label = _tag("0 shipped · $0.00", 26)
 	_bin_label.position = _at(Vector2i(29, 27)) + Vector3(0, 1.1, 0)
 	add_child(_bin_label)
@@ -638,6 +659,37 @@ func _hud_purse(layer: CanvasLayer) -> void:
 	_progress.add_theme_stylebox_override("background", track)
 	_progress.add_theme_stylebox_override("fill", fill)
 	box.add_child(_progress)
+
+
+## A signpost of bricks standing in the sea, a board across its top, and its price tag above.
+func _sign_post() -> Node3D:
+	var items := []
+	for y in range(1, 9):
+		items.append([Vector3i(0, y, 0), world.WOOD_DARK])
+	for x in range(-3, 4):
+		for y in range(6, 9):
+			var edge := x in [-3, 3] or y in [6, 8]
+			items.append([Vector3i(x, y, 1), world.WOOD_DARK if edge else world.WOOD])
+	var mm := MultiMesh.new()
+	mm.transform_format = MultiMesh.TRANSFORM_3D
+	mm.use_colors = true
+	mm.mesh = world.brick_mesh
+	mm.instance_count = items.size()
+	for i in items.size():
+		var p: Vector3i = items[i][0]
+		mm.set_instance_transform(
+			i, Transform3D(Basis(), Vector3(p.x * world.B, p.y * world.H, p.z * world.B))
+		)
+		mm.set_instance_color(i, items[i][1])
+	var body := MultiMeshInstance3D.new()
+	body.multimesh = mm
+	body.material_override = world.material
+	var node := Node3D.new()
+	node.add_child(body)
+	_sign_tag = _tag("FOR SALE", 24)
+	_sign_tag.position = Vector3(0, 11 * world.H, 0)
+	node.add_child(_sign_tag)
+	return node
 
 
 func _label(text: String, at: Vector3) -> void:
@@ -681,6 +733,9 @@ func _unhandled_input(event: InputEvent) -> void:
 		if d < best:
 			best = d
 			said = JSON.stringify({"crop": crop[0]})
+	var board := _sign.position + Vector3(0, 7 * world.H, 0)
+	if camera.unproject_position(board).distance_to(click.position) < best:
+		said = JSON.stringify({"buy": "plot"})
 	if not said.is_empty():
 		print(said)
 

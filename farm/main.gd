@@ -82,6 +82,11 @@ const BEDS: Array[Vector2i] = [
 	Vector2i(44, 46)
 ]
 
+## The plots bought beyond the starting island: where they lie, their land and their beds.
+const Land := preload("res://land.gd")
+
+## The plots the island is built with; see [method grow].
+var plots := 0
 var bricks := {}
 ## Tree crowns, painted by season: position to [kind, hue, shade, roll]; see [method _lollipop].
 var crowns := {}
@@ -123,20 +128,15 @@ var _slope_layer: MultiMeshInstance3D
 ## every opaque pixel becomes a brick, two deep. Built once per look and shared by every farmer
 ## wearing it; the live farm stands each one up facing the camera.
 var _looks := {}
+## The season the island was last painted for, which a rebuild paints again.
+var _painted := "AUTUMN"
+var _table: MeshInstance3D
 
 
 func _ready() -> void:
-	rng.seed = 21
 	_room()
-	_island()
-	_farmhouse(12, 12)
-	_barn(66, 8)
-	_well(44, 24)
-	_beds()
-	_paddock(60, 34)
-	_trees()
-	_details()
-	_emit()
+	_build()
+	_frame()
 	_smoke(Vector3(9.5 * B, 24 * H, 17.5 * B))
 	_dust()
 	life = preload("res://life.gd").new()
@@ -145,6 +145,51 @@ func _ready() -> void:
 	var live: Node3D = preload("res://live.gd").new()
 	live.world = self
 	add_child(live)
+
+
+## Every brick of the island, from the same seed each time, so a rebuild with more plots leaves
+## the land that was there as it was.
+func _build() -> void:
+	rng.seed = 21
+	_island()
+	_farmhouse(12, 12)
+	_barn(66, 8)
+	_well(44, 24)
+	_beds()
+	_paddock(60, 34)
+	_trees()
+	_details()
+	Land.raise(self, plots)
+	_emit()
+
+
+## The island rebuilt with [param count] plots bought, when that is more than it has: the new land
+## rises out of the sea at the front, and the camera pulls back to take it in.
+func grow(count: int) -> void:
+	if count == plots:
+		return
+	plots = count
+	var season := _painted
+	for layer in [_ground_layer, _crown_layer, _flower_layer, _slope_layer]:
+		layer.queue_free()
+	for lamp in lamps:
+		lamp.queue_free()
+	lamps.clear()
+	for held in [bricks, crowns, flowers, slopes, roofs, shore]:
+		held.clear()
+	glows.clear()
+	for held in [_ground, _roof_bricks, _roof_wedges, _shore, _crown_order, _flower_order]:
+		held.clear()
+	_build()
+	paint_season(season)
+	_frame()
+
+
+## Every raised bed: the island's eight, then four on each plot bought, in the order they were.
+func beds() -> Array[Vector2i]:
+	var all: Array[Vector2i] = BEDS.duplicate()
+	all.append_array(Land.beds(plots))
+	return all
 
 
 func put(x: int, y: int, z: int, c: Color) -> void:
@@ -219,16 +264,13 @@ func _room() -> void:
 	fill.light_color = Color(0.7, 0.78, 1.0)
 	add_child(fill)
 	# the table the baseplate stands on, and the workshop wall far behind, both out of focus
-	var table := MeshInstance3D.new()
-	var tb := BoxMesh.new()
-	tb.size = Vector3(44, 1.0, 34)
-	table.mesh = tb
-	table.position = centre + Vector3(0, -0.72, 0)
+	_table = MeshInstance3D.new()
+	_table.mesh = BoxMesh.new()
 	var wood := StandardMaterial3D.new()
 	wood.albedo_color = Color(0.36, 0.2, 0.1)
 	wood.roughness = 0.5
-	table.material_override = wood
-	add_child(table)
+	_table.material_override = wood
+	add_child(_table)
 	var wall := MeshInstance3D.new()
 	var wm := BoxMesh.new()
 	wm.size = Vector3(90, 30, 1)
@@ -248,24 +290,40 @@ func _room() -> void:
 	var cam := Camera3D.new()
 	camera = cam
 	cam.fov = 30
-	var yaw := deg_to_rad(CAMERA_YAW)
-	var pitch := deg_to_rad(36.0)
-	var back := Vector3(sin(yaw) * cos(pitch), sin(pitch), cos(yaw) * cos(pitch)) * 31
-	cam.position = centre + back
-	cam.look_at_from_position(cam.position, centre + Vector3(0, 0.3, 0.6))
 	var a := CameraAttributesPractical.new()
 	a.dof_blur_far_enabled = true
-	a.dof_blur_far_distance = 35
 	a.dof_blur_far_transition = 10
 	a.dof_blur_near_enabled = true
-	a.dof_blur_near_distance = 25
 	a.dof_blur_near_transition = 5
 	a.dof_blur_amount = 0.14
 	cam.attributes = a
 	add_child(cam)
 
 
-func _coast(x: int, z: int) -> float:
+## The table sized to the land, and the camera far enough back to take it all in: the starting
+## island as it always was, and further back by as much as the plots reach past its front. The
+## first framing is where the camera stands; a later one is a slow pull back.
+func _frame() -> void:
+	var depth := maxf(D, Land.front(plots))
+	var reach := depth / D
+	var centre := Vector3(W * B / 2, 0, depth * B / 2)
+	var box: BoxMesh = _table.mesh
+	box.size = Vector3(44, 1.0, 34 + (depth - D) * B)
+	_table.position = centre + Vector3(0, -0.72, 0)
+	var yaw := deg_to_rad(CAMERA_YAW)
+	var pitch := deg_to_rad(36.0)
+	var back := Vector3(sin(yaw) * cos(pitch), sin(pitch), cos(yaw) * cos(pitch)) * 31 * reach
+	var eye := Transform3D(Basis(), centre + back).looking_at(centre + Vector3(0, 0.3, 0.6))
+	var a: CameraAttributesPractical = camera.attributes
+	a.dof_blur_far_distance = 35 * reach
+	a.dof_blur_near_distance = 25 * reach
+	if camera.is_inside_tree() and camera.transform != Transform3D():
+		create_tween().tween_property(camera, "transform", eye, 2.0).set_trans(Tween.TRANS_SINE)
+	else:
+		camera.transform = eye
+
+
+func coast(x: int, z: int) -> float:
 	var dx := (x - W / 2.0) / (W / 2.0 - 8)
 	var dz := (z - D / 2.0) / (D / 2.0 - 6)
 	var n := (
@@ -277,7 +335,7 @@ func _coast(x: int, z: int) -> float:
 func _island() -> void:
 	for x in range(-16, W + 16):
 		for z in range(-14, D + 14):
-			var edge := _coast(x, z)
+			var edge := coast(x, z)
 			if edge >= 0:
 				var c := WATER
 				if edge < 0.07 and rng.randf() < 0.75:
@@ -430,10 +488,15 @@ func _well(x: int, z: int) -> void:
 
 func _beds() -> void:
 	for bed in BEDS:
-		for x in range(bed.x, bed.x + 11):
-			for z in range(bed.y, bed.y + 9):
-				var rim := x == bed.x or x == bed.x + 10 or z == bed.y or z == bed.y + 8
-				put(x, GROUND + 1, z, WOOD if rim else SOIL)
+		raised_bed(bed)
+
+
+## One raised bed, 11 x 9 bricks: a wooden rim round the soil.
+func raised_bed(bed: Vector2i) -> void:
+	for x in range(bed.x, bed.x + 11):
+		for z in range(bed.y, bed.y + 9):
+			var rim := x == bed.x or x == bed.x + 10 or z == bed.y or z == bed.y + 8
+			put(x, GROUND + 1, z, WOOD if rim else SOIL)
 
 
 ## One crop in its 3 x 2 cell, readable from across the table at every stage: a bright sprout, a
@@ -534,7 +597,7 @@ func _trees() -> void:
 		var z := rng.randi_range(0, D)
 		var busy := (z > 18 and z < 58 and x > 4 and x < 88) or (x > 8 and x < 36 and z > 8)
 		busy = busy or (x > 60 and x < 92 and z < 22)
-		if _coast(x, z) < -0.22 and not busy and _room_for_tree(x, z):
+		if coast(x, z) < -0.22 and not busy and _room_for_tree(x, z):
 			if rng.randf() < 0.5:
 				_lollipop(x, z, 2, "turning", autumn[rng.randi() % autumn.size()])
 			else:
@@ -630,6 +693,7 @@ func _mini_brick(px: float) -> Mesh:
 ## summer and autumn, none in winter. Only instances already built are recoloured, or hidden, so
 ## nothing is rebuilt.
 func paint_season(season: String) -> void:
+	_painted = season
 	if life:
 		life.winter = season == "WINTER"
 	var leaves := _crown_layer.multimesh
