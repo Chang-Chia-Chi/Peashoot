@@ -132,7 +132,15 @@ class AppModel(
      * Every line the window has heard, folded into one farm, which begins with what earlier windows
      * earned.
      */
-    var farm by mutableStateOf(FarmState(purse = saved.purse, land = saved.land, herd = saved.herd))
+    var farm by
+        mutableStateOf(
+            FarmState(
+                purse = saved.purse,
+                land = saved.land,
+                herd = saved.herd,
+                buildings = saved.buildings,
+            )
+        )
         private set
 
     /**

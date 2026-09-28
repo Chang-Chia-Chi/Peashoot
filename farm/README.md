@@ -29,7 +29,11 @@ while it waits, `zzz` while it rests off a rate limit and `♪` while it tends; 
 lanterns lit; rain, storms and lightning follow the provider; the shipping bin shows the ledger.
 Clicking a farmer or a crop prints `{"villager": id}` or `{"crop": path}`, which the app turns into
 its detail pane. Clicking the "For sale" sign or a line of the shop board by the paddock prints
-`{"buy": item}`; the app decides whether the farm can pay, and the animals bought walk into the paddock.
+`{"buy": item}`; the app decides whether the farm can pay, and the animals bought walk into the paddock. The shop
+also builds a farmhouse wing (more homes) and a greenhouse over the back row of beds, which keeps
+them growing when winter puts the open beds to sleep under snow. From level 2 a dog barks at any
+farmer whose turn failed or is resting off a rate limit; from level 4 a cat naps on the porch while
+every farmer is idle.
 
 - From the app: set `PEASHOOT_GODOT` to a Godot 4.7 executable. The app finds this directory from
   the repository root or from `app/`; `PEASHOOT_FARM_PROJECT` names it anywhere else. The app starts

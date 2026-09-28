@@ -7,6 +7,7 @@ import java.nio.file.StandardCopyOption
 import kotlinx.serialization.SerializationException
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.longOrNull
@@ -16,15 +17,16 @@ import kotlinx.serialization.json.put
 private const val SAVE_FILE = "farm.json"
 
 /**
- * What one window leaves the next: the purse, the plots bought, the herd, and the id of the last
- * line that went into the purse. The two are one write, so the next window resumes the feed from
- * exactly where the purse stops, and the proxy's store hands it every turn made while no window was
- * open, each counted once.
+ * What one window leaves the next: the purse, the plots bought, the herd and buildings, and the id
+ * of the last line that went into the purse. The two are one write, so the next window resumes the
+ * feed from exactly where the purse stops, and the proxy's store hands it every turn made while no
+ * window was open, each counted once.
  */
 data class Saved(
     val purse: Purse = Purse(),
     val land: Int = 0,
     val herd: Herd = Herd(),
+    val buildings: Buildings = Buildings(),
     val lastId: Long? = null,
 )
 
@@ -46,6 +48,11 @@ fun readSave(home: Path): Saved {
             ),
         land = json.scalar("land") { intOrNull } ?: 0,
         herd = herdOf(json),
+        buildings =
+            Buildings(
+                house = json.scalar("house") { intOrNull } ?: 0,
+                greenhouse = json.scalar("greenhouse") { booleanOrNull } ?: false,
+            ),
         lastId = json.scalar("lastId") { longOrNull },
     )
 }
@@ -75,7 +82,7 @@ private fun parsed(file: Path): JsonObject? =
     }
 
 /** What [this] farm leaves the next window, with the id of the last line it heard. */
-fun FarmState.saved(lastId: Long?): Saved = Saved(purse, land, herd, lastId)
+fun FarmState.saved(lastId: Long?): Saved = Saved(purse, land, herd, buildings, lastId)
 
 /** [saved] as [home]'s save, written beside it and renamed over it, so no reader sees half. */
 fun writeSave(home: Path, saved: Saved) {
@@ -88,6 +95,8 @@ fun writeSave(home: Path, saved: Saved) {
         for (animal in Animal.entries) put(animal.key, saved.herd.count(animal))
         put("coop", saved.herd.coop)
         put("barn", saved.herd.barn)
+        put("house", saved.buildings.house)
+        put("greenhouse", saved.buildings.greenhouse)
         saved.lastId?.let { put("lastId", it) }
     }
     Files.createDirectories(home)

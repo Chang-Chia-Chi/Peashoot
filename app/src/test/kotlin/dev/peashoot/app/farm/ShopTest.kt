@@ -92,6 +92,8 @@ class ShopTest {
                 "pig" to "level",
                 "coop" to null,
                 "barn" to "coins",
+                "house" to "coins",
+                "greenhouse" to "level",
             ),
             why,
         )

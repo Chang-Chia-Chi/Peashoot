@@ -46,6 +46,10 @@ The farm is fixed: a 96×64 island (`farm/main.gd:5-6`), 8 beds (`farm/main.gd:7
 - Animals: hen 10 (level 2), cow 40 (level 3), sheep 30 (level 4), pig 30 (level 5). Today's 3 cows and 3 hens stay as the starting herd.
 - Coop and barn: each holds 6 at first (the coop hens, the barn cows, sheep and pigs together), and each upgrade adds 4.
   Coop upgrades cost 30, 60, 90…; barn upgrades 50, 100, 150…. The henhouse widens and the barn's lean-to lengthens with them.
+- Buildings, bought at the same shop board: a farmhouse wing 40 then 80 (level 2, two at most), each adding six homes; the greenhouse 100 (level 4, once).
+- Winter pauses growth in open beds: an edit there leaves the crop where it was, and the bed sleeps under snow until spring.
+  The greenhouse stands over the back row of four beds (the first four directories heard), which keep growing all year.
+- A failed turn is a status outside 2xx other than 429 (which is resting); the dog barks at either until the next turn goes through.
 
 ## Phases (one PR each)
 1. **Coins and level.** The reducer counts coins and level, a save file keeps them, and the snapshot carries them.
