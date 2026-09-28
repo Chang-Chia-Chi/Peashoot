@@ -161,6 +161,11 @@ data class FarmState(
      * back to the next window's first state, where everything else starts over.
      */
     val purse: Purse = Purse(),
+    /**
+     * The plots bought beyond the island the farm starts with, each four more beds; saved with the
+     * [purse], since the coins paid for them are gone from it.
+     */
+    val land: Int = 0,
 )
 
 /**

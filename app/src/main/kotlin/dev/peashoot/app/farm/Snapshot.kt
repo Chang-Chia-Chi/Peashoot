@@ -26,7 +26,8 @@ private const val LOOKS = 2
  * is the crops, by path, its latest turn planted or grew, which it visits on the way home, and
  * `turns` how many turns it has completed, which tells a new turn's `tended` from the last one's.
  * `purse` is the coins to spend, the lifetime coins, the level they reach, and the lifetime coins
- * this level began at and the next one begins at, which is the whole of a progress bar.
+ * this level began at and the next one begins at, which is the whole of a progress bar. `land` is
+ * the plots bought beyond the starting island and what the next one costs.
  */
 fun snapshot(state: FarmState): String {
     val homes =
@@ -73,15 +74,9 @@ fun snapshot(state: FarmState): String {
         put("night", state.night)
         put("season", state.season.name)
         put("labelsHidden", state.labelsHidden)
-        put(
-            "bin",
-            buildJsonObject {
-                put("produce", state.bin.produce)
-                put("ledger", state.bin.ledger)
-                put("unpriced", state.bin.unpriced)
-            },
-        )
+        put("bin", binOf(state.bin))
         put("purse", purseOf(state.purse))
+        put("land", landOf(state.land))
     }
         .toString()
 }
@@ -104,6 +99,19 @@ private fun villagerOf(state: FarmState, villager: Villager, home: Int?, queue: 
         put("tended", buildJsonArray { villager.tended.forEach { add(it) } })
         put("turns", villager.turns)
     }
+
+/** What the turns have shipped, and what they are known to have cost. */
+private fun binOf(bin: ShippingBin): JsonObject = buildJsonObject {
+    put("produce", bin.produce)
+    put("ledger", bin.ledger)
+    put("unpriced", bin.unpriced)
+}
+
+/** The plots bought, and what the next one costs. */
+private fun landOf(plots: Int): JsonObject = buildJsonObject {
+    put("plots", plots)
+    put("price", plotPrice(plots))
+}
 
 /** The purse, with the lifetime coins its level began at and the next level begins at. */
 private fun purseOf(purse: Purse): JsonObject = buildJsonObject {

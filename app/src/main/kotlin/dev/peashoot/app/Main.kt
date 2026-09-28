@@ -35,6 +35,7 @@ import androidx.compose.ui.window.application
 import dev.peashoot.app.farm.EndOfDayCard
 import dev.peashoot.app.farm.FarmState
 import dev.peashoot.app.farm.Saved
+import dev.peashoot.app.farm.boughtPlot
 import dev.peashoot.app.farm.dismissed
 import dev.peashoot.app.farm.readSave
 import dev.peashoot.app.farm.reduce
@@ -130,7 +131,7 @@ class AppModel(
      * Every line the window has heard, folded into one farm, which begins with what earlier windows
      * earned.
      */
-    var farm by mutableStateOf(FarmState(purse = saved.purse))
+    var farm by mutableStateOf(FarmState(purse = saved.purse, land = saved.land))
         private set
 
     /**
@@ -168,7 +169,9 @@ class AppModel(
                 // The Godot farm (ADR 0003), when one is configured: it is sent every farm this
                 // window folds, and a click in it opens the same pane a click on the canvas does.
                 val window = farmWindow?.let { command ->
-                    launch { runFarmWindow(command, snapshotFlow { farm }, panes::select) }
+                    launch {
+                        runFarmWindow(command, snapshotFlow { farm }, panes::select, ::buyPlot)
+                    }
                 }
                 panes.attach(this, client)
                 control.attach(this, client)
@@ -194,9 +197,21 @@ class AppModel(
         }
     }
 
+    /**
+     * The next plot bought, when the purse can pay for it: a click on the farm window's sign. Saved
+     * at once, so a window that dies straight after still owns the land it paid for. Safe beside
+     * [add] for the reason [showPaths] is.
+     */
+    fun buyPlot() {
+        val bought = farm.boughtPlot()
+        if (bought.land == farm.land) return
+        farm = bought
+        writeSave(home, Saved(farm.purse, farm.land, lastId))
+    }
+
     /** The purse saved with the last line heard, and a proxy this app started stopped. */
     fun close() {
-        writeSave(home, Saved(farm.purse, lastId))
+        writeSave(home, Saved(farm.purse, farm.land, lastId))
         owned?.close()
     }
 
@@ -290,7 +305,7 @@ class AppModel(
         val before = farm.purse
         farm = reduce(farm, line.event)
         // Saved with the line that earned it, so a window that dies still counts that coin once.
-        if (farm.purse != before) writeSave(home, Saved(farm.purse, line.id))
+        if (farm.purse != before) writeSave(home, Saved(farm.purse, farm.land, line.id))
         // Usage, cost, latency and the replay flag are on the event line alone; the exchanges
         // endpoint serves summary rows, so a timeline can only say them for a line heard here.
         panes.heard(line.event)

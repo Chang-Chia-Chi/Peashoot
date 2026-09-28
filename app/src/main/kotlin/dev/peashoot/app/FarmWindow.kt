@@ -88,6 +88,10 @@ internal fun hitOf(line: String): Hit? {
     }
 }
 
+/** Whether a line from the farm window is a click on the "For sale" sign. */
+internal fun buysPlot(line: String): Boolean =
+    line.startsWith("{") && objectOf(line)?.string("buy") == "plot"
+
 private fun objectOf(line: String): JsonObject? =
     try {
         Json.parseToJsonElement(line) as? JsonObject
@@ -100,8 +104,9 @@ private fun JsonObject.string(key: String): String? =
 
 /**
  * Runs the farm window until it closes: every farm [farms] gives is written to it as one line, and
- * every click it reports goes to [onHit] on the caller's own thread. Only the latest farm matters,
- * so a window slower than the feed is sent the newest one rather than a backlog.
+ * every click it reports goes to [onHit], or to [onBuy] for the sign, on the caller's own thread.
+ * Only the latest farm matters, so a window slower than the feed is sent the newest one rather than
+ * a backlog.
  *
  * ponytail: a window closed by hand stays closed until the app starts again. Upgrade: a button that
  * opens it again, once the Compose farm is retired and the window is the only farm there is.
@@ -110,6 +115,7 @@ internal suspend fun runFarmWindow(
     command: List<String>,
     farms: Flow<FarmState>,
     onHit: (Hit) -> Unit,
+    onBuy: () -> Unit = {},
 ) {
     val process =
         try {
@@ -121,7 +127,7 @@ internal suspend fun runFarmWindow(
         }
     try {
         coroutineScope {
-            val hits = Channel<Hit>(Channel.UNLIMITED)
+            val clicks = Channel<() -> Unit>(Channel.UNLIMITED)
             val writing =
                 launch(Dispatchers.IO) {
                     try {
@@ -133,15 +139,19 @@ internal suspend fun runFarmWindow(
             launch(Dispatchers.IO) {
                 process.inputStream.bufferedReader().useLines { lines ->
                     for (line in lines) {
-                        hitOf(line)?.let { hits.send(it) }
+                        val hit = hitOf(line)
+                        when {
+                            hit != null -> clicks.send { onHit(hit) }
+                            buysPlot(line) -> clicks.send(onBuy)
+                        }
                     }
                 }
-                hits.close()
+                clicks.close()
                 writing.cancel()
             }
             // Clicks are answered here, on the caller's own thread, which is the one the panes
             // it hands them to are written from.
-            for (hit in hits) onHit(hit)
+            for (click in clicks) click()
         }
     } finally {
         process.destroy()
