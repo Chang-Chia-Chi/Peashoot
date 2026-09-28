@@ -65,15 +65,15 @@ static func raise(world: Node3D, plots: int) -> void:
 				shore = minf(shore, edge(k, x, z))
 			if shore >= 0:
 				if z >= world.D + 14:
-					_sea(world, dig, x, z, shore)
+					sea(world, dig, x, z, shore)
 			elif at >= 0:
-				_land(world, dig, x, z, shore)
+				rise(world, dig, x, z, shore)
 	for bed in beds(plots):
 		world.raised_bed(bed)
 
 
 ## A brick of sea past where the island's own sea stops, foamy near the shore.
-static func _sea(world: Node3D, dig: RandomNumberGenerator, x: int, z: int, shore: float) -> void:
+static func sea(world: Node3D, dig: RandomNumberGenerator, x: int, z: int, shore: float) -> void:
 	var c: Color = world.WATER
 	if shore < 0.07 and dig.randf() < 0.75:
 		c = world.FOAM
@@ -84,20 +84,26 @@ static func _sea(world: Node3D, dig: RandomNumberGenerator, x: int, z: int, shor
 		world.shore[Vector3i(x, 0, z)] = shore
 
 
+## How high land stands [param shore] out from its coast, in bricks: low sand at the shore, as the
+## island's is, and the ground's full height further in.
+static func height(world: Node3D, shore: float) -> int:
+	if shore > -0.1:
+		return 1
+	if shore > -0.2:
+		return 2
+	return world.GROUND
+
+
 ## A column of new land where the sea was, sandy at its shore as the island is.
-static func _land(world: Node3D, dig: RandomNumberGenerator, x: int, z: int, shore: float) -> void:
+static func rise(world: Node3D, dig: RandomNumberGenerator, x: int, z: int, shore: float) -> void:
 	for y in range(0, world.GROUND + 6):
 		world.bricks.erase(Vector3i(x, y, z))
 		world.slopes.erase(Vector3i(x, y, z))
 	world.shore.erase(Vector3i(x, 0, z))
-	var height: int = world.GROUND
-	if shore > -0.1:
-		height = 1
-	elif shore > -0.2:
-		height = 2
-	for y in range(0, height):
+	var tall := height(world, shore)
+	for y in range(0, tall):
 		world.put(x, y, z, world.EARTH)
 	var c: Color = world.GRASS_LIGHT if dig.randf() < 0.3 else world.GRASS
-	if height < world.GROUND:
+	if tall < world.GROUND:
 		c = world.SAND if dig.randf() > 0.2 else world.SAND_DARK
-	world.put(x, height, z, c)
+	world.put(x, tall, z, c)

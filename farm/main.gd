@@ -87,9 +87,13 @@ const BEDS: Array[Vector2i] = [
 
 ## The plots bought beyond the starting island: where they lie, their land and their beds.
 const Land := preload("res://land.gd")
+## The paddock, and the pasture the barn's upgrades stretch it over.
+const Pasture := preload("res://pasture.gd")
 
 ## The plots the island is built with; see [method grow].
 var plots := 0
+## The stretches of pasture the paddock has grown by; see [method grow].
+var stretches := 0
 var bricks := {}
 ## Tree crowns, painted by season: position to [kind, hue, shade, roll]; see [method _lollipop].
 var crowns := {}
@@ -150,8 +154,8 @@ func _ready() -> void:
 	add_child(live)
 
 
-## Every brick of the island, from the same seed each time, so a rebuild with more plots leaves
-## the land that was there as it was.
+## Every brick of the island, from the same seed each time, so a rebuild with more plots or
+## pasture leaves the land that was there as it was.
 func _build() -> void:
 	rng.seed = 21
 	_island()
@@ -159,19 +163,22 @@ func _build() -> void:
 	_barn(66, 8)
 	_well(44, 24)
 	_beds()
-	_paddock(60, 34)
+	Pasture.paddock(self)
 	_trees()
 	_details()
 	Land.raise(self, plots)
+	Pasture.raise(self, stretches, int(maxf(D, Land.front(plots))) + 14)
 	_emit()
 
 
-## The island rebuilt with [param count] plots bought, when that is more than it has: the new land
-## rises out of the sea at the front, and the camera pulls back to take it in.
-func grow(count: int) -> void:
-	if count == plots:
+## The island rebuilt with [param count] plots bought and [param stretched] stretches of pasture,
+## when either is more than it has: the new land rises out of the sea, plots at the front and
+## pasture to the east, and the camera pulls back to take it in.
+func grow(count: int, stretched: int) -> void:
+	if count == plots and stretched == stretches:
 		return
 	plots = count
+	stretches = stretched
 	var season := _painted
 	for layer in [_ground_layer, _crown_layer, _flower_layer, _slope_layer]:
 		layer.queue_free()
@@ -304,14 +311,16 @@ func _room() -> void:
 
 
 ## The table sized to the land, and the camera far enough back to take it all in: the starting
-## island as it always was, and further back by as much as the plots reach past its front. The
-## first framing is where the camera stands; a later one is a slow pull back.
+## island as it always was, and further back by as much as the plots reach past its front or the
+## pasture past its east shore. The first framing is where the camera stands; a later one is a slow
+## pull back.
 func _frame() -> void:
 	var depth := maxf(D, Land.front(plots))
-	var reach := depth / D
-	var centre := Vector3(W * B / 2, 0, depth * B / 2)
+	var wide := maxf(W, Pasture.width(stretches))
+	var reach := maxf(depth / D, wide / W)
+	var centre := Vector3(wide * B / 2, 0, depth * B / 2)
 	var box: BoxMesh = _table.mesh
-	box.size = Vector3(44, 1.0, 34 + (depth - D) * B)
+	box.size = Vector3(44 + (wide - W) * B, 1.0, 34 + (depth - D) * B)
 	_table.position = centre + Vector3(0, -0.72, 0)
 	var yaw := deg_to_rad(CAMERA_YAW)
 	var pitch := deg_to_rad(36.0)
@@ -554,25 +563,6 @@ func _ripe(kind: String, ripe: Color, x: int, y: int, z: int) -> void:
 			box(x + 1, y + 3, z, 1, 1, 1, LEAF_LIGHT)
 			if kind == "turnip":
 				box(x, y + 2, z, 3, 1, 2, Color(0.66, 0.34, 0.66))
-
-
-func _fence(x0: int, z0: int, x1: int, z1: int) -> void:
-	for x in range(x0, x1 + 1):
-		for z in range(z0, z1 + 1):
-			if x != x0 and x != x1 and z != z0 and z != z1:
-				continue
-			var y := GROUND + 1
-			if (x + z) % 3 == 0:
-				box(x, y, z, 1, 3, 1, WOOD_DARK)
-			else:
-				put(x, y + 1, z, WOOD)
-
-
-func _paddock(x: int, z: int) -> void:
-	_fence(x, z, x + 24, z + 16)
-	box(x + 16, GROUND + 1, z + 2, 6, 2, 3, STONE)
-	box(x + 17, GROUND + 2, z + 3, 4, 1, 1, WATER)
-	# its cows and hens are life.gd's, which moves them
 
 
 ## A round tree: a trunk and a crown. The crown's bricks are not coloured here but remembered:
