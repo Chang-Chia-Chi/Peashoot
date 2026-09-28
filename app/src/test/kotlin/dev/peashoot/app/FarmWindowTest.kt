@@ -6,9 +6,7 @@ import dev.peashoot.app.render.Hit
 import java.io.File
 import kotlin.test.Test
 import kotlin.test.assertEquals
-import kotlin.test.assertFalse
 import kotlin.test.assertNull
-import kotlin.test.assertTrue
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
@@ -36,12 +34,12 @@ class FarmWindowTest {
                     )
             )
         val hits = mutableListOf<Hit>()
-        var buys = 0
+        val buys = mutableListOf<String>()
         withTimeout(TIMEOUT_MILLIS) {
-            runFarmWindow(fakeWindow(), flowOf(farm), hits::add) { buys++ }
+            runFarmWindow(fakeWindow(), flowOf(farm), hits::add, buys::add)
         }
         assertEquals(listOf<Hit>(Hit.OnVillager("sess-a")), hits)
-        assertEquals(1, buys, "the sign's click is a purchase, and not a hit")
+        assertEquals(listOf("plot", "cow"), buys, "a sign's click is a purchase, and not a hit")
     }
 
     @Test
@@ -63,9 +61,10 @@ class FarmWindowTest {
         assertNull(hitOf("""{"weather":"CLEAR"}"""))
         assertNull(hitOf("{not json"))
         assertNull(hitOf("""{"buy":"plot"}"""))
-        assertTrue(buysPlot("""{"buy":"plot"}"""))
-        assertFalse(buysPlot("""{"buy":"cow"}"""))
-        assertFalse(buysPlot("""{"villager":"sess-a"}"""))
+        assertEquals("plot", purchaseOf("""{"buy":"plot"}"""))
+        assertEquals("cow", purchaseOf("""{"buy":"cow"}"""))
+        assertNull(purchaseOf("""{"villager":"sess-a"}"""))
+        assertNull(purchaseOf("""{"buy":3}"""))
     }
 
     @Test
@@ -112,8 +111,8 @@ private fun fakeWindow(): List<String> =
     )
 
 /**
- * The stand-in window: reads one farm, clicks its first villager and then the "For sale" sign, and
- * closes, which is the window being closed by hand.
+ * The stand-in window: reads one farm, clicks its first villager, the "For sale" sign and the
+ * shop's cow, and closes, which is the window being closed by hand.
  */
 fun main() {
     val farm = Json.parseToJsonElement(readln()).jsonObject
@@ -121,4 +120,5 @@ fun main() {
     println("Godot Engine v4.7 - a banner line the app must ignore")
     println("""{"villager":"${first.getValue("id").jsonPrimitive.content}"}""")
     println("""{"buy":"plot"}""")
+    println("""{"buy":"cow"}""")
 }

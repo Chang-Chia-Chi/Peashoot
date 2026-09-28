@@ -82,6 +82,7 @@ fun snapshot(state: FarmState): String {
         put("bin", binOf(state.bin))
         put("purse", purseOf(state.purse))
         put("land", landOf(state.land))
+        put("herd", herdOf(state))
     }
         .toString()
 }
@@ -116,6 +117,29 @@ private fun binOf(bin: ShippingBin): JsonObject = buildJsonObject {
 private fun landOf(plots: Int): JsonObject = buildJsonObject {
     put("plots", plots)
     put("price", plotPrice(plots))
+}
+
+/** The animals owned, the upgrades, and the shop's board. */
+private fun herdOf(state: FarmState): JsonObject = buildJsonObject {
+    val herd = state.herd
+    for (animal in Animal.entries) put(animal.key, herd.count(animal))
+    put("coop", herd.coop)
+    put("barn", herd.barn)
+    put(
+        "shop",
+        buildJsonArray {
+            for (offer in state.offers()) {
+                add(
+                    buildJsonObject {
+                        put("item", offer.item)
+                        put("price", offer.price)
+                        put("level", offer.level)
+                        put("why", offer.refusal?.name?.lowercase())
+                    }
+                )
+            }
+        },
+    )
 }
 
 /** The purse, with the lifetime coins its level began at and the next level begins at. */

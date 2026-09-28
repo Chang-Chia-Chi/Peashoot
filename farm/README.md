@@ -28,7 +28,8 @@ way home walks the rounds of the crops that turn planted or grew and bends to ea
 while it waits, `zzz` while it rests off a rate limit and `♪` while it tends; replay is night with the
 lanterns lit; rain, storms and lightning follow the provider; the shipping bin shows the ledger.
 Clicking a farmer or a crop prints `{"villager": id}` or `{"crop": path}`, which the app turns into
-its detail pane.
+its detail pane. Clicking the "For sale" sign or a line of the shop board by the paddock prints
+`{"buy": item}`; the app decides whether the farm can pay, and the animals bought walk into the paddock.
 
 - From the app: set `PEASHOOT_GODOT` to a Godot 4.7 executable. The app finds this directory from
   the repository root or from `app/`; `PEASHOOT_FARM_PROJECT` names it anywhere else. The app starts

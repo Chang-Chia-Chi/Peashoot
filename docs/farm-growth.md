@@ -44,6 +44,8 @@ The farm is fixed: a 96×64 island (`farm/main.gd:5-6`), 8 beds (`farm/main.gd:7
   Unlocks: corn at level 3 (scripts), strawberry at level 5 (styles and markup), sunflower at level 7 (everything else).
   A locked kind grows as a carrot until it unlocks, and a planted crop changes kind the moment it does.
 - Animals: hen 10 (level 2), cow 40 (level 3), sheep 30 (level 4), pig 30 (level 5). Today's 3 cows and 3 hens stay as the starting herd.
+- Coop and barn: each holds 6 at first (the coop hens, the barn cows, sheep and pigs together), and each upgrade adds 4.
+  Coop upgrades cost 30, 60, 90…; barn upgrades 50, 100, 150…. The henhouse widens and the barn's lean-to lengthens with them.
 
 ## Phases (one PR each)
 1. **Coins and level.** The reducer counts coins and level, a save file keeps them, and the snapshot carries them.
