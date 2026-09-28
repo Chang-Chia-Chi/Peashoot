@@ -34,9 +34,12 @@ import androidx.compose.ui.window.Window
 import androidx.compose.ui.window.application
 import dev.peashoot.app.farm.EndOfDayCard
 import dev.peashoot.app.farm.FarmState
+import dev.peashoot.app.farm.Saved
 import dev.peashoot.app.farm.dismissed
+import dev.peashoot.app.farm.readSave
 import dev.peashoot.app.farm.reduce
 import dev.peashoot.app.farm.tick
+import dev.peashoot.app.farm.writeSave
 import dev.peashoot.app.render.FarmCanvas
 import dev.peashoot.core.homeDir
 import java.nio.file.Path
@@ -120,8 +123,14 @@ class AppModel(
 
     val lines = mutableStateListOf<String>()
 
-    /** Every line the window has heard, folded into one farm. */
-    var farm by mutableStateOf(FarmState())
+    /** What the last window earned, and the line it stopped at: see [Saved]. */
+    private val saved = readSave(home)
+
+    /**
+     * Every line the window has heard, folded into one farm, which begins with what earlier windows
+     * earned.
+     */
+    var farm by mutableStateOf(FarmState(purse = saved.purse))
         private set
 
     /**
@@ -144,9 +153,10 @@ class AppModel(
     /**
      * The last id the window has shown. Kept here and not only inside one feed, so that a feed
      * started again — after a token was fixed, or a window reopened — resumes rather than skipping
-     * whatever happened in between.
+     * whatever happened in between. It starts where the last window's save stopped, so the proxy
+     * hands this one every line made while no window was open, and the purse counts those turns.
      */
-    private var lastId: Long? = null
+    private var lastId: Long? = saved.lastId
 
     /** Runs until the window closes: a proxy if there is none, then health and the feed. */
     suspend fun watch() {
@@ -184,7 +194,11 @@ class AppModel(
         }
     }
 
-    fun close() = owned?.close() ?: Unit
+    /** The purse saved with the last line heard, and a proxy this app started stopped. */
+    fun close() {
+        writeSave(home, Saved(farm.purse, lastId))
+        owned?.close()
+    }
 
     /**
      * True once Peashoot answers. A port that answers anything at all is a port a second proxy
@@ -273,7 +287,10 @@ class AppModel(
 
     private fun add(line: Feed.Line) {
         lastId = line.id
+        val before = farm.purse
         farm = reduce(farm, line.event)
+        // Saved with the line that earned it, so a window that dies still counts that coin once.
+        if (farm.purse != before) writeSave(home, Saved(farm.purse, line.id))
         // Usage, cost, latency and the replay flag are on the event line alone; the exchanges
         // endpoint serves summary rows, so a timeline can only say them for a line heard here.
         panes.heard(line.event)

@@ -79,6 +79,9 @@ var _fields_seen := ""
 var _labels: Array[Label3D] = []
 var _bin_label: Label3D
 var _badge: Label
+## The farm's level, its coins, and how far it is to the next level; see [method _apply_purse].
+var _level: Label
+var _progress: ProgressBar
 var _rain: CPUParticles3D
 var _snow: CPUParticles3D
 var _day := {}
@@ -231,6 +234,21 @@ func _apply(farm: Dictionary) -> void:
 		line += " · %d unpriced" % int(bin.get("unpriced", 0))
 	_bin_label.text = line
 	_badge.visible = not farm.get("labelsHidden", true)
+	_apply_purse(farm.get("purse", {}))
+
+
+## What the agents' work has earned: the level, the coins to spend, and the bar to the next level,
+## which runs from the lifetime coins this level began at to those the next one begins at.
+func _apply_purse(purse: Dictionary) -> void:
+	var earned := int(purse.get("earned", 0))
+	var floor_at := int(purse.get("floor", 0))
+	var next_at := int(purse.get("next", 10))
+	_level.text = (
+		"Level %d   ·   %d coins" % [int(purse.get("level", 1)), int(purse.get("coins", 0))]
+	)
+	_progress.max_value = maxi(next_at - floor_at, 1)
+	_progress.value = earned - floor_at
+	_progress.tooltip_text = "%d of %d to the next level" % [earned - floor_at, next_at - floor_at]
 
 
 # --- fields ---------------------------------------------------------------------------------
@@ -584,9 +602,42 @@ func _hud() -> void:
 	_badge.offset_top = 12
 	_badge.visible = false
 	layer.add_child(_badge)
+	_hud_purse(layer)
 	_bin_label = _tag("0 shipped · $0.00", 26)
 	_bin_label.position = _at(Vector2i(29, 27)) + Vector3(0, 1.1, 0)
 	add_child(_bin_label)
+
+
+## The level badge in the top-left corner: a plate with the level and coins, and a bar under it.
+func _hud_purse(layer: CanvasLayer) -> void:
+	var plate := StyleBoxFlat.new()
+	plate.bg_color = Color(0.2, 0.12, 0.06, 0.8)
+	plate.set_corner_radius_all(6)
+	plate.set_content_margin_all(8)
+	var box := VBoxContainer.new()
+	box.add_theme_constant_override("separation", 4)
+	var panel := PanelContainer.new()
+	panel.position = Vector2(16, 12)
+	panel.add_theme_stylebox_override("panel", plate)
+	panel.add_child(box)
+	layer.add_child(panel)
+	_level = Label.new()
+	_level.text = "Level 1   ·   0 coins"
+	_level.add_theme_color_override("font_color", Color(1, 0.9, 0.55))
+	_level.add_theme_font_size_override("font_size", 18)
+	box.add_child(_level)
+	_progress = ProgressBar.new()
+	_progress.custom_minimum_size = Vector2(200, 10)
+	_progress.show_percentage = false
+	var track := StyleBoxFlat.new()
+	track.bg_color = Color(0, 0, 0, 0.45)
+	track.set_corner_radius_all(4)
+	var fill := StyleBoxFlat.new()
+	fill.bg_color = Color(0.55, 0.8, 0.25)
+	fill.set_corner_radius_all(4)
+	_progress.add_theme_stylebox_override("background", track)
+	_progress.add_theme_stylebox_override("fill", fill)
+	box.add_child(_progress)
 
 
 func _label(text: String, at: Vector3) -> void:

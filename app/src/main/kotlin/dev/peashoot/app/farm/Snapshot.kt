@@ -25,6 +25,8 @@ private const val LOOKS = 2
  * stands beside `parent` instead. `queue` is its place in the line at the well, or null. `tended`
  * is the crops, by path, its latest turn planted or grew, which it visits on the way home, and
  * `turns` how many turns it has completed, which tells a new turn's `tended` from the last one's.
+ * `purse` is the coins to spend, the lifetime coins, the level they reach, and the lifetime coins
+ * this level began at and the next one begins at, which is the whole of a progress bar.
  */
 fun snapshot(state: FarmState): String {
     val homes =
@@ -79,6 +81,7 @@ fun snapshot(state: FarmState): String {
                 put("unpriced", state.bin.unpriced)
             },
         )
+        put("purse", purseOf(state.purse))
     }
         .toString()
 }
@@ -101,3 +104,12 @@ private fun villagerOf(state: FarmState, villager: Villager, home: Int?, queue: 
         put("tended", buildJsonArray { villager.tended.forEach { add(it) } })
         put("turns", villager.turns)
     }
+
+/** The purse, with the lifetime coins its level began at and the next level begins at. */
+private fun purseOf(purse: Purse): JsonObject = buildJsonObject {
+    put("coins", purse.coins)
+    put("earned", purse.earned)
+    put("level", purse.level)
+    put("floor", floorOf(purse.level))
+    put("next", floorOf(purse.level + 1))
+}
