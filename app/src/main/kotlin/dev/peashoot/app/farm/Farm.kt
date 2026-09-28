@@ -83,6 +83,11 @@ data class Villager(
      * when both worked the same files.
      */
     val turns: Int = 0,
+    /**
+     * Whether its latest turn failed: the provider answered with an error other than a rate limit,
+     * which [Activity.RESTING] already says. The farm's dog barks at it until a turn goes through.
+     */
+    val failed: Boolean = false,
 )
 
 /**
@@ -168,6 +173,8 @@ data class FarmState(
     val land: Int = 0,
     /** The animals owned and the coop and barn upgrades, saved like [land] (see [bought]). */
     val herd: Herd = Herd(),
+    /** The farmhouse extensions and the greenhouse, saved like [herd]. */
+    val buildings: Buildings = Buildings(),
 )
 
 /**
@@ -343,6 +350,7 @@ private fun completed(state: FarmState, event: JsonObject): FarmState {
                 water = villager.water + if (spilled) 0 else outputTokens(event),
                 inFlight = remaining,
                 stamina = villager.stamina.after(event),
+                failed = failed(event),
             )
     return state.copy(
         villagers = state.villagers + (villager.id to back),
@@ -350,7 +358,7 @@ private fun completed(state: FarmState, event: JsonObject): FarmState {
         // from, the same way its usage is usage another line has already counted: a cursor that
         // named no `starting_after` replays the whole answer, tool calls and all. So the delivery
         // grows nothing; the call that named the paths planted them.
-        fields = if (resumed(event)) state.fields else touched(state.fields, event),
+        fields = if (resumed(event)) state.fields else touched(state, event),
         // Resting is resting *at the well*: the villager keeps its place until a turn really ends,
         // and is given one if the refusal is the first this window heard of it.
         wellQueue =
@@ -396,9 +404,12 @@ private fun villagerOf(state: FarmState, session: String, event: JsonObject): Vi
     return state.villagers[id] ?: Villager(id, uniqueName(state, id), session, parent)
 }
 
-/** Every path the turn's tools named, in the order the turn named them. */
-private fun touched(fields: Map<String, Field>, event: JsonObject): Map<String, Field> =
-    tools(event).fold(fields) { grown, tool -> grown.touch(tool) }
+/**
+ * Every path the turn's tools named, in the order the turn named them, grown where the season lets
+ * it grow ([grows]).
+ */
+private fun touched(state: FarmState, event: JsonObject): Map<String, Field> =
+    tools(event).fold(state.fields) { grown, tool -> grown.touch(tool, state::grows) }
 
 /**
  * The villager having worked the fields with the turn's tools: what they planted or grew, each
@@ -423,9 +434,12 @@ private fun Villager.worked(event: JsonObject): Villager =
  * two. A Read plants nothing — a file only looked at is no crop of ours — but an edit to a path
  * never planted does, and that edit is the planting rather than a stage on top of it, because the
  * file existed before the app was watching. A tool that named no path, or named one but only
- * searched it, changes nothing.
+ * searched it, changes nothing, and neither does an edit in a field that is not [growing].
  */
-private fun Map<String, Field>.touch(tool: JsonObject): Map<String, Field> {
+private fun Map<String, Field>.touch(
+    tool: JsonObject,
+    growing: (String) -> Boolean,
+): Map<String, Field> {
     val path = touchedPath(tool) ?: return this
     val name = tool["name"].text()
     val directory = path.substringBeforeLast('/', ROOT_FIELD)
@@ -436,6 +450,7 @@ private fun Map<String, Field>.touch(tool: JsonObject): Map<String, Field> {
             crop == null && name == READ -> null
             crop == null -> Crop(label = path, growth = Growth.SEED, inspections = 0)
             name == READ -> crop.copy(inspections = crop.inspections + 1)
+            !growing(directory) -> crop
             else -> crop.copy(growth = crop.growth.next())
         }
     return if (next == null) this

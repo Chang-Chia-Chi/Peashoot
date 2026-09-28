@@ -28,7 +28,12 @@ private const val LOOKS = 2
  * many turns it has completed, which tells a new turn's `tended` from the last one's. `purse` is
  * the coins to spend, the lifetime coins, the level they reach, and the lifetime coins this level
  * began at and the next one begins at, which is the whole of a progress bar. `land` is the plots
- * bought beyond the starting island and what the next one costs.
+ * bought beyond the starting island and what the next one costs. `herd` is how many of each animal
+ * the farm owns, the coop and barn upgrades, and the shop's board: each thing it sells, its price
+ * and level, and `why` it cannot be bought now ("level", "full", "coins"), or null. `buildings` is
+ * the farmhouse extensions and whether the greenhouse stands, and `pets` the pets the level has
+ * brought. A crop is `dormant` while winter stops it growing ([grows]), and a villager `failed`
+ * when its latest turn ended in an error.
  */
 fun snapshot(state: FarmState): String {
     val homes =
@@ -50,6 +55,7 @@ fun snapshot(state: FarmState): String {
             "fields",
             buildJsonArray {
                 for (field in state.fields.values) {
+                    val dormant = !state.grows(field.label)
                     add(
                         buildJsonObject {
                             put("label", field.label)
@@ -65,6 +71,7 @@ fun snapshot(state: FarmState): String {
                                                     "kind",
                                                     kindOf(crop.label, state.purse.level),
                                                 )
+                                                put("dormant", dormant)
                                             }
                                         )
                                     }
@@ -83,6 +90,8 @@ fun snapshot(state: FarmState): String {
         put("purse", purseOf(state.purse))
         put("land", landOf(state.land))
         put("herd", herdOf(state))
+        put("buildings", buildingsOf(state.buildings))
+        put("pets", buildJsonArray { state.pets().forEach { add(it) } })
     }
         .toString()
 }
@@ -104,6 +113,7 @@ private fun villagerOf(state: FarmState, villager: Villager, home: Int?, queue: 
         put("spills", villager.spills)
         put("tended", buildJsonArray { villager.tended.forEach { add(it) } })
         put("turns", villager.turns)
+        put("failed", villager.failed)
     }
 
 /** What the turns have shipped, and what they are known to have cost. */
@@ -117,6 +127,12 @@ private fun binOf(bin: ShippingBin): JsonObject = buildJsonObject {
 private fun landOf(plots: Int): JsonObject = buildJsonObject {
     put("plots", plots)
     put("price", plotPrice(plots))
+}
+
+/** The farmhouse extensions, and whether the greenhouse stands. */
+private fun buildingsOf(buildings: Buildings): JsonObject = buildJsonObject {
+    put("house", buildings.house)
+    put("greenhouse", buildings.greenhouse)
 }
 
 /** The animals owned, the upgrades, and the shop's board. */

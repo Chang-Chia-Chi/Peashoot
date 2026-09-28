@@ -32,6 +32,23 @@ const HOMES: Array[Vector2i] = [
 	Vector2i(76, 33),
 	Vector2i(80, 33)
 ]
+## The homes each farmhouse extension adds, six a wing: first along the lane past the well, then
+## at its west end.
+const WING_HOMES: Array[Vector2i] = [
+	Vector2i(42, 27),
+	Vector2i(50, 27),
+	Vector2i(54, 27),
+	Vector2i(58, 27),
+	Vector2i(62, 27),
+	Vector2i(66, 27),
+	Vector2i(8, 31),
+	Vector2i(12, 31),
+	Vector2i(16, 31),
+	Vector2i(20, 31),
+	Vector2i(24, 31),
+	Vector2i(84, 31)
+]
+const HOMES_A_WING := 6
 ## The line at the well: nearest first, either side of it along the lane, then the far edge.
 const QUEUE: Array[Vector2i] = [
 	Vector2i(48, 30),
@@ -82,6 +99,10 @@ var _level: Label
 var _progress: ProgressBar
 ## The "For sale" sign standing in the sea where the next plot will rise, and its price tag.
 var _sign: Node3D
+## Where farmers with nothing out wait: [constant HOMES] and the homes of each extension built.
+var _homes: Array[Vector2i] = HOMES.duplicate()
+## The dog and the cat; see pets.gd.
+var _pets: Node3D
 ## The animal shop's board, and the coop and barn as upgraded; see shop.gd.
 var _shop: Node3D
 var _sign_tag: Label3D
@@ -232,8 +253,12 @@ func _apply(farm: Dictionary) -> void:
 	world.grow(int(land.get("plots", 0)))
 	_apply_sign(land, farm.get("purse", {}))
 	var herd: Dictionary = farm.get("herd", {})
-	_shop.apply(herd)
+	var buildings: Dictionary = farm.get("buildings", {})
+	_shop.apply(herd, buildings)
 	world.life.herd(herd)
+	_homes = HOMES.duplicate()
+	_homes.append_array(WING_HOMES.slice(0, int(buildings.get("house", 0)) * HOMES_A_WING))
+	_pets.apply(farm.get("pets", []), farm.get("villagers", []))
 	_apply_fields(farm.get("fields", []), farm.get("labelsHidden", true))
 	_apply_farmers(farm.get("villagers", []))
 	_apply_sky(farm)
@@ -297,7 +322,13 @@ func _apply_fields(fields: Array, hidden: bool) -> void:
 			var crop: Dictionary = crops[cell]
 			var x := bed.x + 1 + (cell % 3) * 3
 			var z := bed.y + 1 + (cell / 3) * 2
-			world.crop(str(crop.get("kind", "carrot")), int(crop.get("growth", 0)), x, z)
+			if crop.get("dormant", false):
+				# winter: the open bed's crop sleeps under a mound of snow until spring
+				world.box(x, world.GROUND + 2, z, 3, 1, 2, world.SNOW)
+				world.put(x + 1, world.GROUND + 3, z, world.SNOW)
+				world.put(x + 1, world.GROUND + 3, z + 1, world.LEAF)
+			else:
+				world.crop(str(crop.get("kind", "carrot")), int(crop.get("growth", 0)), x, z)
 			var path := str(crop.get("path", ""))
 			_crops.append([path, _at(Vector2i(x + 1, z))])
 			_tending_spots[path] = _at(Vector2i(x + 1, z + 2)) + Vector3(0.1, world.H, 0)
@@ -425,9 +456,9 @@ func _target(f: Dictionary) -> Vector3:
 	if parent != null and _farmers.has(str(parent)) and str(parent) != str(v.get("id")):
 		var at: Vector3 = _farmers[str(parent)]["node"].position
 		return at + Vector3(0.55 * (int(f["nth"]) + 1), 0, 0.3)
-	var home := HOMES[0]
+	var home := _homes[0]
 	if v.get("home") != null:
-		home = HOMES[mini(int(v["home"]), HOMES.size() - 1)]
+		home = _homes[mini(int(v["home"]), _homes.size() - 1)]
 	return _at(home) + f["drift"]
 
 
@@ -630,6 +661,10 @@ func _hud() -> void:
 	_shop = preload("res://shop.gd").new()
 	_shop.world = world
 	add_child(_shop)
+	_pets = preload("res://pets.gd").new()
+	_pets.world = world
+	_pets.live = self
+	add_child(_pets)
 	_bin_label = _tag("0 shipped · $0.00", 26)
 	_bin_label.position = _at(Vector2i(29, 27)) + Vector3(0, 1.1, 0)
 	add_child(_bin_label)
@@ -748,6 +783,14 @@ func _unhandled_input(event: InputEvent) -> void:
 		said = JSON.stringify({"buy": item})
 	if not said.is_empty():
 		print(said)
+
+
+## Where farmer [param id] stands, or null when there is no such farmer; the pets watch them.
+func farmer_at(id: String) -> Variant:
+	if not _farmers.has(id):
+		return null
+	var node: Node3D = _farmers[id]["node"]
+	return node.position
 
 
 ## A brick place on the ground, as a point in the world.

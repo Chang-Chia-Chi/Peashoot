@@ -87,15 +87,16 @@ enum class Refusal {
  */
 data class Offer(val item: String, val price: Int, val level: Int, val refusal: Refusal?)
 
-/** Everything on the shop's board, the animals first and then the two upgrades. */
+/** Everything on the shop's board: the animals, the two upgrades, then the buildings. */
 fun FarmState.offers(): List<Offer> =
     Animal.entries.map { animal ->
         offer(animal.key, animal.price, animal.level, herd.hasRoomFor(animal))
     } +
         offer("coop", COOP_PRICE * (herd.coop + 1), 1, true) +
-        offer("barn", BARN_PRICE * (herd.barn + 1), 1, true)
+        offer("barn", BARN_PRICE * (herd.barn + 1), 1, true) +
+        buildingOffers()
 
-private fun FarmState.offer(item: String, price: Int, level: Int, room: Boolean): Offer {
+internal fun FarmState.offer(item: String, price: Int, level: Int, room: Boolean): Offer {
     val refusal =
         when {
             purse.level < level -> Refusal.LEVEL
@@ -107,8 +108,8 @@ private fun FarmState.offer(item: String, price: Int, level: Int, room: Boolean)
 }
 
 /**
- * The farm with [item] bought — a plot, an animal, or a coop or barn upgrade — or the farm as it
- * was when the shop will not sell it, or when there is no such thing. Like [boughtPlot], only a
+ * The farm with [item] bought — a plot, an animal, an upgrade or a building — or the farm as it was
+ * when the shop will not sell it, or when there is no such thing. Like [boughtPlot], only a
  * person's click leads here, and the farm decides.
  */
 fun FarmState.bought(item: String): FarmState {
@@ -118,11 +119,14 @@ fun FarmState.bought(item: String): FarmState {
 }
 
 private fun FarmState.sold(offer: Offer): FarmState {
+    val paid = copy(purse = purse.copy(coins = purse.coins - offer.price))
+    val built = buildings.with(offer.item)
+    if (built != null) return paid.copy(buildings = built)
     val herd =
         when (offer.item) {
             "coop" -> herd.copy(coop = herd.coop + 1)
             "barn" -> herd.copy(barn = herd.barn + 1)
             else -> herd.with(Animal.entries.first { it.key == offer.item })
         }
-    return copy(purse = purse.copy(coins = purse.coins - offer.price), herd = herd)
+    return paid.copy(herd = herd)
 }
