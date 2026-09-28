@@ -16,12 +16,17 @@ import kotlinx.serialization.json.put
 private const val SAVE_FILE = "farm.json"
 
 /**
- * What one window leaves the next: the purse, the plots bought, and the id of the last line that
- * went into the purse. The two are one write, so the next window resumes the feed from exactly
- * where the purse stops, and the proxy's store hands it every turn made while no window was open,
- * each counted once.
+ * What one window leaves the next: the purse, the plots bought, the herd, and the id of the last
+ * line that went into the purse. The two are one write, so the next window resumes the feed from
+ * exactly where the purse stops, and the proxy's store hands it every turn made while no window was
+ * open, each counted once.
  */
-data class Saved(val purse: Purse = Purse(), val land: Int = 0, val lastId: Long? = null)
+data class Saved(
+    val purse: Purse = Purse(),
+    val land: Int = 0,
+    val herd: Herd = Herd(),
+    val lastId: Long? = null,
+)
 
 /**
  * The save in [home], or a new farm's when there is none. One that cannot be read is also a new
@@ -40,7 +45,22 @@ fun readSave(home: Path): Saved {
                 earned = json.scalar("earned") { intOrNull } ?: 0,
             ),
         land = json.scalar("land") { intOrNull } ?: 0,
+        herd = herdOf(json),
         lastId = json.scalar("lastId") { longOrNull },
+    )
+}
+
+/** The herd in a save, each part a new farm's when the save is from before the shop. */
+private fun herdOf(json: JsonObject): Herd {
+    val fresh = Herd()
+    fun count(animal: Animal) = json.scalar(animal.key) { intOrNull } ?: fresh.count(animal)
+    return Herd(
+        hens = count(Animal.HEN),
+        cows = count(Animal.COW),
+        sheep = count(Animal.SHEEP),
+        pigs = count(Animal.PIG),
+        coop = json.scalar("coop") { intOrNull } ?: 0,
+        barn = json.scalar("barn") { intOrNull } ?: 0,
     )
 }
 
@@ -54,6 +74,9 @@ private fun parsed(file: Path): JsonObject? =
         null
     }
 
+/** What [this] farm leaves the next window, with the id of the last line it heard. */
+fun FarmState.saved(lastId: Long?): Saved = Saved(purse, land, herd, lastId)
+
 /** [saved] as [home]'s save, written beside it and renamed over it, so no reader sees half. */
 fun writeSave(home: Path, saved: Saved) {
     val file = home.resolve(SAVE_FILE)
@@ -62,6 +85,9 @@ fun writeSave(home: Path, saved: Saved) {
         put("coins", saved.purse.coins)
         put("earned", saved.purse.earned)
         put("land", saved.land)
+        for (animal in Animal.entries) put(animal.key, saved.herd.count(animal))
+        put("coop", saved.herd.coop)
+        put("barn", saved.herd.barn)
         saved.lastId?.let { put("lastId", it) }
     }
     Files.createDirectories(home)

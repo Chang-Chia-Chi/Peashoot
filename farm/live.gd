@@ -82,6 +82,8 @@ var _level: Label
 var _progress: ProgressBar
 ## The "For sale" sign standing in the sea where the next plot will rise, and its price tag.
 var _sign: Node3D
+## The animal shop's board, and the coop and barn as upgraded; see shop.gd.
+var _shop: Node3D
 var _sign_tag: Label3D
 var _rain: CPUParticles3D
 var _snow: CPUParticles3D
@@ -229,6 +231,9 @@ func _apply(farm: Dictionary) -> void:
 	var land: Dictionary = farm.get("land", {})
 	world.grow(int(land.get("plots", 0)))
 	_apply_sign(land, farm.get("purse", {}))
+	var herd: Dictionary = farm.get("herd", {})
+	_shop.apply(herd)
+	world.life.herd(herd)
 	_apply_fields(farm.get("fields", []), farm.get("labelsHidden", true))
 	_apply_farmers(farm.get("villagers", []))
 	_apply_sky(farm)
@@ -622,6 +627,9 @@ func _hud() -> void:
 	_hud_purse(layer)
 	_sign = _sign_post()
 	add_child(_sign)
+	_shop = preload("res://shop.gd").new()
+	_shop.world = world
+	add_child(_shop)
 	_bin_label = _tag("0 shipped · $0.00", 26)
 	_bin_label.position = _at(Vector2i(29, 27)) + Vector3(0, 1.1, 0)
 	add_child(_bin_label)
@@ -733,7 +741,11 @@ func _unhandled_input(event: InputEvent) -> void:
 			said = JSON.stringify({"crop": crop[0]})
 	var board := _sign.position + Vector3(0, 7 * world.H, 0)
 	if camera.unproject_position(board).distance_to(click.position) < best:
+		best = camera.unproject_position(board).distance_to(click.position)
 		said = JSON.stringify({"buy": "plot"})
+	var item: String = _shop.hit(camera, click.position, best)
+	if not item.is_empty():
+		said = JSON.stringify({"buy": item})
 	if not said.is_empty():
 		print(said)
 

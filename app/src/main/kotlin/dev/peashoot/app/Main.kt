@@ -35,10 +35,11 @@ import androidx.compose.ui.window.application
 import dev.peashoot.app.farm.EndOfDayCard
 import dev.peashoot.app.farm.FarmState
 import dev.peashoot.app.farm.Saved
-import dev.peashoot.app.farm.boughtPlot
+import dev.peashoot.app.farm.bought
 import dev.peashoot.app.farm.dismissed
 import dev.peashoot.app.farm.readSave
 import dev.peashoot.app.farm.reduce
+import dev.peashoot.app.farm.saved
 import dev.peashoot.app.farm.tick
 import dev.peashoot.app.farm.writeSave
 import dev.peashoot.app.render.FarmCanvas
@@ -131,7 +132,7 @@ class AppModel(
      * Every line the window has heard, folded into one farm, which begins with what earlier windows
      * earned.
      */
-    var farm by mutableStateOf(FarmState(purse = saved.purse, land = saved.land))
+    var farm by mutableStateOf(FarmState(purse = saved.purse, land = saved.land, herd = saved.herd))
         private set
 
     /**
@@ -169,9 +170,7 @@ class AppModel(
                 // The Godot farm (ADR 0003), when one is configured: it is sent every farm this
                 // window folds, and a click in it opens the same pane a click on the canvas does.
                 val window = farmWindow?.let { command ->
-                    launch {
-                        runFarmWindow(command, snapshotFlow { farm }, panes::select, ::buyPlot)
-                    }
+                    launch { runFarmWindow(command, snapshotFlow { farm }, panes::select, ::buy) }
                 }
                 panes.attach(this, client)
                 control.attach(this, client)
@@ -198,20 +197,20 @@ class AppModel(
     }
 
     /**
-     * The next plot bought, when the purse can pay for it: a click on the farm window's sign. Saved
-     * at once, so a window that dies straight after still owns the land it paid for. Safe beside
-     * [add] for the reason [showPaths] is.
+     * [item] bought, when the shop will sell it: a click on the farm window's "For sale" sign or
+     * its shop board. Saved at once, so a window that dies straight after still owns what it paid
+     * for. Safe beside [add] for the reason [showPaths] is.
      */
-    fun buyPlot() {
-        val bought = farm.boughtPlot()
-        if (bought.land == farm.land) return
+    fun buy(item: String) {
+        val bought = farm.bought(item)
+        if (bought === farm) return
         farm = bought
-        writeSave(home, Saved(farm.purse, farm.land, lastId))
+        writeSave(home, farm.saved(lastId))
     }
 
     /** The purse saved with the last line heard, and a proxy this app started stopped. */
     fun close() {
-        writeSave(home, Saved(farm.purse, farm.land, lastId))
+        writeSave(home, farm.saved(lastId))
         owned?.close()
     }
 
@@ -305,7 +304,7 @@ class AppModel(
         val before = farm.purse
         farm = reduce(farm, line.event)
         // Saved with the line that earned it, so a window that dies still counts that coin once.
-        if (farm.purse != before) writeSave(home, Saved(farm.purse, farm.land, line.id))
+        if (farm.purse != before) writeSave(home, farm.saved(line.id))
         // Usage, cost, latency and the replay flag are on the event line alone; the exchanges
         // endpoint serves summary rows, so a timeline can only say them for a line heard here.
         panes.heard(line.event)

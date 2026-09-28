@@ -20,6 +20,8 @@ const WINGS := [
 const PINK := Color(0.96, 0.68, 0.66)
 const BEAK := Color(1, 0.7, 0.1)
 const HULL := Color(0.5, 0.3, 0.16)
+const WOOL := Color(0.96, 0.95, 0.9)
+const PIG := Color(0.95, 0.66, 0.66)
 
 var world: Node3D
 ## Where it is winter, and the butterflies are gone.
@@ -28,6 +30,12 @@ var winter := false
 var _rng := RandomNumberGenerator.new()
 var _cows: Array[Dictionary] = []
 var _hens: Array[Dictionary] = []
+## The sheep and pigs bought at the shop, which amble with the cows and give them room.
+var _flock: Array[Dictionary] = []
+## Each kind's shape, kept for the animals the shop adds later.
+var _shapes := {}
+## How many of each animal the farm owns, by the snapshot's names, as [method herd] last heard it.
+var _owned := {}
 var _gulls: Array[Dictionary] = []
 var _butterflies: Array[Dictionary] = []
 var _vane: Node3D
@@ -38,13 +46,17 @@ var _clock := 0.0
 
 func _ready() -> void:
 	_rng.seed = 7
-	var cow_body := _shape(_cow_body_bricks())
-	var cow_head := _shape(_cow_head_bricks())
+	_shapes = {
+		"cow": _shape(_cow_body_bricks()),
+		"head": _shape(_cow_head_bricks()),
+		"hen": _shape(_hen_bricks()),
+		"sheep": _shape(_sheep_bricks()),
+		"pig": _shape(_pig_bricks()),
+	}
 	for at in [Vector2i(65, 39), Vector2i(71, 44), Vector2i(76, 46)]:
-		_cows.append(_cow(cow_body, cow_head, at))
-	var hen := _shape(_hen_bricks())
+		_cows.append(_cow(_shapes["cow"], _shapes["head"], at))
 	for at in [Vector2i(66, 47), Vector2i(72, 39), Vector2i(78, 42)]:
-		_hens.append(_animal(hen, at, 0.0))
+		_hens.append(_animal(_shapes["hen"], at, 0.0))
 	var gull := _shape([[Vector3i(0, 0, 0), world.WHITE], [Vector3i(1, 0, 0), world.STONE]])
 	var wing := _shape([[Vector3i(0, 0, 1), world.WHITE], [Vector3i(0, 0, 2), world.STONE]])
 	for i in GULLS:
@@ -58,8 +70,11 @@ func _ready() -> void:
 
 func _process(delta: float) -> void:
 	_clock += delta
+	var big: Array[Dictionary] = []
+	big.append_array(_cows)
+	big.append_array(_flock)
 	for cow in _cows:
-		_amble(cow, delta, COW_PACE, _cows)
+		_amble(cow, delta, COW_PACE, big)
 		var head: Node3D = cow["head"]
 		# grazing is the head down in the grass, and up again every so often to chew
 		var down := 0.0 if cow["walking"] else 0.55 + 0.12 * sin(_clock * 2.0 + cow["phase"])
@@ -71,6 +86,8 @@ func _process(delta: float) -> void:
 		if not hen["walking"]:
 			peck = maxf(0.0, sin(_clock * 9.0 + hen["phase"])) * 0.7
 		body.rotation.z = -peck
+	for beast in _flock:
+		_amble(beast, delta, COW_PACE, big)
 	for gull in _gulls:
 		_circle(gull)
 	for butterfly in _butterflies:
@@ -81,6 +98,26 @@ func _process(delta: float) -> void:
 	_boat.position.y = 1 * world.H + sin(_clock * 1.1) * 0.03
 	_boat.rotation.z = sin(_clock * 0.9) * 0.06
 	_boat.rotation.x = sin(_clock * 0.7 + 1.0) * 0.04
+
+
+## The paddock brought up to the herd the farm owns, by the snapshot's names: each animal bought
+## walks in at a spot of its own. The shop only sells, so nothing here is ever taken away.
+func herd(counts: Dictionary) -> void:
+	for kind in ["cow", "hen", "sheep", "pig"]:
+		var have: int = _owned.get(kind, 3 if kind in ["cow", "hen"] else 0)
+		for i in range(have, int(counts.get(kind, have))):
+			var at := Vector2i(
+				_rng.randi_range(PADDOCK.position.x, PADDOCK.end.x),
+				_rng.randi_range(PADDOCK.position.y, PADDOCK.end.y)
+			)
+			match kind:
+				"cow":
+					_cows.append(_cow(_shapes["cow"], _shapes["head"], at))
+				"hen":
+					_hens.append(_animal(_shapes["hen"], at, 0.0))
+				_:
+					_flock.append(_animal(_shapes[kind], at, _rng.randf_range(0.0, TAU)))
+		_owned[kind] = maxi(have, int(counts.get(kind, have)))
 
 
 ## Walks [param animal] toward its goal, and when it gets there stands a while before picking the
@@ -314,6 +351,40 @@ func _cow_head_bricks() -> Array:
 		items.append([Vector3i(1, 1, z - 1), world.WHITE])
 	items.append([Vector3i(0, 2, -1), world.BLACK])
 	items.append([Vector3i(0, 2, 1), world.BLACK])
+	return items
+
+
+## A sheep: a thick white fleece on black legs, and a black face at the front.
+func _sheep_bricks() -> Array:
+	var items := []
+	for lx in [0, 3]:
+		for lz in [0, 2]:
+			items.append([Vector3i(lx - 2, 0, lz - 1), world.BLACK])
+	for x in 4:
+		for y in [1, 2]:
+			for z in 3:
+				items.append([Vector3i(x - 2, y, z - 1), WOOL])
+	items.append([Vector3i(-1, 3, 0), WOOL])
+	items.append([Vector3i(0, 3, 0), WOOL])
+	items.append([Vector3i(2, 2, 0), world.BLACK])
+	items.append([Vector3i(2, 3, 0), world.BLACK])
+	return items
+
+
+## A pig: pink and round, a darker snout at the front and a curl of tail at the back.
+func _pig_bricks() -> Array:
+	var items := []
+	for lx in [0, 3]:
+		for lz in [0, 2]:
+			items.append([Vector3i(lx - 2, 0, lz - 1), PIG])
+	for x in 4:
+		for y in [1, 2]:
+			for z in 3:
+				items.append([Vector3i(x - 2, y, z - 1), PIG])
+	items.append([Vector3i(2, 1, 0), PINK.darkened(0.2)])
+	items.append([Vector3i(1, 3, -1), PIG])
+	items.append([Vector3i(1, 3, 1), PIG])
+	items.append([Vector3i(-3, 2, 0), PIG.darkened(0.15)])
 	return items
 
 

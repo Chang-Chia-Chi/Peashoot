@@ -88,9 +88,12 @@ internal fun hitOf(line: String): Hit? {
     }
 }
 
-/** Whether a line from the farm window is a click on the "For sale" sign. */
-internal fun buysPlot(line: String): Boolean =
-    line.startsWith("{") && objectOf(line)?.string("buy") == "plot"
+/**
+ * What a line from the farm window asks to buy — "plot" from the "For sale" sign, an animal or an
+ * upgrade from the shop board — or null when it is not a purchase. The app decides whether it can.
+ */
+internal fun purchaseOf(line: String): String? =
+    if (line.startsWith("{")) objectOf(line)?.string("buy") else null
 
 private fun objectOf(line: String): JsonObject? =
     try {
@@ -104,7 +107,7 @@ private fun JsonObject.string(key: String): String? =
 
 /**
  * Runs the farm window until it closes: every farm [farms] gives is written to it as one line, and
- * every click it reports goes to [onHit], or to [onBuy] for the sign, on the caller's own thread.
+ * every click it reports goes to [onHit], or to [onBuy] for a sign, on the caller's own thread.
  * Only the latest farm matters, so a window slower than the feed is sent the newest one rather than
  * a backlog.
  *
@@ -115,7 +118,7 @@ internal suspend fun runFarmWindow(
     command: List<String>,
     farms: Flow<FarmState>,
     onHit: (Hit) -> Unit,
-    onBuy: () -> Unit = {},
+    onBuy: (String) -> Unit = {},
 ) {
     val process =
         try {
@@ -140,9 +143,10 @@ internal suspend fun runFarmWindow(
                 process.inputStream.bufferedReader().useLines { lines ->
                     for (line in lines) {
                         val hit = hitOf(line)
+                        val item = purchaseOf(line)
                         when {
                             hit != null -> clicks.send { onHit(hit) }
-                            buysPlot(line) -> clicks.send(onBuy)
+                            item != null -> clicks.send { onBuy(item) }
                         }
                     }
                 }

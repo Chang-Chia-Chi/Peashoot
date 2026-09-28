@@ -166,6 +166,8 @@ data class FarmState(
      * [purse], since the coins paid for them are gone from it.
      */
     val land: Int = 0,
+    /** The animals owned and the coop and barn upgrades, saved like [land] (see [bought]). */
+    val herd: Herd = Herd(),
 )
 
 /**
