@@ -21,8 +21,9 @@ visible one as an instance of one brick mesh. The farmers are read from `art/vil
 pixel.
 
 It is live: `live.gd` reads one JSON farm per line — the app's `FarmState` as `Snapshot.kt` writes
-it — and moves the world to match. Each directory gets a raised bed and each file a crop, grown a
-stage per edit; each session is a farmer who walks to the well for every model call, then on its
+it — and moves the world to match. Each directory gets a raised bed and each file a crop of the kind
+its file type grows (carrot for code, tomato for tests, turnip for docs, pumpkin for build files, and
+corn, strawberry and sunflower as the level unlocks them), grown a stage per edit; each session is a farmer who walks to the well for every model call, then on its
 way home walks the rounds of the crops that turn planted or grew and bends to each one, with `…`
 while it waits, `zzz` while it rests off a rate limit and `♪` while it tends; replay is night with the
 lanterns lit; rain, storms and lightning follow the provider; the shipping bin shows the ledger.

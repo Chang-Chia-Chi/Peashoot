@@ -42,7 +42,7 @@ The farm is fixed: a 96×64 island (`farm/main.gd:5-6`), 8 beds (`farm/main.gd:7
 - Plots: 4 beds each. The starting island keeps its 8 beds. The first plot costs 20, and each later one costs 15 more.
 - Crops by file type: code → carrot, tests → tomato, docs → turnip, config and build → pumpkin.
   Unlocks: corn at level 3 (scripts), strawberry at level 5 (styles and markup), sunflower at level 7 (everything else).
-  A locked kind grows as its category's base crop until it unlocks.
+  A locked kind grows as a carrot until it unlocks, and a planted crop changes kind the moment it does.
 - Animals: hen 10 (level 2), cow 40 (level 3), sheep 30 (level 4), pig 30 (level 5). Today's 3 cows and 3 hens stay as the starting herd.
 
 ## Phases (one PR each)
