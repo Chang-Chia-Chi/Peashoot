@@ -4,7 +4,7 @@
 godot = "4.7-stable"
 archunit = "1.5.1"
 compose = "1.12.1"
-compose-rules = "0.6.6"
+compose-rules = "0.6.7"
 detekt = "2.0.0-alpha.6"
 hikaricp = "7.1.0"
 jdbi = "3.55.0"
